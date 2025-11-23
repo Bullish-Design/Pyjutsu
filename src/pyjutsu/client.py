@@ -7,8 +7,9 @@ from pathlib import Path
 
 from pyjutsu._commands import JjCommand
 from pyjutsu.exceptions import JjCommandError, JjNotFoundError, RepositoryNotFoundError
-from pyjutsu.models import FileChange, WorkspaceStatus
+from pyjutsu.models import Branch, Change, FileChange, LogEntry, WorkspaceStatus
 from pyjutsu.enums import FileStatus
+
 
 class JjClient:
     """Main interface for interacting with a Jujutsu repository."""
@@ -126,7 +127,6 @@ class JjClient:
         Returns:
             List of FileChange objects
         """
-        
 
         changes: list[FileChange] = []
 
@@ -167,6 +167,255 @@ class JjClient:
                 )
 
         return changes
+
+    def describe(self, message: str, revision: str = "@") -> None:
+        """Set the description (commit message) for a change.
+
+        Args:
+            message: Commit message to set
+            revision: Revision to describe (default: working copy '@')
+
+        Raises:
+            JjCommandError: If describe command fails
+        """
+        self._cmd.run("describe", "-r", revision, "-m", message)
+
+    def new(self, revision: str | None = None) -> str:
+        """Create a new working copy change.
+
+        Args:
+            revision: Optional revision to start from. If omitted, uses current working copy.
+
+        Returns:
+            The change ID of the new working copy change.
+
+        Raises:
+            JjCommandError: If new command fails
+        """
+        if revision:
+            self._cmd.run("new", revision)
+        else:
+            self._cmd.run("new")
+
+        output = self._cmd.run("log", "-r", "@", "--no-graph", "-T", "change_id")
+        return output.strip()
+
+    def branch_create(self, name: str, revision: str = "@") -> Branch:
+        """Create a new branch/bookmark.
+
+        Args:
+            name: Branch name to create
+            revision: Revision to create the branch at (default: working copy '@')
+
+        Returns:
+            Branch object representing the created branch.
+
+        Raises:
+            JjCommandError: If branch creation fails
+        """
+        self._cmd.run("bookmark", "create", name, "-r", revision)
+
+        change_id = self._cmd.run(
+            "log",
+            "-r",
+            revision,
+            "--no-graph",
+            "-T",
+            "change_id",
+        ).strip()
+        commit_id = self._cmd.run(
+            "log",
+            "-r",
+            revision,
+            "--no-graph",
+            "-T",
+            "commit_id",
+        ).strip()
+
+        return Branch(
+            name=name,
+            target_change_id=change_id,
+            target_commit_id=commit_id,
+        )
+
+    def branch_list(self) -> list[Branch]:
+        """List all branches/bookmarks.
+
+        Returns:
+            List of Branch objects.
+
+        Raises:
+            JjCommandError: If listing branches fails
+        """
+        output = self._cmd.run("bookmark", "list")
+        branches: list[Branch] = []
+
+        for raw in output.strip().split("\n"):
+            line = raw.strip()
+            if not line:
+                continue
+
+            # Expected format: "branch_name: <change-id> ..."
+            parts = line.split(":", maxsplit=1)
+            if len(parts) != 2:
+                continue
+
+            name = parts[0].strip()
+
+            # Resolve full change_id and commit_id via jj log
+            try:
+                change_id = self._cmd.run(
+                    "log",
+                    "-r",
+                    name,
+                    "--no-graph",
+                    "-T",
+                    "change_id",
+                ).strip()
+            except JjCommandError:
+                change_id = ""
+
+            try:
+                commit_id = self._cmd.run(
+                    "log",
+                    "-r",
+                    name,
+                    "--no-graph",
+                    "-T",
+                    "commit_id",
+                ).strip()
+            except JjCommandError:
+                commit_id = "0" * 40
+
+            branches.append(
+                Branch(
+                    name=name,
+                    target_change_id=change_id,
+                    target_commit_id=commit_id,
+                )
+            )
+
+        return branches
+
+    def branch_delete(self, name: str) -> None:
+        """Delete a branch/bookmark.
+
+        Args:
+            name: Branch name to delete
+
+        Raises:
+            JjCommandError: If branch deletion fails
+        """
+        self._cmd.run("bookmark", "delete", name)
+
+    def branch_set(self, name: str, revision: str) -> None:
+        """Move an existing branch to a different revision.
+
+        Args:
+            name: Branch name to move
+            revision: Target revision for the branch
+
+        Raises:
+            JjCommandError: If branch set fails
+        """
+        self._cmd.run("bookmark", "set", name, "-r", revision)
+
+    def log(self, revset: str = "@", limit: int = 10) -> list[LogEntry]:
+        """Get commit log.
+
+        Args:
+            revset: Revset expression (default: full history for current repo)
+            limit: Maximum number of entries
+
+        Returns:
+            List of LogEntry objects
+
+        Raises:
+            JjCommandError: If log command fails
+        """
+        from datetime import datetime
+
+        # For the default revset, show full history rather than just '@'
+        revset_expr = "all()" if revset == "@" else revset
+        print(f"Using revset expression: {revset_expr}")
+        
+        change_ids_raw = self._cmd.run(
+            "log",
+            "-r",
+            revset_expr,
+            "--no-graph",
+            "-T",
+            "change_id",
+        )
+        print(f"Raw change_ids: {change_ids_raw}")
+        commit_ids_raw = self._cmd.run(
+            "log",
+            "-r",
+            revset_expr,
+            "--no-graph",
+            "-T",
+            "commit_id",
+        )
+        print(f"Raw commit_ids: {commit_ids_raw}")
+        descriptions_raw = self._cmd.run(
+            "log",
+            "-r",
+            revset_expr,
+            "--no-graph",
+            "-T",
+            "description.first_line()",
+        )
+        print(f"Raw descriptions: {descriptions_raw}")
+        authors_raw = self._cmd.run(
+            "log",
+            "-r",
+            revset_expr,
+            "--no-graph",
+            "-T",
+            "author",
+        )
+        print(f"Raw authors: {authors_raw}")
+        times_raw = self._cmd.run(
+            "log",
+            "-r",
+            revset_expr,
+            "--no-graph",
+            "-T",
+            "committer.timestamp()",
+        )
+        print(f"Raw times: {times_raw}")
+
+        change_ids = [line.strip() for line in change_ids_raw.splitlines() if line.strip()]
+        commit_ids = [line.strip() for line in commit_ids_raw.splitlines() if line.strip()]
+        descriptions = [line.strip() for line in descriptions_raw.splitlines() if line.strip()]
+        authors = [line.strip() for line in authors_raw.splitlines() if line.strip()]
+        times = [line.strip() for line in times_raw.splitlines() if line.strip()]
+
+        # Zip up to the shortest to avoid index errors if jj output changes slightly
+        num_entries = min(len(change_ids), len(commit_ids), len(descriptions), len(authors), len(times))
+
+        # print(f"Parsing {num_entries} log entries")?
+        entries: list[LogEntry] = []
+        for i in range(num_entries):
+            ts_raw = times[i].replace("Z", "+00:00")
+            try:
+                ts = datetime.fromisoformat(ts_raw)
+            except ValueError:
+                ts = datetime.fromtimestamp(0)
+
+            change = Change(
+                change_id=change_ids[i],
+                commit_id=commit_ids[i],
+                description=descriptions[i],
+                author=authors[i],
+                timestamp=ts,
+            )
+            entries.append(LogEntry(change=change))
+
+        if limit >= 0:
+            return entries[:limit]
+        return entries
+
 
     def __repr__(self) -> str:
         """String representation."""
