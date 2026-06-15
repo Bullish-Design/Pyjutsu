@@ -29,17 +29,24 @@ from .models import (
 from .repo_view import RepoView
 from .workspace import Workspace
 
-#: This package's version. Encodes the jj it targets: ``pyjutsu X.Y.*`` binds jj ``X.Y``.
-__version__ = "0.38.0"
+#: This package's version. Pyjutsu is versioned on its own cadence, **independent** of the jj
+#: version it binds — the bound jj-lib is pinned in ``Cargo.toml`` and the matching CLI in
+#: ``devenv.nix`` (exposed at runtime as :data:`JJ_VERSION`).
+__version__ = "0.39.0"
 
-#: The jj / jj-lib version the compiled extension is linked against (concept §6).
+#: The jj-lib release this build targets. Bump alongside the ``Cargo.toml`` ``jj-lib`` pin and
+#: the matching jj CLI in ``devenv.nix``; kept separate from :data:`__version__`.
+JJ_LIB_TARGET = "0.38.0"
+
+#: The jj / jj-lib version the compiled extension is actually linked against.
 JJ_VERSION: str = _ext.version()
 
-# Enforce the version contract at import: the built extension's jj-lib must match this
-# package's major.minor. A mismatch means a broken/mixed build.
-if JJ_VERSION.rsplit(".", 1)[0] != __version__.rsplit(".", 1)[0]:
+# Sanity tripwire for a broken/mixed build: the linked jj-lib must be the release this build
+# targets. This is independent of pyjutsu's own version.
+if JJ_VERSION != JJ_LIB_TARGET:
     raise PyjutsuError(
-        f"version mismatch: pyjutsu {__version__} was built against jj-lib {JJ_VERSION}"
+        f"broken build: pyjutsu {__version__} targets jj-lib {JJ_LIB_TARGET} "
+        f"but the extension links jj-lib {JJ_VERSION}"
     )
 
 __all__ = [
@@ -54,6 +61,7 @@ __all__ = [
     "FileStat",
     "ChangeId",
     "CommitId",
+    "JJ_LIB_TARGET",
     "PyjutsuError",
     "RevsetError",
     "ConflictError",

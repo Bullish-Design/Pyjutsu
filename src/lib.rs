@@ -23,7 +23,8 @@ use repo_view::PyRepoView;
 use workspace::PyWorkspace;
 
 /// The pinned `jj-lib` version this extension is built against. Mirrors `Cargo.toml`'s
-/// `jj-lib = "=0.38.0"`; the Python layer asserts the version contract against it.
+/// `jj-lib = "=0.38.0"`; the Python layer checks this against its `JJ_LIB_TARGET` as a
+/// broken-build tripwire (independent of pyjutsu's own version).
 const JJ_LIB_VERSION: &str = "0.38.0";
 
 /// Return the pinned `jj-lib` version. Proves the native ext imports and links jj-lib.

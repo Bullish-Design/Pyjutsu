@@ -1,6 +1,6 @@
 [package]
 name = "pyjutsu"
-version = "0.38.0"
+version = "0.39.0"
 edition = "2024"
 rust-version = "1.89"
 publish = false
@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # Hard pin: this exact version is the real API contract. Cargo.lock is committed. Bumping
-# jj-lib is a deliberate port + a Pyjutsu minor bump (version contract: pyjutsu 0.38.* <-> jj 0.38).
+# jj-lib is a deliberate Rust-side port; pyjutsu's own version (above) moves independently.
 jj-lib = "=0.38.0"
 
 # `extension-module` is NOT enabled here so that `cargo test` can link libpython; maturin
