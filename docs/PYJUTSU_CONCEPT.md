@@ -1,6 +1,8 @@
 # Pyjutsu — Concept (PyO3 / jj-lib binding)
 
-**Status:** Concept / pre-implementation.
+**Status:** M1 (read layer) implemented (`pyjutsu 0.39.0`, binds jj-lib 0.38); M2+ (mutations,
+transactions, git interop) still in design. This document remains the canonical design spec —
+the v1 surface (§5) and scope (§12) below describe the full intended API, not just what ships today.
 **Name:** Pyjutsu · **Import:** `import pyjutsu`
 **What:** A general-purpose, Pythonic + Pydantic binding to **jujutsu's Rust engine
 (`jj-lib`)** via **PyO3**, distributed as a compiled wheel (maturin).
@@ -147,9 +149,13 @@ convenience aggregate). Mirror the existing CLI-wrapper Pyjutsu's shapes where s
   the real API pin.
 - **`devenv.nix` pins** the Rust toolchain, `maturin`, **and the matching `jj` CLI binary**
   (same X.Y.Z) so differential tests compare against the exact CLI of the bound library.
-- **Version contract:** Pyjutsu's version encodes the jj it targets (e.g. `pyjutsu
-  0.38.*` ↔ jj 0.38). Consumers (gitman) pin accordingly. Bumping jj = a deliberate
-  Rust-side port + a Pyjutsu minor bump.
+- **Versioning (independent of jj):** Pyjutsu is versioned on its own semver cadence and is
+  **not** tied to the bound jj version. The jj-lib it binds is pinned in `Cargo.toml` (the real
+  API pin) and the matching CLI in `devenv.nix`; the package exposes the linked version at
+  runtime as `pyjutsu.JJ_VERSION` and the targeted version as `pyjutsu.JJ_LIB_TARGET`. At import
+  Pyjutsu checks `JJ_VERSION == JJ_LIB_TARGET` purely as a broken/mixed-build tripwire — it does
+  **not** couple `__version__` to jj. Bumping jj is a deliberate Rust-side port (move the pins +
+  re-run differential tests); a normal Pyjutsu feature/fix is just an ordinary minor/patch bump.
 
 ## 7. Testing strategy (the safety net for jj-lib instability)
 

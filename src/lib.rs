@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn version_is_pinned() {
-        // Guards the version contract at the Rust layer (mirrors Cargo.toml's `=0.38.0`).
+        // Guards the jj-lib pin at the Rust layer (mirrors Cargo.toml's `jj-lib = "=0.38.0"`).
         assert_eq!(version(), "0.38.0");
     }
 }
