@@ -4,8 +4,10 @@ __pycache__/
 *$py.class
 .tmuxp.yaml
 
-# Local brainstorming / scratch area; the canonical spec is committed under docs/.
-.scratch/
+# Scratch area is local-only, EXCEPT the curated project planning docs under
+# .scratch/projects/ (brainstorming, implementation guides, kickoff prompts).
+.scratch/*
+!.scratch/projects/
 
 # C extensions
 *.so
