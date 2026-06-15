@@ -15,7 +15,18 @@ from .errors import (
     RevsetError,
     WorkspaceError,
 )
-from .models import ChangeId, Commit, CommitId
+from .models import (
+    Bookmark,
+    ChangeId,
+    Commit,
+    CommitId,
+    Conflict,
+    DiffStat,
+    FileStat,
+    Operation,
+    Signature,
+)
+from .repo_view import RepoView
 from .workspace import Workspace
 
 #: This package's version. Encodes the jj it targets: ``pyjutsu X.Y.*`` binds jj ``X.Y``.
@@ -33,7 +44,14 @@ if JJ_VERSION.rsplit(".", 1)[0] != __version__.rsplit(".", 1)[0]:
 
 __all__ = [
     "Workspace",
+    "RepoView",
     "Commit",
+    "Signature",
+    "Operation",
+    "Bookmark",
+    "Conflict",
+    "DiffStat",
+    "FileStat",
     "ChangeId",
     "CommitId",
     "PyjutsuError",

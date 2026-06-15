@@ -1,0 +1,50 @@
+{
+  "Signature": [
+    "email",
+    "name",
+    "timestamp"
+  ],
+  "Commit": [
+    "author",
+    "bookmarks",
+    "change_id",
+    "commit_id",
+    "committer",
+    "description",
+    "has_conflict",
+    "is_empty",
+    "parent_ids"
+  ],
+  "Bookmark": [
+    "name",
+    "remote",
+    "target_ids",
+    "tracked"
+  ],
+  "Operation": [
+    "description",
+    "end_time",
+    "hostname",
+    "id",
+    "is_snapshot",
+    "parent_ids",
+    "start_time",
+    "tags",
+    "username"
+  ],
+  "Conflict": [
+    "num_bases",
+    "num_sides",
+    "path"
+  ],
+  "FileStat": [
+    "deletions",
+    "insertions",
+    "path"
+  ],
+  "DiffStat": [
+    "files",
+    "total_deletions",
+    "total_insertions"
+  ]
+}

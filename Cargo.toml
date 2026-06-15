@@ -18,3 +18,14 @@ jj-lib = "=0.38.0"
 # `extension-module` is NOT enabled here so that `cargo test` can link libpython; maturin
 # turns it on via [tool.maturin] features in pyproject.toml when building the wheel/develop.
 pyo3 = { version = "0.24", features = ["abi3-py313"] }
+
+# The revset parse context wants a `DatePatternContext`, built from a chrono datetime. Tracks
+# jj-lib's own chrono (resolves to the same locked 0.4.x); only `now()` is used.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+# diff_stat drives jj-lib's async tree-diff stream synchronously. pollster runs the future to
+# completion; futures supplies StreamExt for the diff stream; tokio's AsyncReadExt reads file
+# blobs (jj-lib's `Store::read_file` yields a tokio `AsyncRead`). All track jj-lib's locked versions.
+pollster = "0.4"
+futures = "0.3"
+tokio = { version = "1", default-features = false, features = ["io-util"] }

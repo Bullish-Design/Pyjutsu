@@ -1750,8 +1750,12 @@ dependencies = [
 name = "pyjutsu"
 version = "0.38.0"
 dependencies = [
+ "chrono",
+ "futures",
  "jj-lib",
+ "pollster",
  "pyo3",
+ "tokio",
 ]
 
 [[package]]
