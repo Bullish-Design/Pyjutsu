@@ -2,9 +2,10 @@
 __pycache__/
 *.py[codz]
 *$py.class
-**.nix
-.python-version
 .tmuxp.yaml
+
+# Local brainstorming / scratch area; the canonical spec is committed under docs/.
+.scratch/
 
 # C extensions
 *.so

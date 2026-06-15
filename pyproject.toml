@@ -1,35 +1,46 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
 [project]
 name = "pyjutsu"
-version = "0.1.0"
-description = "Pythonic wrapper for Jujutsu VCS"
+# Version encodes the jj it targets: pyjutsu 0.38.* <-> jujutsu/jj-lib 0.38 (concept §6).
+version = "0.38.0"
+description = "Pythonic + Pydantic binding to jujutsu's jj-lib engine via PyO3."
+readme = "README.md"
 requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [
+  { name = "Bullish Design" },
+]
 dependencies = [
-    "pydantic>=2.0.0",
-    "sh>=2.0.0",
+  "pydantic>=2.12",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-cov>=4.0.0",
-    "mypy>=1.8.0",
-    "ruff>=0.1.0",
+  "pytest>=8.0",
+  "ruff>=0.5.0",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.maturin]
+# Mixed layout: pure-Python package under python/, compiled ext installed as pyjutsu._pyjutsu.
+python-source = "python"
+module-name = "pyjutsu._pyjutsu"
+# Enable the abi3 extension-module build (kept out of Cargo.toml so `cargo test` links libpython).
+features = ["pyo3/extension-module"]
 
-[tool.ruff]
-line-length = 120
-target-version = "py313"
-
-[tool.mypy]
-python_version = "3.13"
-strict = true
-warn_return_any = true
-warn_unused_configs = true
+[tool.uv]
+# maturin is provided by devenv (nix), not pip; don't let uv try to build the project here
+# during `uv sync` — dev deps only.
+package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+extend-select = ["I"]
