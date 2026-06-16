@@ -20,7 +20,8 @@ use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_store::OperationId;
 use jj_lib::op_walk;
-use jj_lib::repo::{Repo, StoreFactories};
+use jj_lib::ref_name::WorkspaceName;
+use jj_lib::repo::{ReadonlyRepo, Repo, StoreFactories};
 use jj_lib::settings::UserSettings;
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
 use jj_lib::workspace::{Workspace, default_working_copy_factories};
@@ -118,6 +119,28 @@ impl PyWorkspace {
             .map_err(|_| PyjutsuError::new_err("workspace lock poisoned"))
     }
 
+    /// Check out `new_commit` into the **already-locked** `ws`, recording it at `op_id`. The file
+    /// I/O runs off the GIL. Shared by `checkout_wc` (which locks first) and the op-log writes
+    /// (`undo`/`restore_operation`, which already hold the lock for the whole load → tx → checkout
+    /// sequence — calling `checkout_wc` there would re-lock the workspace `Mutex` and deadlock).
+    fn checkout_locked(
+        py: Python<'_>,
+        ws: &mut Workspace,
+        op_id: OperationId,
+        new_commit: &Commit,
+    ) -> PyResult<()> {
+        // The tree the in-memory workspace believes is on disk; `check_out` compares it against
+        // the freshly-locked working copy to detect a concurrent checkout by another process.
+        let old_tree = ws
+            .working_copy()
+            .tree()
+            .map_err(map_workingcopy_err)?
+            .clone();
+        py.allow_threads(move || ws.check_out(op_id, Some(&old_tree), new_commit))
+            .map_err(map_workingcopy_err)?;
+        Ok(())
+    }
+
     /// Update the on-disk working copy to `new_commit`, recording it at `op_id` so the working
     /// copy's operation stays in lockstep with the repo head (matching `Workspace::check_out`,
     /// workspace.rs:437). Called by `PyTransaction::commit` whenever a committed transaction
@@ -130,17 +153,30 @@ impl PyWorkspace {
         new_commit: &Commit,
     ) -> PyResult<()> {
         let mut guard = self.locked()?;
-        let ws: &mut Workspace = &mut guard;
-        // The tree the in-memory workspace believes is on disk; `check_out` compares it against
-        // the freshly-locked working copy to detect a concurrent checkout by another process.
-        let old_tree = ws
-            .working_copy()
-            .tree()
-            .map_err(map_workingcopy_err)?
-            .clone();
-        py.allow_threads(move || ws.check_out(op_id, Some(&old_tree), new_commit))
-            .map_err(map_workingcopy_err)?;
-        Ok(())
+        Self::checkout_locked(py, &mut guard, op_id, new_commit)
+    }
+
+    /// After an op-log write commits: if `@` moved between `old_repo` and `new_repo`, check out the
+    /// new `@` on disk (reusing the held lock via `checkout_locked`), then return the published
+    /// operation as a plain dict. Shared tail of `undo`/`restore_operation`.
+    fn finish_op<'py>(
+        &self,
+        py: Python<'py>,
+        ws: &mut Workspace,
+        name: &WorkspaceName,
+        old_repo: &ReadonlyRepo,
+        new_repo: &ReadonlyRepo,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let old_wc = old_repo.view().get_wc_commit_id(name).cloned();
+        let new_wc = new_repo.view().get_wc_commit_id(name).cloned();
+        if new_wc != old_wc
+            && let Some(new_id) = new_wc
+        {
+            let new_commit = new_repo.store().get_commit(&new_id).map_err(map_backend_err)?;
+            let op_id = new_repo.operation().id().clone();
+            Self::checkout_locked(py, ws, op_id, &new_commit)?;
+        }
+        OperationData::build(new_repo.operation()).to_dict(py)
     }
 }
 
@@ -402,6 +438,96 @@ impl PyWorkspace {
         // 3. Return the reconciled `@` (build off the GIL — `is_empty` touches the backend).
         let data = py.allow_threads(|| CommitData::build(&*repo, &wc_commit))?;
         Ok(Some(data.to_dict(py)?))
+    }
+
+    /// Revert one operation, publishing a new operation that applies its reverse — matches
+    /// `jj undo`. `operation` is an op spec (id, prefix, or expression like `@`/`@-`); `None`
+    /// undoes the head op. Reverting the repo-initialization op (no parent) or a merge op (>1
+    /// parent) is a user error (`PyjutsuError`). If the reverse moves `@`, the on-disk working copy
+    /// is checked out to the new `@` (off the GIL).
+    ///
+    /// The op-store reads run off the GIL; the `!Send` `Transaction` (merge/commit) runs on the
+    /// GIL between those spans; the workspace `Mutex` is held for the whole sequence (atomicity),
+    /// so the checkout goes through `checkout_locked`, not the re-locking `checkout_wc`.
+    #[pyo3(signature = (operation=None))]
+    fn undo<'py>(&self, py: Python<'py>, operation: Option<&str>) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.locked()?;
+        let ws: &mut Workspace = &mut guard;
+        let name = ws.workspace_name().to_owned();
+        let op_spec = operation.unwrap_or("@").to_owned();
+
+        // Load head + the to-undo op's repo and its single parent's repo (backend I/O → off GIL).
+        let (repo, bad_repo, parent_repo, bad_op_hex) = {
+            let loader = ws.repo_loader();
+            py.allow_threads(|| -> PyResult<_> {
+                let repo = loader.load_at_head().map_err(map_backend_err)?;
+                // A bad/ambiguous op spec is user input → PyjutsuError base (matches `at_operation`).
+                let bad_op = op_walk::resolve_op_for_load(loader, &op_spec).map_err(to_py_err)?;
+                let mut parents = bad_op.parents();
+                let Some(parent) = parents.next() else {
+                    return Err(PyjutsuError::new_err(
+                        "cannot undo the repo-initialization operation (it has no parent)",
+                    ));
+                };
+                let parent_op = parent.map_err(map_backend_err)?;
+                if parents.next().is_some() {
+                    return Err(PyjutsuError::new_err("cannot undo a merge operation"));
+                }
+                let bad_repo = loader.load_at(&bad_op).map_err(map_backend_err)?;
+                let parent_repo = loader.load_at(&parent_op).map_err(map_backend_err)?;
+                Ok((repo, bad_repo, parent_repo, bad_op.id().hex()))
+            })?
+        };
+
+        // Build the reverse op on the GIL (Transaction is !Send). merge(base = bad, other = parent)
+        // applies (parent − bad) onto head = the reverse of the bad op. `merge` records the reverted
+        // commit as a rewrite (repo.rs:record_rewrites), so descendants must be rebased onto it
+        // before commit — both to satisfy `commit`'s `!has_rewrites()` assert (transaction.rs:136)
+        // and to faithfully move any children of the reverted commit, exactly as `jj undo` does.
+        let mut tx = repo.start_transaction();
+        {
+            let mrepo = tx.repo_mut();
+            mrepo.merge(&bad_repo, &parent_repo).map_err(map_backend_err)?;
+            mrepo.rebase_descendants().map_err(map_backend_err)?;
+        }
+        let new_repo = tx
+            .commit(format!("undo operation {bad_op_hex}"))
+            .map_err(map_backend_err)?;
+
+        self.finish_op(py, ws, &name, &repo, &new_repo)
+    }
+
+    /// Reset the repo to the view a past operation recorded, publishing a new operation — matches
+    /// `jj op restore <op>` (all portions). `operation` is an op spec (id, prefix, or `@`/`@-`).
+    /// If the restored view moves `@`, the on-disk working copy is checked out to it (off the GIL).
+    fn restore_operation<'py>(
+        &self,
+        py: Python<'py>,
+        operation: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.locked()?;
+        let ws: &mut Workspace = &mut guard;
+        let name = ws.workspace_name().to_owned();
+        let op_spec = operation.to_owned();
+
+        let (repo, target_view) = {
+            let loader = ws.repo_loader();
+            py.allow_threads(|| -> PyResult<_> {
+                let repo = loader.load_at_head().map_err(map_backend_err)?;
+                let target_op = op_walk::resolve_op_for_load(loader, &op_spec).map_err(to_py_err)?;
+                // Operation::view() is the high-level View; set_view wants op_store::View.
+                let view = target_op.view().map_err(map_backend_err)?.store_view().clone();
+                Ok((repo, view))
+            })?
+        };
+
+        let mut tx = repo.start_transaction();
+        tx.repo_mut().set_view(target_view);
+        let new_repo = tx
+            .commit(format!("restore to operation {op_spec}"))
+            .map_err(map_backend_err)?;
+
+        self.finish_op(py, ws, &name, &repo, &new_repo)
     }
 
     /// Open a transaction: claim the single-tx slot, reload the repo at head, start a native

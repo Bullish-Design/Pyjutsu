@@ -89,6 +89,26 @@ class Workspace:
         row = self._handle.update_stale()
         return Commit.model_validate(row) if row is not None else None
 
+    def undo(self, operation: str | None = None) -> Operation:
+        """Revert one operation, publishing a new operation that applies its reverse → that
+        :class:`Operation`. With ``operation=None`` (the default) the **head** operation is undone;
+        otherwise pass an op id, prefix, or expression (``"@"``, ``"@-"``, …).
+
+        Matches ``jj undo``. Undoing the repo-initialization operation (it has no parent) or a merge
+        operation raises :class:`~pyjutsu.errors.PyjutsuError`. If the reverse moves ``@``, the
+        on-disk working copy is checked out to the new ``@``.
+        """
+        return Operation.model_validate(self._handle.undo(operation))
+
+    def restore_operation(self, operation: str) -> Operation:
+        """Reset the repo to the state a past operation recorded, publishing a new operation → that
+        :class:`Operation`. ``operation`` is an op id, prefix, or expression (``"@-"``, …).
+
+        Matches ``jj op restore``. If the restored state moves ``@``, the on-disk working copy is
+        checked out to it.
+        """
+        return Operation.model_validate(self._handle.restore_operation(operation))
+
     def head(self) -> RepoView:
         """A :class:`RepoView` of the repo at its **head** operation, scoped to this workspace.
 
