@@ -150,6 +150,50 @@ class Transaction:
         """
         self._require_open().abandon(commit)
 
+    def rebase(self, commit: str, *, onto: str | list[str]) -> Commit:
+        """Rebase ``commit`` **and its descendants** onto ``onto`` → the rebased :class:`Commit`.
+
+        ``commit`` and each entry of ``onto`` are single-revision revsets (matches ``jj rebase
+        -s <commit> -d <onto…>``). The change id is preserved; the commit id changes, and the
+        on-disk working copy follows when the transaction commits if ``@`` moved. ``commit`` must
+        name exactly one revision (else :class:`~pyjutsu.errors.RevsetError`); rebasing the root
+        raises :class:`~pyjutsu.errors.ImmutableCommitError`. Must be called inside the ``with``
+        block.
+
+        Single-commit reattach (``jj rebase -r``) and whole-branch (``-b``) are out of scope: this
+        always carries the commit's descendants.
+        """
+        targets = [onto] if isinstance(onto, str) else list(onto)
+        return Commit.model_validate(self._require_open().rebase(commit, targets))
+
+    def squash(self, source: str, into: str, *, message: str | None = None) -> Commit:
+        """Move ``source``'s changes into ``into`` → the squashed :class:`Commit` (``jj squash``).
+
+        ``source`` is abandoned when fully squashed; its descendants rebase onto its parent(s).
+        With ``message`` the squashed commit takes it; without, ``into``'s description is kept
+        (matching ``jj squash --use-destination-message``). ``source`` and ``into`` are
+        single-revision revsets and must differ (else :class:`~pyjutsu.errors.PyjutsuError`);
+        squashing the root raises :class:`~pyjutsu.errors.ImmutableCommitError`. Must be called
+        inside the ``with`` block.
+
+        The whole source commit is squashed: partial/interactive selection and jj's
+        description-combining default are out of scope.
+        """
+        msg = _complete_newline(message) if message is not None else None
+        return Commit.model_validate(self._require_open().squash(source, into, msg))
+
+    def restore(self, commit: str, *, from_: str, paths: list[str] | None = None) -> Commit:
+        """Replace ``commit``'s content (or just ``paths``) with ``from_``'s → the rewritten
+        :class:`Commit` (matches ``jj restore --from <from_> --into <commit> [paths…]``).
+
+        ``commit`` and ``from_`` are single-revision revsets; ``paths`` (repo-relative) scope the
+        restore, else the whole tree is restored. The change id is preserved; the commit id
+        changes. ``commit`` must name exactly one revision (else
+        :class:`~pyjutsu.errors.RevsetError`); restoring the root raises
+        :class:`~pyjutsu.errors.ImmutableCommitError`. Must be called inside the ``with`` block.
+        """
+        return Commit.model_validate(self._require_open().restore(commit, from_, paths))
+
     def create_bookmark(self, name: str, commit: str) -> Bookmark:
         """Create a new local bookmark ``name`` at ``commit`` → the new :class:`Bookmark`.
 

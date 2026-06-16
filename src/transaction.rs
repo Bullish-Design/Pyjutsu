@@ -24,11 +24,16 @@ use pyo3::types::PyDict;
 
 use jj_lib::backend::CommitId;
 use jj_lib::commit::Commit;
+use jj_lib::matchers::{EverythingMatcher, FilesMatcher};
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_store::RefTarget;
 use jj_lib::ref_name::{RefName, RemoteName, WorkspaceNameBuf};
 use jj_lib::repo::Repo;
-use jj_lib::rewrite::merge_commit_trees;
+use jj_lib::repo_path::RepoPathBuf;
+use jj_lib::rewrite::{
+    CommitWithSelection, MoveCommitsLocation, MoveCommitsTarget, RebaseOptions, merge_commit_trees,
+    move_commits, restore_tree, squash_commits,
+};
 use jj_lib::transaction::Transaction;
 
 use crate::convert::{BookmarkData, CommitData};
@@ -240,6 +245,175 @@ impl PyTransaction {
         repo.record_abandoned_commit(&target);
         repo.rebase_descendants().map_err(map_backend_err)?;
         Ok(())
+    }
+
+    /// Rebase `commit` **and its descendants** onto the new parents `onto` (each a single-revision
+    /// revset), returning the rebased `commit` as a plain dict. Matches `jj rebase -s <commit> -d
+    /// <onto…>`: the change id is preserved, the commit id changes. If `@` (or an ancestor of `@`)
+    /// moves, `commit`'s checkout updates the on-disk working copy.
+    ///
+    /// `MoveCommitsTarget::Roots([commit])` carries the commit plus all its descendants (the `-s`
+    /// semantics); `Commits([commit])` — single-commit reattach (`jj rebase -r`) — is the documented
+    /// out-of-scope refinement. `move_commits` records rewrites, so we `rebase_descendants()` before
+    /// reading the result back (and `commit` re-runs it idempotently). Rewriting the **root** panics
+    /// in `record_rewritten_commit`, so we guard it and raise `ImmutableCommitError`, like `abandon`.
+    #[pyo3(signature = (commit, onto))]
+    fn rebase<'py>(
+        &self,
+        py: Python<'py>,
+        commit: &str,
+        onto: Vec<String>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs); in-memory graph work.
+        let repo = tx.repo_mut();
+        let target = self.resolve_single(&*repo, commit)?;
+        if target.id() == repo.store().root_commit_id() {
+            return Err(ImmutableCommitError::new_err("cannot rebase the root commit"));
+        }
+        let new_parent_ids = onto
+            .iter()
+            .map(|r| Ok(self.resolve_single(&*repo, r)?.id().clone()))
+            .collect::<PyResult<Vec<CommitId>>>()?;
+        let loc = MoveCommitsLocation {
+            new_parent_ids,
+            new_child_ids: vec![],
+            target: MoveCommitsTarget::Roots(vec![target.id().clone()]),
+        };
+        move_commits(repo, &loc, &RebaseOptions::default()).map_err(map_backend_err)?;
+        repo.rebase_descendants().map_err(map_backend_err)?;
+        let rebased = self.resolve_single(&*repo, commit)?; // re-read post-rebase (id changed)
+        let data = CommitData::build(&*repo, &rebased)?;
+        data.to_dict(py)
+    }
+
+    /// Squash `source`'s changes into `into` (single-revision revsets), returning the squashed
+    /// `into` as a plain dict. Matches `jj squash --from <source> --into <into>`: `source` is
+    /// abandoned when fully squashed and its descendants rebase onto its parent(s). With `message`
+    /// the squashed commit takes it (newline-normalized in Python); without, `into`'s description is
+    /// kept. A squash that *produces* a conflict is allowed (jj records it N-sided) — only the root
+    /// guard and `source == into` are refused.
+    ///
+    /// `squash_commits` hands back a `CommitBuilder` that **holds the `&mut repo` borrow**, so we
+    /// must `write()` it (releasing the borrow) before any further `repo.*` — in particular before
+    /// `rebase_descendants()`. `Ok(None)` means nothing was selected to squash. Description-combining
+    /// (jj's default when both sides describe) is the documented out-of-scope refinement: we keep
+    /// `into`'s description unless `message` is given.
+    #[pyo3(signature = (source, into, message=None))]
+    fn squash<'py>(
+        &self,
+        py: Python<'py>,
+        source: &str,
+        into: &str,
+        message: Option<&str>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs).
+        let repo = tx.repo_mut();
+        let src = self.resolve_single(&*repo, source)?;
+        let dst = self.resolve_single(&*repo, into)?;
+        let root_id = repo.store().root_commit_id().clone();
+        if src.id() == &root_id || dst.id() == &root_id {
+            return Err(ImmutableCommitError::new_err("cannot squash the root commit"));
+        }
+        if src.id() == dst.id() {
+            return Err(PyjutsuError::new_err("cannot squash a commit into itself"));
+        }
+        // Whole-commit selection: the entire source tree is moved (partial/interactive selection is
+        // the out-of-scope refinement). `parent_tree` is computed before `src` is moved in.
+        let sel = CommitWithSelection {
+            selected_tree: src.tree(),
+            parent_tree: src.parent_tree(&*repo).map_err(map_backend_err)?,
+            commit: src,
+        };
+        let squashed = squash_commits(repo, &[sel], &dst, /* keep_emptied = */ false)
+            .map_err(map_backend_err)?
+            .ok_or_else(|| PyjutsuError::new_err("nothing to squash"))?;
+        let mut builder = squashed.commit_builder; // holds &mut repo until write()
+        if let Some(msg) = message {
+            builder = builder.set_description(msg);
+        }
+        builder.write().map_err(map_backend_err)?; // consumes builder → releases the borrow
+        repo.rebase_descendants().map_err(map_backend_err)?;
+        let result = self.resolve_single(&*repo, into)?; // re-read the squashed `into`
+        let data = CommitData::build(&*repo, &result)?;
+        data.to_dict(py)
+    }
+
+    /// Replace `commit`'s content — or just `paths` — with `from_`'s (single-revision revsets),
+    /// returning the rewritten `commit` as a plain dict. Matches `jj restore --from <from_> --into
+    /// <commit> [paths…]`. The change id is preserved; the commit id changes. A restore that
+    /// produces a conflict is allowed (jj records it). Rewriting the **root** panics, so we guard it.
+    ///
+    /// `restore_tree` is **async** (wrap in `pollster::block_on`, like `merge_commit_trees`). Its
+    /// orientation is "matched paths come from `source`", so to restore `commit` *from* `from_` we
+    /// pass `source = from_.tree()`, `destination = commit.tree()`: matched paths take `from_`'s
+    /// content, the rest stay as `commit` had them. `paths=None` uses `EverythingMatcher` (whole
+    /// tree → `from_`'s); otherwise a `FilesMatcher` scopes the restore to the given repo-paths.
+    #[pyo3(signature = (commit, from_, paths=None))]
+    fn restore<'py>(
+        &self,
+        py: Python<'py>,
+        commit: &str,
+        from_: &str,
+        paths: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs).
+        let repo = tx.repo_mut();
+        let target = self.resolve_single(&*repo, commit)?;
+        if target.id() == repo.store().root_commit_id() {
+            return Err(ImmutableCommitError::new_err("cannot restore the root commit"));
+        }
+        let from = self.resolve_single(&*repo, from_)?;
+        let from_tree = from.tree();
+        let target_tree = target.tree();
+        let new_tree = match &paths {
+            None => pollster::block_on(restore_tree(
+                &from_tree,
+                &target_tree,
+                "from".into(),
+                "into".into(),
+                &EverythingMatcher,
+            )),
+            Some(ps) => {
+                // Repo-relative paths from the caller (user input, like a revset) → map parse
+                // errors to `PyjutsuError`. The matcher's tree outlives the `restore_tree` call.
+                let repo_paths = ps
+                    .iter()
+                    .map(|p| {
+                        RepoPathBuf::from_relative_path(p)
+                            .map_err(|e| PyjutsuError::new_err(e.to_string()))
+                    })
+                    .collect::<PyResult<Vec<RepoPathBuf>>>()?;
+                let matcher = FilesMatcher::new(&repo_paths);
+                pollster::block_on(restore_tree(
+                    &from_tree,
+                    &target_tree,
+                    "from".into(),
+                    "into".into(),
+                    &matcher,
+                ))
+            }
+        }
+        .map_err(map_backend_err)?;
+        repo.rewrite_commit(&target)
+            .set_tree(new_tree)
+            .write()
+            .map_err(map_backend_err)?;
+        repo.rebase_descendants().map_err(map_backend_err)?;
+        let restored = self.resolve_single(&*repo, commit)?; // re-read post-rewrite (id changed)
+        let data = CommitData::build(&*repo, &restored)?;
+        data.to_dict(py)
     }
 
     /// Create a **new** local bookmark `name` at the single revision named by `commit`, returning
