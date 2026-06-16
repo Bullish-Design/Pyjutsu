@@ -223,6 +223,118 @@ def test_fetch_unknown_remote_raises(scratch_repo: Path) -> None:
         ws.git_fetch("nope")
 
 
+def _multi_bookmark_origin(jj: JjCli, tmp_path: Path) -> Path:
+    """A bare ``origin`` with bookmarks ``feature/a``, ``feature/b``, ``main`` (so a glob can
+    discriminate `feature/*` from `main`)."""
+    up = tmp_path / "up"
+    up.mkdir()
+    jj.init_colocated(up)
+    (up / "x.txt").write_text("x\n")
+    jj(up, "describe", "-m", "base")
+    for bm in ("feature/a", "feature/b", "main"):
+        jj(up, "bookmark", "create", bm, "-r", "@")
+    jj(up, "new", "-m", "top")  # move @ off the bookmarked (described) commit before pushing
+    origin = _init_bare(tmp_path / "origin.git")
+    jj(up, "git", "remote", "add", "origin", str(origin))
+    jj(up, "git", "push", "--all")
+    return origin
+
+
+def _remote_rows(ws: pyjutsu.Workspace) -> set[tuple[str, str]]:
+    return {(bm.name, bm.remote) for bm in ws.bookmarks() if bm.remote}
+
+
+def _cli_remote_rows(jj: JjCli, repo: Path) -> set[tuple[str, str]]:
+    return {(n, r) for (n, r, *_) in jj.bookmarks(repo) if r}
+
+
+def test_fetch_glob_matches_cli(tmp_path: Path, jj: JjCli) -> None:
+    # `glob:feature/*` imports the two feature bookmarks but NOT `main` — binding vs CLI.
+    origin = _multi_bookmark_origin(jj, tmp_path)
+
+    b = tmp_path / "B"
+    b.mkdir()
+    ws_b = pyjutsu.Workspace.init(b, colocate=True)
+    ws_b.add_remote("origin", str(origin))
+    ops_before = _op_count(b, jj)
+
+    op = ws_b.git_fetch("origin", bookmarks=["glob:feature/*"])
+
+    assert op is not None
+    rows_b = _remote_rows(ws_b)
+    assert ("feature/a", "origin") in rows_b
+    assert ("feature/b", "origin") in rows_b
+    assert ("main", "origin") not in rows_b
+    assert _op_count(b, jj) == ops_before + 1
+
+    c = tmp_path / "C"
+    c.mkdir()
+    jj(c, "git", "init", "--colocate")
+    jj(c, "git", "remote", "add", "origin", str(origin))
+    jj(c, "git", "fetch", "--remote", "origin", "--branch", "glob:feature/*")
+    assert _cli_remote_rows(jj, c) == rows_b
+
+
+def test_fetch_negative_pattern_matches_cli(tmp_path: Path, jj: JjCli) -> None:
+    # `glob:feature/*` minus `feature/b` ⇒ only `feature/a`. Oracle: `--branch 'glob:feature/* ~
+    # feature/b'` (jj's set-difference grammar).
+    origin = _multi_bookmark_origin(jj, tmp_path)
+
+    b = tmp_path / "B"
+    b.mkdir()
+    ws_b = pyjutsu.Workspace.init(b, colocate=True)
+    ws_b.add_remote("origin", str(origin))
+
+    op = ws_b.git_fetch("origin", bookmarks=["glob:feature/*", "~feature/b"])
+
+    assert op is not None
+    rows_b = _remote_rows(ws_b)
+    assert ("feature/a", "origin") in rows_b
+    assert ("feature/b", "origin") not in rows_b
+    assert ("main", "origin") not in rows_b
+
+    c = tmp_path / "C"
+    c.mkdir()
+    jj(c, "git", "init", "--colocate")
+    jj(c, "git", "remote", "add", "origin", str(origin))
+    jj(c, "git", "fetch", "--remote", "origin", "--branch", "glob:feature/* ~ feature/b")
+    assert _cli_remote_rows(jj, c) == rows_b
+
+
+def test_fetch_exact_still_matches_cli(tmp_path: Path, jj: JjCli) -> None:
+    # A literal name fetches exactly that bookmark (glob of a literal ≡ exact) — the pre-0.4.0
+    # behavior, still matching the CLI.
+    origin = _multi_bookmark_origin(jj, tmp_path)
+
+    b = tmp_path / "B"
+    b.mkdir()
+    ws_b = pyjutsu.Workspace.init(b, colocate=True)
+    ws_b.add_remote("origin", str(origin))
+
+    ws_b.git_fetch("origin", bookmarks=["main"])
+
+    rows_b = _remote_rows(ws_b)
+    assert ("main", "origin") in rows_b
+    assert ("feature/a", "origin") not in rows_b
+
+    c = tmp_path / "C"
+    c.mkdir()
+    jj(c, "git", "init", "--colocate")
+    jj(c, "git", "remote", "add", "origin", str(origin))
+    jj(c, "git", "fetch", "--remote", "origin", "--branch", "main")
+    assert _cli_remote_rows(jj, c) == rows_b
+
+
+def test_fetch_bad_glob_raises(bookmarked_repo: Path, tmp_path: Path) -> None:
+    origin = tmp_path / "origin.git"
+    b = tmp_path / "B"
+    b.mkdir()
+    ws_b = pyjutsu.Workspace.init(b, colocate=True)
+    ws_b.add_remote("origin", str(origin))
+    with pytest.raises(GitError):
+        ws_b.git_fetch("origin", bookmarks=["glob:["])  # unbalanced bracket
+
+
 # --- git_clone (headline) ---------------------------------------------------------------------
 
 

@@ -110,9 +110,20 @@ class Workspace:
 
         Matches ``jj git fetch``: runs a ``git fetch`` and imports the fetched remote-tracking
         refs (creating/updating ``<bookmark>@<remote>`` rows). ``bookmarks=None`` (the default)
-        fetches all bookmarks; pass a list to fetch exactly those names. Tags are not fetched.
-        Raises :class:`~pyjutsu.errors.GitError` on a git failure (unknown remote, rejected
-        update, subprocess error).
+        fetches all bookmarks; pass a list to select bookmarks using jj's string-pattern
+        vocabulary (``jj git fetch --branch``):
+
+        - each entry is a **glob by default** — a literal name matches itself, ``"feature/*"``
+          matches the prefix;
+        - a ``kind:`` prefix forces a kind: ``"exact:main"``, ``"glob:feat/*"``,
+          ``"substring:fix"``, ``"regex:^rel-"`` (and the ``-i`` case-insensitive variants);
+        - a leading ``~`` negates an entry. Positive entries are unioned; each negated entry is
+          then subtracted, so ``["glob:feature/*", "~feature/b"]`` fetches ``feature/*`` except
+          ``feature/b``. A negatives-only list subtracts from all bookmarks.
+
+        Tags are still not fetched (jj #7528) and ``--all-remotes`` is out of scope. Raises
+        :class:`~pyjutsu.errors.GitError` on a malformed pattern or a git failure (unknown remote,
+        rejected update, subprocess error).
         """
         row = self._handle.git_fetch(remote, bookmarks)
         return Operation.model_validate(row) if row is not None else None

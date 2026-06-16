@@ -30,7 +30,7 @@ use jj_lib::ref_name::{RefName, RefNameBuf, RemoteName, WorkspaceName, Workspace
 use jj_lib::refs::BookmarkPushUpdate;
 use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader, StoreFactories};
 use jj_lib::settings::UserSettings;
-use jj_lib::str_util::StringExpression;
+use jj_lib::str_util::{StringExpression, StringPattern};
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
 use jj_lib::workspace::{Workspace, default_working_copy_factories, default_working_copy_factory};
 use jj_lib::workspace_store::{SimpleWorkspaceStore, WorkspaceStore};
@@ -42,6 +42,55 @@ use crate::errors::{
 };
 use crate::repo_view::PyRepoView;
 use crate::transaction::PyTransaction;
+
+/// jj's string-pattern kinds (`kind:value`), as understood by `StringPattern::from_str_kind`.
+const STRING_PATTERN_KINDS: &[&str] = &[
+    "exact",
+    "exact-i",
+    "substring",
+    "substring-i",
+    "glob",
+    "glob-i",
+    "regex",
+    "regex-i",
+];
+
+/// Parse one `git_fetch` bookmark spec into a `StringPattern`, glob-by-default (matching jj-cli's
+/// `--branch`): a `kind:value` prefix selects the kind, otherwise the whole spec is a glob (which
+/// `StringPattern::glob` reduces to an exact match when it has no glob metacharacters). A bad
+/// pattern (e.g. an unbalanced glob bracket) becomes a `GitError`.
+fn parse_bookmark_pattern(spec: &str) -> PyResult<StringPattern> {
+    if let Some((kind, value)) = spec.split_once(':')
+        && STRING_PATTERN_KINDS.contains(&kind)
+    {
+        return StringPattern::from_str_kind(value, kind).map_err(|e| map_git_err(e.to_string()));
+    }
+    StringPattern::glob(spec).map_err(|e| map_git_err(e.to_string()))
+}
+
+/// Map a non-empty list of `git_fetch` bookmark specs to one `StringExpression`, mirroring jj-cli's
+/// `--branch` algebra: positive entries are unioned; each `~`-prefixed entry is subtracted from the
+/// running expression (set-difference via `intersection(neg.negated())`). With only negatives, the
+/// subtraction starts from `all()`.
+fn parse_fetch_bookmarks(specs: &[String]) -> PyResult<StringExpression> {
+    let mut positives = Vec::new();
+    let mut negatives = Vec::new();
+    for spec in specs {
+        match spec.strip_prefix('~') {
+            Some(rest) => negatives.push(parse_bookmark_pattern(rest)?),
+            None => positives.push(parse_bookmark_pattern(spec)?),
+        }
+    }
+    let mut expr = if positives.is_empty() {
+        StringExpression::all()
+    } else {
+        StringExpression::union_all(positives.into_iter().map(StringExpression::pattern).collect())
+    };
+    for neg in negatives {
+        expr = expr.intersection(StringExpression::pattern(neg).negated());
+    }
+    Ok(expr)
+}
 
 /// Build the `UserSettings` the workspace authors commits with, replicating the CLI's config
 /// stacking so the binding and the pinned `jj` CLI share one identity (→ identical commit ids).
@@ -810,8 +859,16 @@ impl PyWorkspace {
     /// Fetch `remote`'s bookmarks into jj's view (`jj git fetch`): run a `git fetch` subprocess,
     /// import the fetched remote-tracking refs, and publish one operation — or `None` if nothing
     /// changed. `bookmarks=None` fetches all bookmarks (the CLI default); a non-empty list fetches
-    /// exactly those bookmark names. Tags are not fetched (jj-lib's own default). Raises `GitError`
-    /// on a git failure (unknown remote, rejected update, subprocess error).
+    /// the bookmarks matching its entries, using jj's string-pattern vocabulary (`jj git fetch
+    /// --branch`): each entry is a **glob by default** (so a literal name matches itself, and
+    /// `feature/*` matches the prefix), or carries a `kind:` prefix (`exact:`, `glob:`,
+    /// `substring:`, `regex:`, plus their `-i` variants). A leading `~` negates an entry: positive
+    /// entries are unioned, then each negated entry is subtracted (set-difference), so
+    /// `["glob:feature/*", "~feature/b"]` fetches `feature/*` except `feature/b` — matching
+    /// jj-cli's `--branch 'glob:feature/* ~ feature/b'`. A negatives-only list subtracts from
+    /// `all()`. Tags are not fetched (jj-lib's own default; jj #7528) and `--all-remotes` is out of
+    /// scope. Raises `GitError` on a malformed pattern or a git failure (unknown remote, rejected
+    /// update, subprocess error).
     ///
     /// jj 0.38 fetches via a `git` subprocess, so the whole spawn + network I/O runs **off the GIL**.
     /// The `!Send` `GitFetch`/`Transaction` are created **and dropped inside one synchronous closure
@@ -848,16 +905,11 @@ impl PyWorkspace {
             {
                 let mut fetcher =
                     GitFetch::new(tx.repo_mut(), subprocess, &options).map_err(map_git_err)?;
-                // `bookmarks=None` ⇒ all; otherwise a union of exact-name patterns. Globs/negative
-                // patterns and tag fetching are out-of-scope refinements (flagged, not faked).
+                // `bookmarks=None` ⇒ all; otherwise jj's string-pattern algebra (glob-by-default,
+                // `kind:` prefixes, `~` negation). Tag fetching stays out of scope (jj #7528).
                 let bookmark = match &bookmarks {
                     None => StringExpression::all(),
-                    Some(names) => StringExpression::union_all(
-                        names
-                            .iter()
-                            .map(|n| StringExpression::exact(n.clone()))
-                            .collect(),
-                    ),
+                    Some(specs) => parse_fetch_bookmarks(specs)?,
                 };
                 let ref_expr = GitFetchRefExpression {
                     bookmark,
