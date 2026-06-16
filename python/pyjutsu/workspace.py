@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 from ._pyjutsu import PyWorkspace
-from .models import Bookmark, Commit, Conflict, DiffStat, Operation
+from .models import Bookmark, Commit, Conflict, DiffStat, Operation, WorkspaceInfo
 from .repo_view import RepoView
 from .transaction import Transaction
 
@@ -31,6 +31,45 @@ class Workspace:
     def load(cls, path: str | os.PathLike[str]) -> Workspace:
         """Load the workspace whose working copy is rooted at ``path``."""
         return cls(PyWorkspace.load(os.fspath(path)))
+
+    @classmethod
+    def init(cls, path: str | os.PathLike[str], *, colocate: bool = False) -> Workspace:
+        """Create a new jj repo + default workspace at ``path`` → a :class:`Workspace`.
+
+        Matches ``jj git init`` (``colocate=False``, an internal git store under
+        ``.jj/repo/store/git``) / ``jj git init --colocate`` (``colocate=True``, a ``.git`` sharing
+        the working copy). The new ``@`` is an empty commit on the root commit. Raises
+        :class:`~pyjutsu.errors.WorkspaceError` if ``path`` already holds a repo.
+        """
+        return cls(PyWorkspace.init(os.fspath(path), colocate))
+
+    def add_workspace(
+        self, path: str | os.PathLike[str], *, name: str | None = None
+    ) -> WorkspaceInfo:
+        """Add a secondary workspace at ``path`` → its :class:`WorkspaceInfo` (``jj workspace add``).
+
+        The repo's store is shared; the new workspace gets its own ``@`` — here an empty commit on
+        the **root** commit. (The CLI's default instead bases the new ``@`` on the current
+        workspace's parents; that ``-r <revs>`` placement and ``--sparse-patterns`` inheritance are
+        out-of-scope refinements.) ``name`` defaults to ``path``'s basename. One ``add workspace``
+        operation is published.
+        """
+        return WorkspaceInfo.model_validate(self._handle.add_workspace(os.fspath(path), name))
+
+    def forget_workspace(self, name: str) -> None:
+        """Stop tracking workspace ``name``'s ``@`` in the repo (``jj workspace forget <name>``).
+
+        The on-disk files at that workspace are left untouched; only the repo's record of its
+        working-copy commit is dropped, publishing one operation. Raises
+        :class:`~pyjutsu.errors.PyjutsuError` if no workspace ``name`` is tracked.
+        """
+        self._handle.forget_workspace(name)
+
+    def workspaces(self) -> list[WorkspaceInfo]:
+        """All workspaces tracked in the repo → their :class:`WorkspaceInfo` rows (``jj workspace
+        list``): the ``default`` workspace plus any added with :meth:`add_workspace`.
+        """
+        return [WorkspaceInfo.model_validate(row) for row in self._handle.workspaces()]
 
     @property
     def name(self) -> str:

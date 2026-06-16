@@ -32,6 +32,11 @@
     "tags",
     "username"
   ],
+  "WorkspaceInfo": [
+    "name",
+    "path",
+    "wc_commit_id"
+  ],
   "Conflict": [
     "num_bases",
     "num_sides",

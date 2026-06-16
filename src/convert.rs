@@ -5,6 +5,8 @@
 //! converts them to dicts after re-acquiring the GIL. The Python layer validates the dicts into
 //! Pydantic models — the drift tripwire (`extra="forbid"`).
 
+use std::path::Path;
+
 use pyo3::PyErr;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -200,6 +202,35 @@ impl BookmarkData {
         dict.set_item("remote", self.remote.as_deref())?;
         dict.set_item("target_ids", self.target_ids.clone())?;
         dict.set_item("tracked", self.tracked)?;
+        Ok(dict)
+    }
+}
+
+/// Plain workspace row: one per workspace tracked in the repo view (concept §124). `path` is the
+/// on-disk working-copy root recorded in the workspace store; it is `None` if the store has no
+/// entry for the name (e.g. a workspace whose `.jj` was removed out-of-band). `wc_commit_id` is the
+/// workspace's `@` (working-copy commit).
+pub(crate) struct WorkspaceInfoData {
+    name: String,
+    path: Option<String>,
+    wc_commit_id: String,
+}
+
+impl WorkspaceInfoData {
+    pub(crate) fn new(name: &str, path: Option<&Path>, wc_commit_id: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            // Lossy is fine here: the Python layer treats this as a display/`os.PathLike` string.
+            path: path.map(|p| p.to_string_lossy().into_owned()),
+            wc_commit_id: wc_commit_id.to_owned(),
+        }
+    }
+
+    pub(crate) fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        dict.set_item("name", &self.name)?;
+        dict.set_item("path", self.path.as_deref())?;
+        dict.set_item("wc_commit_id", &self.wc_commit_id)?;
         Ok(dict)
     }
 }

@@ -28,6 +28,7 @@ from .models import (
     FileStat,
     Operation,
     Signature,
+    WorkspaceInfo,
 )
 from .repo_view import RepoView
 from .transaction import Transaction
@@ -61,6 +62,7 @@ __all__ = [
     "Signature",
     "Operation",
     "Bookmark",
+    "WorkspaceInfo",
     "Conflict",
     "DiffStat",
     "FileStat",

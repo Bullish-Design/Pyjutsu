@@ -120,6 +120,22 @@ class Bookmark(BaseModel):
         return len(self.target_ids) > 1
 
 
+class WorkspaceInfo(BaseModel):
+    """A workspace tracked in the repo: its name, on-disk root, and current ``@`` commit id.
+
+    jj's headline feature over git is multiple working copies sharing one repo (concept §124); each
+    is a *workspace* with its own ``@``. ``default`` is the primary one created at ``jj git init``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    #: Absolute path to the workspace's working-copy root; ``None`` if not recorded in the store.
+    path: str | None
+    #: The commit id of this workspace's ``@`` (working-copy commit).
+    wc_commit_id: CommitId
+
+
 class Operation(BaseModel):
     """One entry in jj's operation log — an atomic change to the repo state."""
 

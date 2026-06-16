@@ -155,6 +155,11 @@ class JjCli:
             rows.add((name, remote, target, tracked == "T"))
         return rows
 
+    def workspaces(self, repo: Path) -> set[str]:
+        """The set of workspace names tracked in ``repo`` (`jj workspace list -T name`)."""
+        out = self(repo, "workspace", "list", "-T", 'name ++ "\\n"')
+        return {line for line in out.splitlines() if line}
+
     def signature(self, repo: Path, revset: str, which: str) -> dict[str, object]:
         """The ``author``/``committer`` of ``revset`` as {name, email, epoch, tz_minutes}."""
         name = self.template(repo, revset, f"{which}.name()")

@@ -20,16 +20,17 @@ use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_store::OperationId;
 use jj_lib::op_walk;
-use jj_lib::ref_name::WorkspaceName;
+use jj_lib::ref_name::{WorkspaceName, WorkspaceNameBuf};
 use jj_lib::repo::{ReadonlyRepo, Repo, StoreFactories};
 use jj_lib::settings::UserSettings;
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
-use jj_lib::workspace::{Workspace, default_working_copy_factories};
+use jj_lib::workspace::{Workspace, default_working_copy_factories, default_working_copy_factory};
+use jj_lib::workspace_store::{SimpleWorkspaceStore, WorkspaceStore};
 
-use crate::convert::{CommitData, OperationData};
+use crate::convert::{CommitData, OperationData, WorkspaceInfoData};
 use crate::errors::{
-    PyjutsuError, StaleWorkingCopyError, map_backend_err, map_workingcopy_err, map_workspace_err,
-    to_py_err,
+    PyjutsuError, StaleWorkingCopyError, map_backend_err, map_edit_err, map_workingcopy_err,
+    map_workspace_err, to_py_err,
 };
 use crate::repo_view::PyRepoView;
 use crate::transaction::PyTransaction;
@@ -528,6 +529,147 @@ impl PyWorkspace {
             .map_err(map_backend_err)?;
 
         self.finish_op(py, ws, &name, &repo, &new_repo)
+    }
+
+    /// Create a brand-new jj repo + default workspace at `path`, returning a handle to it.
+    /// `colocate=false` uses an internal git store (`.jj/repo/store/git`); `colocate=true` colocates
+    /// a `.git` sharing the working copy. Matches `jj git init` / `jj git init --colocate`. The new
+    /// workspace's `@` is an empty commit on `root()`; one initialization operation is published.
+    ///
+    /// I/O-heavy and `Send` → the constructor runs **off the GIL**. The returned `Workspace` is
+    /// wrapped in a fresh `PyWorkspace` (same shape as `load`).
+    #[staticmethod]
+    #[pyo3(signature = (path, colocate=false))]
+    fn init(py: Python<'_>, path: PathBuf, colocate: bool) -> PyResult<Self> {
+        // At init time the repo config doesn't exist yet, so this loads `JJ_CONFIG` + built-in
+        // defaults (the repo layer is silently skipped) — the same identity the CLI's `jj git init`
+        // authors with, so any commit this workspace later makes shares the CLI's commit ids.
+        let settings = load_user_settings(&path)?;
+        let user_email = settings.user_email().to_owned();
+        let (workspace, _repo) = py
+            .allow_threads(|| {
+                if colocate {
+                    Workspace::init_colocated_git(&settings, &path)
+                } else {
+                    Workspace::init_internal_git(&settings, &path)
+                }
+            })
+            .map_err(map_workspace_err)?;
+        Ok(Self {
+            inner: Mutex::new(workspace),
+            user_email,
+            tx_open: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Add a secondary workspace rooted at `path`, sharing this repo's store; returns its
+    /// `WorkspaceInfo` (name + path + the fresh empty `@`). `name` defaults to `path`'s basename.
+    /// jj-lib's `init_workspace_with_existing_repo` does everything here — it creates the new `.jj`,
+    /// checks out a fresh empty commit on `root()` for the new workspace, and **publishes its own
+    /// `add workspace '<name>'` operation** — so this is one off-GIL constructor call, not a
+    /// hand-rolled transaction. Matches `jj workspace add`, except the new `@` lands on `root()`; the
+    /// CLI's default instead bases it on the current `@`'s parents (the `-r <revs>` placement and
+    /// `--sparse-patterns` inheritance are out-of-scope refinements — flagged, not faked).
+    #[pyo3(signature = (path, name=None))]
+    fn add_workspace<'py>(
+        &self,
+        py: Python<'py>,
+        path: PathBuf,
+        name: Option<&str>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let guard = self.locked()?;
+        let repo_path = guard.repo_path().to_owned();
+        let name_buf = WorkspaceNameBuf::from(match name {
+            Some(n) => n.to_owned(),
+            None => path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| PyjutsuError::new_err("workspace path has no valid basename"))?
+                .to_owned(),
+        });
+
+        // Load this repo at head, then let jj-lib create the new workspace (+ its op). The new `@`
+        // is an empty commit on root, so there are no files to check out. All `Send` → off the GIL.
+        // The `!Send` `Transaction` jj-lib opens internally is created and dropped on this one
+        // worker thread, so it never crosses a thread boundary.
+        let loader = guard.repo_loader();
+        let (wc_id, new_root) = py.allow_threads(|| -> PyResult<_> {
+            // `init_workspace_with_existing_repo` creates `<path>/.jj` but not `<path>` itself;
+            // `jj workspace add` creates the destination dir, so do the same here.
+            std::fs::create_dir_all(&path).map_err(map_workspace_err)?;
+            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let factory = default_working_copy_factory();
+            let (new_ws, new_repo) = Workspace::init_workspace_with_existing_repo(
+                &path,
+                &repo_path,
+                &repo,
+                &*factory,
+                name_buf.clone(),
+            )
+            .map_err(map_workspace_err)?;
+            let wc_id = new_repo
+                .view()
+                .get_wc_commit_id(&name_buf)
+                .ok_or_else(|| PyjutsuError::new_err("new workspace has no working-copy commit"))?
+                .hex();
+            Ok((wc_id, new_ws.workspace_root().to_owned()))
+        })?;
+        WorkspaceInfoData::new(name_buf.as_str(), Some(&new_root), &wc_id).to_dict(py)
+    }
+
+    /// Stop tracking workspace `name`'s working-copy commit in the repo (the on-disk files are left
+    /// untouched), publishing one operation. Matches `jj workspace forget <name>`. Errors with
+    /// `PyjutsuError` if no workspace `name` is tracked.
+    ///
+    /// `remove_wc_commit` abandons the workspace's `@` when it is discardable, which registers a
+    /// rewrite — so `rebase_descendants()` runs before commit (landmine #1). The `!Send`
+    /// `Transaction` is created **and dropped inside one synchronous closure on one thread**, so the
+    /// op-store write runs off the GIL without the transaction crossing a thread boundary.
+    fn forget_workspace(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        let guard = self.locked()?;
+        let name_buf = WorkspaceNameBuf::from(name.to_owned());
+        let loader = guard.repo_loader();
+        py.allow_threads(|| -> PyResult<_> {
+            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            if repo.view().get_wc_commit_id(&name_buf).is_none() {
+                return Err(PyjutsuError::new_err(format!("no such workspace '{name}'")));
+            }
+            let mut tx = repo.start_transaction();
+            tx.repo_mut()
+                .remove_wc_commit(&name_buf)
+                .map_err(map_edit_err)?;
+            tx.repo_mut().rebase_descendants().map_err(map_backend_err)?;
+            tx.commit(format!("forget workspace '{name}'"))
+                .map_err(map_backend_err)?;
+            Ok(())
+        })
+    }
+
+    /// List all workspaces tracked in the repo view: each name + its on-disk root + `@` commit id.
+    /// The `WorkspaceStore` trait has no list-all, so names are enumerated from the view and each
+    /// path is looked up in the store (`None` if the store has no entry). Matches `jj workspace
+    /// list`. Read-only; the backend reads run **off the GIL**.
+    fn workspaces<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let guard = self.locked()?;
+        let repo_path = guard.repo_path().to_owned();
+        let loader = guard.repo_loader();
+        let rows = py.allow_threads(|| -> PyResult<Vec<WorkspaceInfoData>> {
+            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let store = SimpleWorkspaceStore::load(&repo_path).map_err(map_workspace_err)?;
+            repo.view()
+                .wc_commit_ids()
+                .iter()
+                .map(|(name, id)| {
+                    let path = store.get_workspace_path(name).map_err(map_workspace_err)?;
+                    Ok(WorkspaceInfoData::new(
+                        name.as_str(),
+                        path.as_deref(),
+                        &id.hex(),
+                    ))
+                })
+                .collect()
+        })?;
+        rows.iter().map(|r| r.to_dict(py)).collect()
     }
 
     /// Open a transaction: claim the single-tx slot, reload the repo at head, start a native
