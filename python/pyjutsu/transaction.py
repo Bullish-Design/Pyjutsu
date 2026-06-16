@@ -56,8 +56,8 @@ class Transaction:
         # Internal: construct via `Workspace.transaction(...)`.
         self._handle = handle
         self._description = description
-        # Reserved for slice 5 (auto-snapshot of a dirty `@` on open); accepted now for a stable
-        # signature, not yet wired into the native `begin_transaction`.
+        # When set, `__enter__` snapshots a dirty `@` as a separate preceding operation before
+        # beginning this transaction (matching the CLI). Disabled ⇒ the mutation sees `@` as-is.
         self._auto_snapshot = auto_snapshot
         self._state = "pending"
         # The native, unsendable transaction handle, live only between `__enter__` and `__exit__`.
@@ -67,6 +67,10 @@ class Transaction:
     def __enter__(self) -> Transaction:
         if self._state != "pending":
             raise RuntimeError(f"transaction already {self._state}; create a new one")
+        # Auto-snapshot a dirty `@` first, as a *separate preceding* operation (concept §0.1),
+        # matching the CLI. A clean `@` snapshots to nothing (no op). Disabled ⇒ `@` seen as-is.
+        if self._auto_snapshot:
+            self._handle.snapshot()
         self._native = self._handle.begin_transaction()
         self._state = "open"
         return self

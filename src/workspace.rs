@@ -11,18 +11,24 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 use jj_lib::commit::Commit;
 use jj_lib::config::{ConfigSource, StackedConfig};
+use jj_lib::gitignore::GitIgnoreFile;
+use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_store::OperationId;
 use jj_lib::op_walk;
-use jj_lib::repo::StoreFactories;
+use jj_lib::repo::{Repo, StoreFactories};
 use jj_lib::settings::UserSettings;
+use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
 use jj_lib::workspace::{Workspace, default_working_copy_factories};
 
+use crate::convert::OperationData;
 use crate::errors::{
-    PyjutsuError, map_backend_err, map_workingcopy_err, map_workspace_err, to_py_err,
+    PyjutsuError, StaleWorkingCopyError, map_backend_err, map_workingcopy_err, map_workspace_err,
+    to_py_err,
 };
 use crate::repo_view::PyRepoView;
 use crate::transaction::PyTransaction;
@@ -205,6 +211,113 @@ impl PyWorkspace {
             loader.load_at(&op).map_err(map_backend_err)
         })?;
         Ok(PyRepoView::new(repo, name, root, self.user_email.clone()))
+    }
+
+    /// Snapshot the working copy: record any on-disk changes to `@` as a separate
+    /// `snapshot working copy` operation (concept §0.1), returning that operation as a plain dict —
+    /// or `None` if the working copy already matched `@` (no operation published). Mirrors what the
+    /// pinned `jj` CLI does automatically before each command; this is the explicit form and the
+    /// auto-snapshot primitive.
+    ///
+    /// I/O-heavy and **off the GIL** wherever the work is `Send` (lock, disk walk, tree write,
+    /// `finish`); only the `!Send` recording `Transaction` runs on the GIL, between those off-GIL
+    /// spans. The workspace `Mutex` is held for the whole sequence.
+    fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let mut guard = self.locked()?;
+        let ws: &mut Workspace = &mut guard;
+
+        // 1. Load the repo at head + the current `@` commit. No `@` ⇒ nothing to snapshot.
+        let repo = {
+            let loader = ws.repo_loader();
+            py.allow_threads(|| loader.load_at_head())
+                .map_err(map_backend_err)?
+        };
+        let name = ws.workspace_name().to_owned();
+        let Some(wc_commit_id) = repo.view().get_wc_commit_id(&name).cloned() else {
+            return Ok(None);
+        };
+        let wc_commit = repo
+            .store()
+            .get_commit(&wc_commit_id)
+            .map_err(map_backend_err)?;
+
+        // 2. Lock the WC and check freshness (working_copy.rs:363).
+        let mut locked_ws = ws
+            .start_working_copy_mutation()
+            .map_err(map_workingcopy_err)?;
+        match WorkingCopyFreshness::check_stale(locked_ws.locked_wc(), &wc_commit, &repo)
+            .map_err(map_backend_err)?
+        {
+            WorkingCopyFreshness::Fresh => {}
+            // Slice 6 adds the full stale surface (`is_stale`/`update_stale`); here we refuse to
+            // snapshot a stale/sibling `@` rather than clobber it.
+            WorkingCopyFreshness::WorkingCopyStale | WorkingCopyFreshness::SiblingOperation => {
+                return Err(StaleWorkingCopyError::new_err(
+                    "working copy is stale; another operation moved `@`",
+                ));
+            }
+            // The WC moved under us between load-at-head and taking the lock (rare in-process).
+            // The full reload-and-retry is slice 6; here we surface it rather than rewrite a
+            // commit whose parent we no longer hold.
+            WorkingCopyFreshness::Updated(_) => {
+                return Err(StaleWorkingCopyError::new_err(
+                    "working copy was updated concurrently; reload and retry",
+                ));
+            }
+        }
+
+        // 3. Snapshot the on-disk tree (off the GIL — `LockedWorkspace` is `Send`).
+        //
+        // NOTE: `SnapshotOptions` fidelity is the one documented refinement (slice 5 guide §2).
+        // `base_ignores = empty` + `max_new_file_size = 1 MiB` reproduce the CLI for repos without
+        // a `.gitignore` and without oversized files (every fixture; `.jj`/`.git` are excluded
+        // internally by the snapshotter). Full fidelity — chain the user/repo `.gitignore` and read
+        // `snapshot.max-new-file-size`/`snapshot.auto-track` from settings — is future work.
+        let everything = EverythingMatcher;
+        let nothing = NothingMatcher;
+        let options = SnapshotOptions {
+            base_ignores: GitIgnoreFile::empty(),
+            progress: None,
+            start_tracking_matcher: &everything,
+            force_tracking_matcher: &nothing,
+            max_new_file_size: 1 << 20, // 1 MiB — the jj CLI's `snapshot.max-new-file-size` default.
+        };
+        let new_tree = py
+            .allow_threads(|| pollster::block_on(locked_ws.locked_wc().snapshot(&options)))
+            .map_err(map_workingcopy_err)?
+            .0;
+
+        // 4. Clean WC ⇒ tree unchanged ⇒ no operation (drop the lock without writing).
+        if new_tree.tree_ids() == wc_commit.tree_ids() {
+            return Ok(None);
+        }
+
+        // 5. Record the snapshot as a rewrite of `@` (on the GIL — `Transaction` is `!Send`).
+        let mut tx = repo.start_transaction();
+        tx.set_is_snapshot(true);
+        {
+            let mrepo = tx.repo_mut();
+            mrepo
+                .rewrite_commit(&wc_commit)
+                .set_tree(new_tree)
+                .write()
+                .map_err(map_backend_err)?;
+            // Satisfies `commit`'s `!has_rewrites()` assert (landmine #1); fixes up any descendants.
+            mrepo.rebase_descendants().map_err(map_backend_err)?;
+        }
+        let new_repo = tx
+            .commit("snapshot working copy")
+            .map_err(map_backend_err)?;
+
+        // 6. Save the WC state at the new op (off the GIL). The tree is already on disk — `finish`
+        //    records "this WC is at <new op> with <new tree>"; it does **not** check out, which is
+        //    why snapshot never moves files.
+        let op_id = new_repo.operation().id().clone();
+        py.allow_threads(|| locked_ws.finish(op_id))
+            .map_err(map_workingcopy_err)?;
+
+        let data = OperationData::build(new_repo.operation());
+        Ok(Some(data.to_dict(py)?))
     }
 
     /// Open a transaction: claim the single-tx slot, reload the repo at head, start a native

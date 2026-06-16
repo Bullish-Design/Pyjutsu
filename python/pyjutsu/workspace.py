@@ -53,10 +53,21 @@ class Workspace:
             with ws.transaction("describe @") as tx:
                 ...  # mutation methods arrive in later slices
 
-        ``auto_snapshot`` (default ``True``) will snapshot a dirty ``@`` as a separate preceding
-        operation when wired in slice 5; it is accepted now for a stable signature.
+        ``auto_snapshot`` (default ``True``) snapshots a dirty ``@`` as a separate preceding
+        operation on open (matching the CLI); set it ``False`` to have the mutation see ``@`` as-is.
         """
         return Transaction(self._handle, description, auto_snapshot=auto_snapshot)
+
+    def snapshot(self) -> Operation | None:
+        """Snapshot a dirty ``@`` as a separate ``snapshot working copy`` operation → that
+        :class:`Operation`, or ``None`` if ``@`` was already clean (no operation published).
+
+        This is what the ``jj`` CLI does automatically before each command; :meth:`transaction`
+        does it for you on open when ``auto_snapshot`` is set. Raises
+        :class:`~pyjutsu.errors.StaleWorkingCopyError` if ``@`` is stale.
+        """
+        row = self._handle.snapshot()
+        return Operation.model_validate(row) if row is not None else None
 
     def head(self) -> RepoView:
         """A :class:`RepoView` of the repo at its **head** operation, scoped to this workspace.
