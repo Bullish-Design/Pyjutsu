@@ -7,8 +7,9 @@ directory) and we compare commit/change ids + graph + trees. Unlike the backward
 of slice 7, these move *forward* (new commit ids), so the colocated git-HEAD re-import doesn't bite:
 reading the binding-mutated repo with `jj` is fine.
 
-Out of scope (documented refinements, flagged not faked): `jj rebase -r`/`-b`, partial/interactive
-squash + jj's description-combining default, and non-`Keep` empty behavior.
+`tx.rebase` now covers `-s` (source, default), `-r` (revision), and `-b` (branch) via `mode=`.
+Out of scope (documented refinements, flagged not faked): interactive rebase selection,
+partial/interactive squash + jj's description-combining default, and non-`Keep` empty behavior.
 """
 
 from __future__ import annotations
@@ -93,6 +94,79 @@ def test_rebase_outside_with_block_raises(scratch_repo: Path) -> None:
     tx = ws.transaction("never entered")
     with pytest.raises(RuntimeError):
         tx.rebase("@", onto="@-")
+
+
+def test_rebase_revision_matches_cli(linear_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    # `linear_repo` is A → B → C → @. `mode="revision"` (jj rebase -r) reattaches *only* C onto A;
+    # C's child @ reattaches to C's OLD parent B — the distinction from `-s`, which would carry @.
+    other = _copy_repo(linear_repo, tmp_path / "copy")
+    chain = jj.change_ids(linear_repo, "::@ ~ root()")  # newest-first: [@, C, B, A]
+    at_change, c_change, b_change, a_change = chain[0], chain[1], chain[2], chain[3]
+    a_commit = jj.commit_id(linear_repo, a_change)
+
+    ws = pyjutsu.Workspace.load(linear_repo)
+    with ws.transaction("rebase -r C onto A") as tx:
+        rebased = tx.rebase(c_change, onto=a_change, mode="revision")
+    jj(other, "rebase", "-r", c_change, "-d", a_change)
+
+    # C keeps its change id; its new parent is A.
+    assert rebased.change_id == c_change
+    assert rebased.parent_ids == [a_commit]
+    # The -r distinction: @ now hangs off B (C's old parent), not off C.
+    assert jj.parent_commit_ids(linear_repo, at_change) == [jj.commit_id(linear_repo, b_change)]
+    assert jj.parent_commit_ids(other, at_change) == [jj.commit_id(other, b_change)]
+    # Commit-id parity across every surviving change, plus identical graph.
+    for change in (a_change, b_change, c_change, at_change):
+        assert jj.commit_id(linear_repo, change) == jj.commit_id(other, change)
+    assert jj.change_ids(linear_repo, "all()") == jj.change_ids(other, "all()")
+
+
+def _fork_repo(jj: JjCli, repo: Path) -> Path:
+    """A forked history: root → A → B → C and A → D → @(E); bookmarks ``mA``…``mE`` mark each.
+
+    Built empty-but-described (deterministic ids, kept under `EmptyBehavior::Keep`) so `-b` has a
+    real branch point — `mB`/`mC` diverge from `mD`/`mE` at `mA`.
+    """
+    repo.mkdir()
+    jj.init_colocated(repo)
+    jj(repo, "describe", "-m", "A")
+    jj(repo, "bookmark", "create", "mA", "-r", "@")
+    jj(repo, "new", "-m", "B")
+    jj(repo, "bookmark", "create", "mB", "-r", "@")
+    jj(repo, "new", "-m", "C")
+    jj(repo, "bookmark", "create", "mC", "-r", "@")
+    jj(repo, "new", "mA", "-m", "D")
+    jj(repo, "bookmark", "create", "mD", "-r", "@")
+    jj(repo, "new", "-m", "E")
+    jj(repo, "bookmark", "create", "mE", "-r", "@")
+    return repo
+
+
+def test_rebase_branch_matches_cli(tmp_path: Path, jj: JjCli) -> None:
+    # Fork: root→A→B→C and A→D→@(E). `mode="branch"` (jj rebase -b) moves the WHOLE branch holding
+    # C — that's roots(mE..mC) = {B} (and descendant C) — onto E. `-s` would move only C.
+    repo = _fork_repo(jj, tmp_path / "fork")
+    other = _copy_repo(repo, tmp_path / "copy")
+
+    ws = pyjutsu.Workspace.load(repo)
+    with ws.transaction("rebase -b mC onto mE") as tx:
+        tx.rebase("mC", onto="mE", mode="branch")
+    jj(other, "rebase", "-b", "mC", "-d", "mE")
+
+    # B's parent is now E (the branch moved as a unit); C still trails B.
+    assert jj.parent_commit_ids(repo, "mB") == [jj.commit_id(repo, "mE")]
+    assert jj.parent_commit_ids(repo, "mC") == [jj.commit_id(repo, "mB")]
+    # Full commit-id parity with the CLI across every bookmark.
+    for bm in ("mA", "mB", "mC", "mD", "mE"):
+        assert jj.commit_id(repo, bm) == jj.commit_id(other, bm)
+    assert jj.change_ids(repo, "all()") == jj.change_ids(other, "all()")
+
+
+def test_rebase_bad_mode_raises(scratch_repo: Path) -> None:
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    with pytest.raises(PyjutsuError):
+        with ws.transaction("bad mode") as tx:
+            tx.rebase("@", onto="@-", mode="nonsense")
 
 
 # --- squash --------------------------------------------------------------------------------------

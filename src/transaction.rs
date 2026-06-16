@@ -119,6 +119,34 @@ impl PyTransaction {
         }
         Ok(commits.pop().expect("len checked == 1"))
     }
+
+    /// The roots of the branch carried by `jj rebase -b <target> -d <onto…>`: the commits reachable
+    /// from `target` but not from any destination — `roots((<onto…>)..<target>)`. Built from commit
+    /// hexes (not the user's revset strings) so operator precedence is unambiguous, then evaluated
+    /// against the open `MutableRepo` through the same revset pipeline reads use. An empty result
+    /// (the target is already an ancestor of the destinations) yields an empty `Roots`, which
+    /// `move_commits` treats as a no-op.
+    fn branch_roots(
+        &self,
+        repo: &dyn Repo,
+        target: &Commit,
+        new_parent_ids: &[CommitId],
+    ) -> PyResult<Vec<CommitId>> {
+        let dests = new_parent_ids
+            .iter()
+            .map(|id| id.hex())
+            .collect::<Vec<_>>()
+            .join("|");
+        let expr = format!("roots(({})..{})", dests, target.id().hex());
+        let roots = revset::evaluate(
+            repo,
+            &expr,
+            &self.workspace_name,
+            &self.workspace_root,
+            &self.user_email,
+        )?;
+        Ok(roots.iter().map(|c| c.id().clone()).collect())
+    }
 }
 
 #[pymethods]
@@ -247,22 +275,29 @@ impl PyTransaction {
         Ok(())
     }
 
-    /// Rebase `commit` **and its descendants** onto the new parents `onto` (each a single-revision
-    /// revset), returning the rebased `commit` as a plain dict. Matches `jj rebase -s <commit> -d
-    /// <onto…>`: the change id is preserved, the commit id changes. If `@` (or an ancestor of `@`)
-    /// moves, `commit`'s checkout updates the on-disk working copy.
+    /// Rebase `commit` onto the new parents `onto` (each a single-revision revset), returning the
+    /// rebased `commit` as a plain dict. `mode` selects which commits move, matching jj's flags:
     ///
-    /// `MoveCommitsTarget::Roots([commit])` carries the commit plus all its descendants (the `-s`
-    /// semantics); `Commits([commit])` — single-commit reattach (`jj rebase -r`) — is the documented
-    /// out-of-scope refinement. `move_commits` records rewrites, so we `rebase_descendants()` before
-    /// reading the result back (and `commit` re-runs it idempotently). Rewriting the **root** panics
-    /// in `record_rewritten_commit`, so we guard it and raise `ImmutableCommitError`, like `abandon`.
-    #[pyo3(signature = (commit, onto))]
+    /// - `"source"` (default, `jj rebase -s`): `commit` **and all its descendants**
+    ///   (`MoveCommitsTarget::Roots([commit])`).
+    /// - `"revision"` (`jj rebase -r`): **only** `commit` (`MoveCommitsTarget::Commits([commit])`);
+    ///   its children reattach to `commit`'s old parents.
+    /// - `"branch"` (`jj rebase -b`): the whole branch — the roots of `onto..commit`
+    ///   (`roots((<onto…>)..<commit>)`, the commits reachable from `commit` but not from any
+    ///   destination) plus their descendants.
+    ///
+    /// In every mode the change id is preserved and the commit id changes; if `@` (or an ancestor of
+    /// `@`) moves, `commit`'s checkout updates the on-disk working copy. `move_commits` records
+    /// rewrites, so we `rebase_descendants()` before reading the result back (and `commit` re-runs it
+    /// idempotently). Rewriting the **root** panics in `record_rewritten_commit`, so we guard it and
+    /// raise `ImmutableCommitError`, like `abandon`. An unknown `mode` is a `PyjutsuError`.
+    #[pyo3(signature = (commit, onto, mode="source"))]
     fn rebase<'py>(
         &self,
         py: Python<'py>,
         commit: &str,
         onto: Vec<String>,
+        mode: &str,
     ) -> PyResult<Bound<'py, PyDict>> {
         let mut guard = self.tx.borrow_mut();
         let tx = guard
@@ -278,10 +313,20 @@ impl PyTransaction {
             .iter()
             .map(|r| Ok(self.resolve_single(&*repo, r)?.id().clone()))
             .collect::<PyResult<Vec<CommitId>>>()?;
+        let target = match mode {
+            "source" => MoveCommitsTarget::Roots(vec![target.id().clone()]),
+            "revision" => MoveCommitsTarget::Commits(vec![target.id().clone()]),
+            "branch" => MoveCommitsTarget::Roots(self.branch_roots(&*repo, &target, &new_parent_ids)?),
+            other => {
+                return Err(PyjutsuError::new_err(format!(
+                    "rebase mode must be 'source', 'revision', or 'branch', got '{other}'"
+                )));
+            }
+        };
         let loc = MoveCommitsLocation {
             new_parent_ids,
             new_child_ids: vec![],
-            target: MoveCommitsTarget::Roots(vec![target.id().clone()]),
+            target,
         };
         move_commits(repo, &loc, &RebaseOptions::default()).map_err(map_backend_err)?;
         repo.rebase_descendants().map_err(map_backend_err)?;

@@ -150,21 +150,29 @@ class Transaction:
         """
         self._require_open().abandon(commit)
 
-    def rebase(self, commit: str, *, onto: str | list[str]) -> Commit:
-        """Rebase ``commit`` **and its descendants** onto ``onto`` → the rebased :class:`Commit`.
+    def rebase(
+        self, commit: str, *, onto: str | list[str], mode: str = "source"
+    ) -> Commit:
+        """Rebase ``commit`` onto ``onto`` → the rebased :class:`Commit`. ``mode`` selects which
+        commits move, matching jj's flags:
 
-        ``commit`` and each entry of ``onto`` are single-revision revsets (matches ``jj rebase
-        -s <commit> -d <onto…>``). The change id is preserved; the commit id changes, and the
-        on-disk working copy follows when the transaction commits if ``@`` moved. ``commit`` must
-        name exactly one revision (else :class:`~pyjutsu.errors.RevsetError`); rebasing the root
-        raises :class:`~pyjutsu.errors.ImmutableCommitError`. Must be called inside the ``with``
-        block.
+        - ``"source"`` (default, ``jj rebase -s``): ``commit`` **and all its descendants**.
+        - ``"revision"`` (``jj rebase -r``): **only** ``commit``; its children reattach to
+          ``commit``'s old parents.
+        - ``"branch"`` (``jj rebase -b``): the whole branch — the roots of ``onto..commit`` (the
+          commits reachable from ``commit`` but not from any destination) plus their descendants.
 
-        Single-commit reattach (``jj rebase -r``) and whole-branch (``-b``) are out of scope: this
-        always carries the commit's descendants.
+        ``commit`` and each entry of ``onto`` are single-revision revsets. The change id is
+        preserved; the commit id changes, and the on-disk working copy follows when the transaction
+        commits if ``@`` moved. ``commit`` must name exactly one revision (else
+        :class:`~pyjutsu.errors.RevsetError`); rebasing the root raises
+        :class:`~pyjutsu.errors.ImmutableCommitError`; an unknown ``mode`` raises
+        :class:`~pyjutsu.errors.PyjutsuError`. Must be called inside the ``with`` block.
+
+        Interactive revision selection remains out of scope.
         """
         targets = [onto] if isinstance(onto, str) else list(onto)
-        return Commit.model_validate(self._require_open().rebase(commit, targets))
+        return Commit.model_validate(self._require_open().rebase(commit, targets, mode))
 
     def squash(self, source: str, into: str, *, message: str | None = None) -> Commit:
         """Move ``source``'s changes into ``into`` → the squashed :class:`Commit` (``jj squash``).
