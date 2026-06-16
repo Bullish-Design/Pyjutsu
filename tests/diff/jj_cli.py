@@ -160,6 +160,26 @@ class JjCli:
         out = self(repo, "workspace", "list", "-T", 'name ++ "\\n"')
         return {line for line in out.splitlines() if line}
 
+    def git_fetch(self, repo: Path, remote: str) -> None:
+        """``jj git fetch --remote <remote>`` in ``repo``."""
+        self(repo, "git", "fetch", "--remote", remote)
+
+    def git_push(self, repo: Path, bookmark: str, *, allow_new: bool = False) -> None:
+        """``jj git push --bookmark <bookmark> [--allow-new]`` in ``repo``."""
+        args = ["git", "push", "--bookmark", bookmark]
+        if allow_new:
+            args.append("--allow-new")
+        self(repo, *args)
+
+    def git_clone(self, url: str, dest: Path, *, colocate: bool = False) -> None:
+        """``jj git clone [--colocate] <url> <dest>`` (run from ``dest``'s parent)."""
+        args = ["git", "clone"]
+        if colocate:
+            args.append("--colocate")
+        args += [url, str(dest)]
+        # `jj git clone` creates `dest`; run it from the parent so the relative dest resolves.
+        self(dest.parent, *args)
+
     def remotes(self, repo: Path) -> dict[str, str]:
         """Map of git remote name → fetch url from `jj git remote list` (lines: ``name url``)."""
         out = self(repo, "git", "remote", "list")

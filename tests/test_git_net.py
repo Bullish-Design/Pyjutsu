@@ -1,0 +1,206 @@
+"""Slice 11: git network — `git_fetch` / `git_push` + the pure-Python `git_clone` classmethod.
+
+These are `Workspace`-level verbs that sync jj with *remote* git repos (jj 0.38 drives them via a
+`git` subprocess). All tests are local — they use on-disk **bare** remotes, no real network. The
+differential oracle is `jj git fetch|push|clone`; the common assertion is **ref state** read
+straight from the bare remote with `git show-ref` (dodging the colocated jj-read trap), plus the
+binding publishing **exactly one op** per fetch/push.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pyjutsu
+import pytest
+from pyjutsu import GitError
+
+from tests.diff.jj_cli import JjCli
+
+
+def _op_count(repo: Path, jj: JjCli) -> int:
+    return len(jj.op_log_ids(repo))
+
+
+def _init_bare(path: Path) -> Path:
+    subprocess.run(["git", "init", "--bare", str(path)], check=True, capture_output=True)
+    return path
+
+
+def _has_ref(git_dir: Path, ref: str) -> bool:
+    """Whether ``ref`` exists in the git repo at ``git_dir`` (works for bare repos)."""
+    result = subprocess.run(
+        ["git", "-C", str(git_dir), "show-ref", "--verify", "--quiet", ref],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+# --- git_push (headline) ----------------------------------------------------------------------
+
+
+def test_push_bookmark_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    # Put a real (described, non-working-copy) commit under a bookmark on each side, then push to
+    # that side's own bare origin. Both sides start from the byte-identical `scratch_repo`.
+    other = tmp_path / "copy"
+    subprocess.run(["cp", "-r", str(scratch_repo), str(other)], check=True)
+
+    origin_b = _init_bare(tmp_path / "origin_b.git")
+    origin_c = _init_bare(tmp_path / "origin_c.git")
+
+    # Binding: advance `@` so the described commit becomes `@-`, bookmark it, add remote, push.
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    with ws.transaction("new") as tx:
+        tx.new()
+    with ws.transaction("bookmark") as tx:
+        tx.create_bookmark("feature", "@-")
+    ws.add_remote("origin", str(origin_b))
+    ops_before = _op_count(scratch_repo, jj)
+
+    op = ws.git_push("origin", "feature", allow_new=True)
+
+    assert op is not None
+    assert "push" in op.description.lower()
+    assert _has_ref(origin_b, "refs/heads/feature")
+    # The remote-tracking row `feature@origin` now exists in the binding's view.
+    assert ("feature", "origin") in {(b.name, b.remote) for b in ws.bookmarks()}
+    # Exactly one op published by the push.
+    assert _op_count(scratch_repo, jj) == ops_before + 1
+
+    # CLI oracle on the sibling: same shape, its own bare origin → the ref lands there too.
+    jj(other, "new")
+    jj(other, "bookmark", "create", "feature", "-r", "@-")
+    jj(other, "git", "remote", "add", "origin", str(origin_c))
+    jj.git_push(other, "feature", allow_new=True)
+    assert _has_ref(origin_c, "refs/heads/feature")
+
+
+def test_push_new_without_allow_new_raises(scratch_repo: Path, tmp_path: Path) -> None:
+    origin = _init_bare(tmp_path / "origin.git")
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    with ws.transaction("bookmark") as tx:
+        tx.create_bookmark("feature", "@")
+    ws.add_remote("origin", str(origin))
+    # `feature` has no remote-tracking ref yet ⇒ it's new on the remote ⇒ refused without allow_new.
+    with pytest.raises(GitError):
+        ws.git_push("origin", "feature")
+
+
+def test_push_unknown_remote_raises(scratch_repo: Path) -> None:
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    with ws.transaction("bookmark") as tx:
+        tx.create_bookmark("feature", "@")
+    with pytest.raises(GitError):
+        ws.git_push("nope", "feature", allow_new=True)
+
+
+def test_push_unknown_bookmark_raises(scratch_repo: Path, tmp_path: Path) -> None:
+    origin = _init_bare(tmp_path / "origin.git")
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    ws.add_remote("origin", str(origin))
+    with pytest.raises(GitError):
+        ws.git_push("origin", "ghost", allow_new=True)
+
+
+# --- git_fetch (headline) ---------------------------------------------------------------------
+
+
+def test_fetch_matches_cli(bookmarked_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    # `bookmarked_repo`'s bare `origin` already has `feature` pushed. A fresh repo that adds the
+    # same remote and fetches should pick up `feature@origin` — on both the binding and the CLI.
+    origin = tmp_path / "origin.git"
+
+    b = tmp_path / "B"
+    b.mkdir()
+    ws_b = pyjutsu.Workspace.init(b, colocate=True)
+    ws_b.add_remote("origin", str(origin))
+    ops_before = _op_count(b, jj)
+
+    op = ws_b.git_fetch("origin")
+
+    assert op is not None
+    assert "fetch" in op.description.lower()
+    assert ("feature", "origin") in {(bm.name, bm.remote) for bm in ws_b.bookmarks()}
+    assert _op_count(b, jj) == ops_before + 1
+
+    # CLI oracle: another fresh repo on the same origin sees `feature@origin` too.
+    c = tmp_path / "C"
+    c.mkdir()
+    jj(c, "git", "init", "--colocate")
+    jj(c, "git", "remote", "add", "origin", str(origin))
+    jj.git_fetch(c, "origin")
+    assert ("feature", "origin") in {(n, r) for (n, r, *_) in jj.bookmarks(c)}
+
+
+def test_fetch_noop_returns_none(bookmarked_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    origin = tmp_path / "origin.git"
+    b = tmp_path / "B"
+    b.mkdir()
+    ws_b = pyjutsu.Workspace.init(b, colocate=True)
+    ws_b.add_remote("origin", str(origin))
+    ws_b.git_fetch("origin")  # first fetch imports `feature@origin`
+
+    ops_before = _op_count(b, jj)
+    assert ws_b.git_fetch("origin") is None  # nothing new ⇒ no op
+    assert _op_count(b, jj) == ops_before
+
+
+def test_fetch_unknown_remote_raises(scratch_repo: Path) -> None:
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    with pytest.raises(GitError):
+        ws.git_fetch("nope")
+
+
+# --- git_clone (headline) ---------------------------------------------------------------------
+
+
+def test_clone_matches_cli(bookmarked_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    # Make the bare `origin`'s default branch resolvable so both sides place `@` on its tip.
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/feature"],
+        check=True,
+        capture_output=True,
+    )
+
+    dest = tmp_path / "clone"
+    ws = pyjutsu.Workspace.git_clone(str(origin), dest)
+
+    # The clone has `origin` configured, fetched the remote's `feature` bookmark, and a `.jj`.
+    assert (dest / ".jj").is_dir()
+    assert {r.name for r in ws.remotes()} == {"origin"}
+    assert ("feature", "origin") in {(b.name, b.remote) for b in ws.bookmarks()}
+
+    # The default branch (`feature`) was discovered, so `@` is a fresh empty child of its tip.
+    feature_tip = ws.head().resolve("feature@origin").commit_id
+    at = ws.working_copy()
+    assert at.is_empty
+    assert at.parent_ids == [feature_tip]
+
+    # CLI oracle: `jj git clone` yields the same shape against the same bare origin.
+    cli_dest = tmp_path / "cli_clone"
+    jj.git_clone(str(origin), cli_dest, colocate=False)
+    assert (cli_dest / ".jj").is_dir()
+    assert jj.remotes(cli_dest).get("origin") == str(origin)
+    assert ("feature", "origin") in {(n, r) for (n, r, *_) in jj.bookmarks(cli_dest)}
+    cli_tip = jj.commit_id(cli_dest, "feature@origin")
+    assert jj.parent_commit_ids(cli_dest, "@") == [cli_tip]
+
+
+def test_push_then_fetch_roundtrip(scratch_repo: Path, tmp_path: Path) -> None:
+    # Push a bookmark from A, then a fresh B that shares the origin fetches it back.
+    origin = _init_bare(tmp_path / "origin.git")
+
+    ws_a = pyjutsu.Workspace.load(scratch_repo)
+    with ws_a.transaction("bookmark") as tx:
+        tx.create_bookmark("feature", "@")
+    ws_a.add_remote("origin", str(origin))
+    ws_a.git_push("origin", "feature", allow_new=True)
+
+    b = tmp_path / "B"
+    b.mkdir()
+    ws_b = pyjutsu.Workspace.init(b, colocate=True)
+    ws_b.add_remote("origin", str(origin))
+    ws_b.git_fetch("origin")
+    assert ("feature", "origin") in {(bm.name, bm.remote) for bm in ws_b.bookmarks()}

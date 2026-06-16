@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 from ._pyjutsu import PyWorkspace
+from .errors import PyjutsuError
 from .models import (
     Bookmark,
     Commit,
@@ -100,6 +101,78 @@ class Workspace:
         """
         row = self._handle.git_export()
         return Operation.model_validate(row) if row is not None else None
+
+    def git_fetch(
+        self, remote: str, *, bookmarks: list[str] | None = None
+    ) -> Operation | None:
+        """Fetch ``remote``'s bookmarks into jj's view → the published :class:`Operation`, or
+        ``None`` if nothing changed (no operation published).
+
+        Matches ``jj git fetch``: runs a ``git fetch`` and imports the fetched remote-tracking
+        refs (creating/updating ``<bookmark>@<remote>`` rows). ``bookmarks=None`` (the default)
+        fetches all bookmarks; pass a list to fetch exactly those names. Tags are not fetched.
+        Raises :class:`~pyjutsu.errors.GitError` on a git failure (unknown remote, rejected
+        update, subprocess error).
+        """
+        row = self._handle.git_fetch(remote, bookmarks)
+        return Operation.model_validate(row) if row is not None else None
+
+    def git_push(
+        self, remote: str, bookmark: str, *, allow_new: bool = False
+    ) -> Operation | None:
+        """Push local ``bookmark`` to ``remote`` → the published :class:`Operation`, or ``None`` if
+        nothing changed (no operation published).
+
+        Matches ``jj git push --bookmark <bookmark>``: runs a ``git push`` and updates the
+        remote-tracking bookmark. ``allow_new=False`` (the default) refuses to create a bookmark
+        that doesn't yet exist on the remote (the CLI's ``--allow-new`` gate); pass
+        ``allow_new=True`` to create it. Raises :class:`~pyjutsu.errors.GitError` if the local
+        bookmark is missing or conflicted, the bookmark is new and ``allow_new`` is false, or the
+        remote rejects the push.
+        """
+        row = self._handle.git_push(remote, bookmark, allow_new)
+        return Operation.model_validate(row) if row is not None else None
+
+    @classmethod
+    def git_clone(
+        cls,
+        url: str,
+        path: str | os.PathLike[str],
+        *,
+        colocate: bool = False,
+        remote: str = "origin",
+    ) -> Workspace:
+        """Clone the git repo at ``url`` into a new jj workspace at ``path`` → a :class:`Workspace`.
+
+        Matches ``jj git clone``. jj-lib has no clone primitive, so this composes existing verbs:
+        :meth:`init` a fresh repo, :meth:`add_remote` ``remote`` → ``url``, then :meth:`git_fetch`
+        the remote's bookmarks. If the remote advertises a default branch, ``@`` is set to a new
+        empty commit on top of that branch's tip (so the clone is immediately usable); if discovery
+        is ambiguous (no default branch advertised), ``@`` is left as the empty root child.
+
+        Raises :class:`~pyjutsu.errors.WorkspaceError` if ``path`` already holds a repo, or
+        :class:`~pyjutsu.errors.GitError` on a remote/fetch failure.
+        """
+        # `jj git clone` creates the destination directory; `init` (like `jj git init`) needs it to
+        # exist already, so create it here first.
+        Path(path).mkdir(parents=True, exist_ok=True)
+        ws = cls.init(path, colocate=colocate)
+        ws.add_remote(remote, url)
+        ws.git_fetch(remote)
+
+        # Place `@` on the remote's default branch tip, mirroring `jj git clone`. The default
+        # branch is fetched as the remote-tracking bookmark `<default>@<remote>`; if the remote
+        # advertises no default, leave `@` on the empty root child (the documented ambiguous case).
+        default = ws._handle.git_default_branch(remote)
+        if default is not None:
+            try:
+                tip = ws.head().resolve(f"{default}@{remote}")
+            except PyjutsuError:
+                tip = None
+            if tip is not None:
+                with ws.transaction(f"check out {default}", auto_snapshot=False) as tx:
+                    tx.new([tip.commit_id])
+        return ws
 
     def remotes(self) -> list[Remote]:
         """The configured git remotes → their :class:`Remote` rows (``jj git remote list``).

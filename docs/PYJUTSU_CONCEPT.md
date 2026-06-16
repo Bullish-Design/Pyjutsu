@@ -1,7 +1,8 @@
 # Pyjutsu — Concept (PyO3 / jj-lib binding)
 
-**Status:** M1 (read layer) implemented (`pyjutsu 0.39.0`, binds jj-lib 0.38); M2+ (mutations,
-transactions, git interop) still in design. This document remains the canonical design spec —
+**Status:** M1 (read layer) implemented (`pyjutsu 0.39.0`) and M2 (write layer — mutations,
+transactions, op-log, workspaces, git interop incl. network fetch/push/clone) implemented
+(`pyjutsu 0.41.0`), both binding jj-lib 0.38. This document remains the canonical design spec —
 the v1 surface (§5) and scope (§12) below describe the full intended API, not just what ships today.
 **Name:** Pyjutsu · **Import:** `import pyjutsu`
 **What:** A general-purpose, Pythonic + Pydantic binding to **jujutsu's Rust engine

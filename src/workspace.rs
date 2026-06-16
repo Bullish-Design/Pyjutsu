@@ -17,13 +17,17 @@ use pyo3::types::PyDict;
 
 use jj_lib::commit::Commit;
 use jj_lib::config::{ConfigSource, StackedConfig};
-use jj_lib::git::{self, GitImportOptions};
+use jj_lib::git::{
+    self, GitBranchPushTargets, GitFetch, GitFetchRefExpression, GitImportOptions, GitProgress,
+    GitSidebandLineTerminator, GitSubprocessCallback, GitSubprocessOptions,
+};
 use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_store::OperationId;
 use jj_lib::op_walk;
-use jj_lib::ref_name::{WorkspaceName, WorkspaceNameBuf};
+use jj_lib::ref_name::{RefName, RefNameBuf, RemoteName, WorkspaceName, WorkspaceNameBuf};
+use jj_lib::refs::BookmarkPushUpdate;
 use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader, StoreFactories};
 use jj_lib::settings::UserSettings;
 use jj_lib::str_util::StringExpression;
@@ -100,6 +104,34 @@ fn default_user_config_dir() -> Option<PathBuf> {
     }
     let home = std::env::var_os("HOME").filter(|s| !s.is_empty())?;
     Some(PathBuf::from(home).join(".config").join("jj"))
+}
+
+/// No-op `GitSubprocessCallback`: the binding doesn't surface fetch/push progress or sideband
+/// output yet (a future slice could route these to a Python callback). Mirrors jj-lib's own test
+/// `NullCallback` — `needs_progress` is `false`, every sink is a silent `Ok(())`.
+struct NullGitCallback;
+
+impl GitSubprocessCallback for NullGitCallback {
+    fn needs_progress(&self) -> bool {
+        false
+    }
+    fn progress(&mut self, _progress: &GitProgress) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn local_sideband(
+        &mut self,
+        _message: &[u8],
+        _terminator: Option<GitSidebandLineTerminator>,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn remote_sideband(
+        &mut self,
+        _message: &[u8],
+        _terminator: Option<GitSidebandLineTerminator>,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 #[pyclass(module = "pyjutsu._pyjutsu")]
@@ -773,6 +805,226 @@ impl PyWorkspace {
             return Ok(None);
         };
         Ok(Some(self.finish_op(py, ws, &name, &repo, &new_repo)?))
+    }
+
+    /// Fetch `remote`'s bookmarks into jj's view (`jj git fetch`): run a `git fetch` subprocess,
+    /// import the fetched remote-tracking refs, and publish one operation — or `None` if nothing
+    /// changed. `bookmarks=None` fetches all bookmarks (the CLI default); a non-empty list fetches
+    /// exactly those bookmark names. Tags are not fetched (jj-lib's own default). Raises `GitError`
+    /// on a git failure (unknown remote, rejected update, subprocess error).
+    ///
+    /// jj 0.38 fetches via a `git` subprocess, so the whole spawn + network I/O runs **off the GIL**.
+    /// The `!Send` `GitFetch`/`Transaction` are created **and dropped inside one synchronous closure
+    /// on one thread**; the fetcher (which borrows `&mut MutableRepo`) is dropped in an inner scope
+    /// before `rebase_descendants()`/`commit` re-borrow the repo. A fresh loader is used so a remote
+    /// added through this handle is visible (slice-10 config-snapshot staleness). `import_refs` can
+    /// abandon commits, so `rebase_descendants()` runs before commit (landmine #1).
+    #[pyo3(signature = (remote, bookmarks=None))]
+    fn git_fetch<'py>(
+        &self,
+        py: Python<'py>,
+        remote: &str,
+        bookmarks: Option<Vec<String>>,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let mut guard = self.locked()?;
+        let ws: &mut Workspace = &mut guard;
+        let name = ws.workspace_name().to_owned();
+        let loader = Self::fresh_loader(ws)?;
+        let settings = ws.repo_loader().settings().clone();
+        let remote = remote.to_owned();
+
+        let new_repo = py.allow_threads(move || -> PyResult<Option<Arc<ReadonlyRepo>>> {
+            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            // Plain `jj git fetch` import options (as `git_import`): no auto-local-bookmark, abandon
+            // unreachable git commits, no per-remote auto-track. `!Sync`, so build it in-closure.
+            let options = GitImportOptions {
+                auto_local_bookmark: false,
+                abandon_unreachable_commits: true,
+                remote_auto_track_bookmarks: HashMap::new(),
+            };
+            let subprocess = GitSubprocessOptions::from_settings(&settings).map_err(map_git_err)?;
+            let remote_name: &RemoteName = remote.as_str().as_ref();
+            let mut tx = repo.start_transaction();
+            {
+                let mut fetcher =
+                    GitFetch::new(tx.repo_mut(), subprocess, &options).map_err(map_git_err)?;
+                // `bookmarks=None` ⇒ all; otherwise a union of exact-name patterns. Globs/negative
+                // patterns and tag fetching are out-of-scope refinements (flagged, not faked).
+                let bookmark = match &bookmarks {
+                    None => StringExpression::all(),
+                    Some(names) => StringExpression::union_all(
+                        names
+                            .iter()
+                            .map(|n| StringExpression::exact(n.clone()))
+                            .collect(),
+                    ),
+                };
+                let ref_expr = GitFetchRefExpression {
+                    bookmark,
+                    tag: StringExpression::none(),
+                };
+                let refspecs =
+                    git::expand_fetch_refspecs(remote_name, ref_expr).map_err(map_git_err)?;
+                fetcher
+                    .fetch(remote_name, refspecs, &mut NullGitCallback, None, None)
+                    .map_err(map_git_err)?;
+                fetcher.import_refs().map_err(map_git_err)?;
+            } // drop the fetcher → release its &mut MutableRepo borrow before rebase/commit
+            tx.repo_mut().rebase_descendants().map_err(map_backend_err)?;
+            if !tx.repo_mut().has_changes() {
+                return Ok(None);
+            }
+            Ok(Some(
+                tx.commit(format!("fetch from git remote '{remote}'"))
+                    .map_err(map_backend_err)?,
+            ))
+        })?;
+
+        let Some(new_repo) = new_repo else {
+            return Ok(None);
+        };
+        let repo = {
+            let loader = ws.repo_loader();
+            py.allow_threads(|| loader.load_at_head())
+                .map_err(map_backend_err)?
+        };
+        Ok(Some(self.finish_op(py, ws, &name, &repo, &new_repo)?))
+    }
+
+    /// Push local `bookmark` to `remote` (`jj git push --bookmark <bookmark>`): run a `git push`
+    /// subprocess and update the remote-tracking bookmark in the view, publishing one operation — or
+    /// `None` if nothing changed. `allow_new=False` (the default) refuses to create a bookmark that
+    /// doesn't yet exist on the remote (mirrors the CLI's `--allow-new` gate). Raises `GitError` if:
+    /// the local bookmark is missing or conflicted, the bookmark is new and `allow_new` is false, or
+    /// the remote rejects the push (the rejected ref names are reported).
+    ///
+    /// Subprocess + network → **off the GIL**; the `!Send` `Transaction` lives and dies inside the
+    /// one closure on one thread. The local + remote-tracking targets are read from the view before
+    /// the tx starts. A fresh loader is used so the remote is found (slice-10 staleness). Push moves
+    /// only remote-tracking bookmarks (no commit rewrite), so `rebase_descendants` is unnecessary.
+    #[pyo3(signature = (remote, bookmark, allow_new=false))]
+    fn git_push<'py>(
+        &self,
+        py: Python<'py>,
+        remote: &str,
+        bookmark: &str,
+        allow_new: bool,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let mut guard = self.locked()?;
+        let ws: &mut Workspace = &mut guard;
+        let name = ws.workspace_name().to_owned();
+        let loader = Self::fresh_loader(ws)?;
+        let settings = ws.repo_loader().settings().clone();
+        let remote = remote.to_owned();
+        let bookmark = bookmark.to_owned();
+
+        let new_repo = py.allow_threads(move || -> PyResult<Option<Arc<ReadonlyRepo>>> {
+            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let subprocess = GitSubprocessOptions::from_settings(&settings).map_err(map_git_err)?;
+            let remote_name: &RemoteName = remote.as_str().as_ref();
+            let bookmark_ref: &RefName = bookmark.as_str().as_ref();
+
+            // Read both targets from the view (the read borrow ends once `targets` is built).
+            let view = repo.view();
+            let local = view.get_local_bookmark(bookmark_ref);
+            if local.is_absent() {
+                return Err(map_git_err(format!("no local bookmark '{bookmark}'")));
+            }
+            let Some(new_target) = local.as_normal().cloned() else {
+                return Err(map_git_err(format!(
+                    "refusing to push conflicted bookmark '{bookmark}'"
+                )));
+            };
+            let remote_ref = view.get_remote_bookmark(bookmark_ref.to_remote_symbol(remote_name));
+            let old_target = if remote_ref.target.is_absent() {
+                None
+            } else if let Some(id) = remote_ref.target.as_normal() {
+                Some(id.clone())
+            } else {
+                return Err(map_git_err(format!(
+                    "remote bookmark '{bookmark}@{remote}' is conflicted"
+                )));
+            };
+            // `allow_new` gate: a bookmark with no remote-tracking ref is new on the remote.
+            if old_target.is_none() && !allow_new {
+                return Err(map_git_err(format!(
+                    "bookmark '{bookmark}' doesn't exist on remote '{remote}'; pass allow_new=True"
+                )));
+            }
+
+            let targets = GitBranchPushTargets {
+                branch_updates: vec![(
+                    RefNameBuf::from(bookmark.as_str()),
+                    BookmarkPushUpdate {
+                        old_target,
+                        new_target: Some(new_target),
+                    },
+                )],
+            };
+
+            let mut tx = repo.start_transaction();
+            let stats =
+                git::push_branches(tx.repo_mut(), subprocess, remote_name, &targets, &mut NullGitCallback)
+                    .map_err(map_git_err)?;
+            if !stats.all_ok() {
+                let mut reasons = Vec::new();
+                for (ref_name, why) in stats.rejected.iter().chain(stats.remote_rejected.iter()) {
+                    let ref_name = ref_name.as_symbol();
+                    match why {
+                        Some(reason) => reasons.push(format!("{ref_name} ({reason})")),
+                        None => reasons.push(ref_name.to_string()),
+                    }
+                }
+                return Err(map_git_err(format!(
+                    "push to remote '{remote}' rejected: {}",
+                    reasons.join(", ")
+                )));
+            }
+            if !tx.repo_mut().has_changes() {
+                return Ok(None);
+            }
+            Ok(Some(
+                tx.commit(format!("push to git remote '{remote}'"))
+                    .map_err(map_backend_err)?,
+            ))
+        })?;
+
+        let Some(new_repo) = new_repo else {
+            return Ok(None);
+        };
+        let repo = {
+            let loader = ws.repo_loader();
+            py.allow_threads(|| loader.load_at_head())
+                .map_err(map_backend_err)?
+        };
+        Ok(Some(self.finish_op(py, ws, &name, &repo, &new_repo)?))
+    }
+
+    /// The name of `remote`'s default branch (what `git remote show` reports as `HEAD`), or `None`
+    /// if the remote advertises none. Used by the pure-Python `git_clone` to place the new `@` on
+    /// the cloned default branch. Spawns a `git remote show` subprocess (off the GIL) inside a
+    /// throwaway transaction that is never committed (no operation published). Raises `GitError` on
+    /// an unknown remote or subprocess failure.
+    fn git_default_branch(&self, py: Python<'_>, remote: &str) -> PyResult<Option<String>> {
+        let guard = self.locked()?;
+        let loader = Self::fresh_loader(&guard)?;
+        let settings = guard.repo_loader().settings().clone();
+        let remote = remote.to_owned();
+        py.allow_threads(move || -> PyResult<Option<String>> {
+            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let options = GitImportOptions {
+                auto_local_bookmark: false,
+                abandon_unreachable_commits: true,
+                remote_auto_track_bookmarks: HashMap::new(),
+            };
+            let subprocess = GitSubprocessOptions::from_settings(&settings).map_err(map_git_err)?;
+            let remote_name: &RemoteName = remote.as_str().as_ref();
+            let mut tx = repo.start_transaction();
+            let fetcher =
+                GitFetch::new(tx.repo_mut(), subprocess, &options).map_err(map_git_err)?;
+            let default = fetcher.get_default_branch(remote_name).map_err(map_git_err)?;
+            Ok(default.map(|n| n.as_str().to_owned()))
+        })
     }
 
     /// List the configured git remotes: each remote's name + its **fetch** URL. Read-only; matches
