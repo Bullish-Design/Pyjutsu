@@ -11,9 +11,18 @@ import os
 import subprocess
 from pathlib import Path
 
-# Minimal isolated config: a fixed identity so `jj` can author commits deterministically and
-# nothing leaks in from the host's user config.
-_CONFIG_TOML = '[user]\nname = "Pyjutsu Test"\nemail = "test@pyjutsu.invalid"\n'
+# Isolated config: a fixed identity so `jj` can author commits, plus a pinned commit timestamp so
+# authoring is reproducible. Both the CLI and the binding load this same config (the binding via
+# `JJ_CONFIG`), so the *same* mutation applied to two byte-identical repos (made by copying a repo
+# directory — see the differential tests) produces identical commit ids: the committer timestamp,
+# which would otherwise be "now", is fixed. Change ids stay naturally random/unique (seeding them
+# would collide across the separate `jj` processes the harness spawns), so identical starting state
+# is achieved by copying, not by reseeding.
+_CONFIG_TOML = (
+    '[user]\nname = "Pyjutsu Test"\nemail = "test@pyjutsu.invalid"\n'
+    "\n[debug]\n"
+    'commit-timestamp = "2001-02-03T04:05:06+07:00"\n'
+)
 
 
 def write_config(directory: Path) -> Path:
@@ -91,6 +100,10 @@ class JjCli:
     def op_head_id(self, repo: Path) -> str:
         """The current head operation id."""
         return self(repo, "op", "log", "--no-graph", "--limit", "1", "-T", "id").strip()
+
+    def op_head_description(self, repo: Path) -> str:
+        """The description of the current head operation."""
+        return self(repo, "op", "log", "--no-graph", "--limit", "1", "-T", "description").strip()
 
     def change_id_at_op(self, repo: Path, op: str, revset: str) -> str:
         """The change id of ``revset`` as seen at operation ``op`` (`jj --at-op`)."""

@@ -23,6 +23,15 @@ class BackendError(PyjutsuError):
 class WorkspaceError(PyjutsuError):
     """A workspace could not be loaded or is unusable."""
 
+class WorkingCopyError(PyjutsuError):
+    """The working copy could not be locked, snapshotted, or checked out."""
+
+class StaleWorkingCopyError(WorkingCopyError):
+    """The working copy is stale (another operation moved ``@``)."""
+
+class ImmutableCommitError(PyjutsuError):
+    """An attempt was made to rewrite or abandon an immutable commit (e.g. the root)."""
+
 def version() -> str:
     """Return the pinned jj-lib version this extension was built against (e.g. ``"0.38.0"``)."""
 
@@ -48,3 +57,11 @@ class PyWorkspace:
     def head_view(self) -> PyRepoView: ...
     def head_operation(self) -> str: ...
     def at_operation(self, op_str: str) -> PyRepoView: ...
+    def begin_transaction(self) -> PyTransaction: ...
+
+class PyTransaction:
+    """Opaque, single-thread-bound handle to one in-flight jj transaction."""
+
+    def describe(self, revset_str: str, message: str) -> dict[str, object]: ...
+    def commit(self, description: str) -> str: ...
+    def rollback(self) -> None: ...

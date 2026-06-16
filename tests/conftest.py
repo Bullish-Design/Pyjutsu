@@ -14,9 +14,17 @@ WC_DESCRIPTION = "hello from pyjutsu test"
 
 
 @pytest.fixture
-def jj(tmp_path: Path) -> JjCli:
-    """A `jj` CLI driver bound to an isolated config under this test's tmp dir."""
-    return JjCli(write_config(tmp_path))
+def jj(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> JjCli:
+    """A `jj` CLI driver bound to an isolated config under this test's tmp dir.
+
+    The config path is also exported as ``JJ_CONFIG`` in *this* process so the in-process binding
+    loads the same identity + pinned timestamp the CLI subprocess uses (it reads ``JJ_CONFIG`` from
+    the process environment, exactly like the CLI). Without this, a mutation authored by the
+    binding would use different settings than the CLI and produce different commit ids.
+    """
+    config = write_config(tmp_path)
+    monkeypatch.setenv("JJ_CONFIG", str(config))
+    return JjCli(config)
 
 
 @pytest.fixture

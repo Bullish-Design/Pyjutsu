@@ -15,11 +15,13 @@ mod diff_stat;
 mod errors;
 mod repo_view;
 mod revset;
+mod transaction;
 mod workspace;
 
 use pyo3::prelude::*;
 
 use repo_view::PyRepoView;
+use transaction::PyTransaction;
 use workspace::PyWorkspace;
 
 /// The pinned `jj-lib` version this extension is built against. Mirrors `Cargo.toml`'s
@@ -38,6 +40,7 @@ fn _pyjutsu(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_class::<PyWorkspace>()?;
     m.add_class::<PyRepoView>()?;
+    m.add_class::<PyTransaction>()?;
     errors::register(m)?;
     Ok(())
 }

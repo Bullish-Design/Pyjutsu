@@ -11,8 +11,11 @@ from . import _pyjutsu as _ext
 from .errors import (
     BackendError,
     ConflictError,
+    ImmutableCommitError,
     PyjutsuError,
     RevsetError,
+    StaleWorkingCopyError,
+    WorkingCopyError,
     WorkspaceError,
 )
 from .models import (
@@ -27,6 +30,7 @@ from .models import (
     Signature,
 )
 from .repo_view import RepoView
+from .transaction import Transaction
 from .workspace import Workspace
 
 #: This package's version. Pyjutsu is versioned on its own cadence, **independent** of the jj
@@ -51,6 +55,7 @@ if JJ_VERSION != JJ_LIB_TARGET:
 
 __all__ = [
     "Workspace",
+    "Transaction",
     "RepoView",
     "Commit",
     "Signature",
@@ -67,6 +72,9 @@ __all__ = [
     "ConflictError",
     "BackendError",
     "WorkspaceError",
+    "WorkingCopyError",
+    "StaleWorkingCopyError",
+    "ImmutableCommitError",
     "JJ_VERSION",
     "__version__",
 ]

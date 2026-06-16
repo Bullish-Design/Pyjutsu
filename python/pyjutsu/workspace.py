@@ -13,6 +13,7 @@ from pathlib import Path
 from ._pyjutsu import PyWorkspace
 from .models import Bookmark, Commit, Conflict, DiffStat, Operation
 from .repo_view import RepoView
+from .transaction import Transaction
 
 __all__ = ["Workspace"]
 
@@ -40,6 +41,22 @@ class Workspace:
     def root(self) -> Path:
         """The filesystem root of this workspace's working copy (canonicalized)."""
         return Path(self._handle.workspace_root())
+
+    def transaction(self, description: str, *, auto_snapshot: bool = True) -> Transaction:
+        """Open a write transaction committing as ``description`` (concept §4, M2).
+
+        Use it as a context manager: the ``with`` block begins the transaction, publishes it on
+        clean exit, and rolls it back on any exception (atomicity). At most one transaction may
+        be open on a workspace at a time. A mutation transaction publishes exactly one jj
+        operation::
+
+            with ws.transaction("describe @") as tx:
+                ...  # mutation methods arrive in later slices
+
+        ``auto_snapshot`` (default ``True``) will snapshot a dirty ``@`` as a separate preceding
+        operation when wired in slice 5; it is accepted now for a stable signature.
+        """
+        return Transaction(self._handle, description, auto_snapshot=auto_snapshot)
 
     def head(self) -> RepoView:
         """A :class:`RepoView` of the repo at its **head** operation, scoped to this workspace.

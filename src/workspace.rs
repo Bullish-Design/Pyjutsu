@@ -1,15 +1,18 @@
 //! `PyWorkspace` — opaque, `Send` handle to one jj workspace (one working-copy path).
 //!
 //! `jj_lib::Workspace` is `Send` but not `Sync`, so it's held behind a `Mutex` (concept §8.4).
-//! M1 only reads, so the workspace's job here is path/identity + producing `PyRepoView`s
-//! (head or historical). The repo behind it is `Arc`-loaded via its `RepoLoader`.
+//! M1 reads; M2 adds the write layer: an owned, at-most-one in-flight `Transaction` (also behind
+//! a `Mutex`, since it owns a `MutableRepo`). The Python `tx` object is a thin token whose methods
+//! re-enter this handle. A mutation transaction publishes exactly one jj operation on commit.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::prelude::*;
 
-use jj_lib::config::StackedConfig;
+use jj_lib::config::{ConfigSource, StackedConfig};
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_walk;
 use jj_lib::repo::StoreFactories;
@@ -18,6 +21,70 @@ use jj_lib::workspace::{Workspace, default_working_copy_factories};
 
 use crate::errors::{PyjutsuError, map_backend_err, map_workspace_err, to_py_err};
 use crate::repo_view::PyRepoView;
+use crate::transaction::PyTransaction;
+
+/// Build the `UserSettings` the workspace authors commits with, replicating the CLI's config
+/// stacking so the binding and the pinned `jj` CLI share one identity (→ identical commit ids).
+///
+/// jj-lib hands us the layering primitives but not the env policy: `JJ_CONFIG` is a CLI concept,
+/// so we reproduce it here (concept §2.3). Precedence (low→high): built-in defaults → user config
+/// (`JJ_CONFIG`, else the platform config dir) → this repo's `.jj/repo/config.toml`.
+fn load_user_settings(workspace_root: &Path) -> Result<UserSettings, PyErr> {
+    let mut config = StackedConfig::with_defaults();
+
+    // User layer. `JJ_CONFIG` may name a file or a directory, or be an OS-path-separated list of
+    // them (matching the CLI); when unset, fall back to the platform user config directory.
+    if let Some(raw) = std::env::var_os("JJ_CONFIG") {
+        for path in std::env::split_paths(&raw) {
+            if path.as_os_str().is_empty() {
+                continue;
+            }
+            load_config_path(&mut config, ConfigSource::User, &path)?;
+        }
+    } else if let Some(dir) = default_user_config_dir()
+        && dir.is_dir()
+    {
+        config
+            .load_dir(ConfigSource::User, &dir)
+            .map_err(map_workspace_err)?;
+    }
+
+    // Repo layer (highest precedence here): the default workspace's `.jj/repo/config.toml`. For
+    // secondary workspaces `.jj/repo` is a pointer file, so we only load a regular config file.
+    let repo_config = workspace_root.join(".jj").join("repo").join("config.toml");
+    if repo_config.is_file() {
+        config
+            .load_file(ConfigSource::Repo, repo_config)
+            .map_err(map_workspace_err)?;
+    }
+
+    UserSettings::from_config(config).map_err(map_workspace_err)
+}
+
+/// Load a single `JJ_CONFIG` entry as `source`, treating a directory as a config dir and anything
+/// else as a config file. A missing path is skipped (lenient; the path may simply not exist yet).
+fn load_config_path(
+    config: &mut StackedConfig,
+    source: ConfigSource,
+    path: &Path,
+) -> Result<(), PyErr> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => config.load_dir(source, path).map_err(map_workspace_err),
+        Ok(_) => config.load_file(source, path).map_err(map_workspace_err),
+        Err(_) => Ok(()),
+    }
+}
+
+/// The platform user config directory jj reads when `JJ_CONFIG` is unset: `$XDG_CONFIG_HOME/jj`
+/// (or `$HOME/.config/jj`) on Unix. Only the env-driven path is reproduced here; differential
+/// tests always set `JJ_CONFIG`, so this is the convenience path for real usage.
+fn default_user_config_dir() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(xdg).join("jj"));
+    }
+    let home = std::env::var_os("HOME").filter(|s| !s.is_empty())?;
+    Some(PathBuf::from(home).join(".config").join("jj"))
+}
 
 #[pyclass(module = "pyjutsu._pyjutsu")]
 pub(crate) struct PyWorkspace {
@@ -25,6 +92,13 @@ pub(crate) struct PyWorkspace {
     /// The authoring email from settings — carried into the revset context of any view this
     /// workspace produces (so `author()`/`mine()` resolve consistently).
     user_email: String,
+    /// Single-open-transaction guard. The native `jj_lib::Transaction` is **not** `Send` (its
+    /// `MutableRepo` holds a `Box<dyn MutableIndex>`, and `MutableIndex: Any` has no `Send`
+    /// bound), so it cannot live in this `Send` handle — it lives in an `unsendable`
+    /// `PyTransaction` instead (see `transaction.rs`). This flag, shared with the live
+    /// `PyTransaction`, enforces "one open transaction per workspace" while keeping `PyWorkspace`
+    /// `Send` (concept §8.4: the workspace handle stays movable; only the transaction is pinned).
+    tx_open: Arc<AtomicBool>,
 }
 
 impl PyWorkspace {
@@ -40,10 +114,10 @@ impl PyWorkspace {
     /// Load the workspace whose working copy is rooted at `path`.
     #[staticmethod]
     fn load(path: PathBuf) -> PyResult<Self> {
-        // Built-in default config is enough to *read* a repo (no user name/email needed until
-        // we author commits, in M2). UserSettings carries it through the RepoLoader.
-        let settings =
-            UserSettings::from_config(StackedConfig::with_defaults()).map_err(map_workspace_err)?;
+        // M2 authors commits, so load the *real* stacked config (user + repo), not just defaults:
+        // `CommitBuilder` and op metadata take author/committer from these settings, and they must
+        // match the CLI's to produce identical commit ids (concept §2.3).
+        let settings = load_user_settings(&path)?;
         let user_email = settings.user_email().to_owned();
         let store_factories = StoreFactories::default();
         let working_copy_factories = default_working_copy_factories();
@@ -52,6 +126,7 @@ impl PyWorkspace {
         Ok(Self {
             inner: Mutex::new(inner),
             user_email,
+            tx_open: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -101,5 +176,43 @@ impl PyWorkspace {
             loader.load_at(&op).map_err(map_backend_err)
         })?;
         Ok(PyRepoView::new(repo, name, root, self.user_email.clone()))
+    }
+
+    /// Open a transaction: claim the single-tx slot, reload the repo at head, start a native
+    /// `Transaction`, and hand it back wrapped in a `PyTransaction`. Raises if one is already
+    /// open. Reloading at head mirrors the CLI, which observes the latest op before each command.
+    ///
+    /// (Auto-snapshot of a dirty `@` is layered on in slice 5; this is the bare start.)
+    fn begin_transaction(&self, py: Python<'_>) -> PyResult<PyTransaction> {
+        // Claim the slot atomically; bail (without claiming) if a tx is already live.
+        if self.tx_open.swap(true, Ordering::AcqRel) {
+            return Err(PyjutsuError::new_err(
+                "a transaction is already open on this workspace",
+            ));
+        }
+        // From here, any early return must release the slot or the workspace stays wedged.
+        let started = (|| -> PyResult<_> {
+            let ws = self.locked()?;
+            let name = ws.workspace_name().to_owned();
+            let root = ws.workspace_root().to_owned();
+            let loader = ws.repo_loader();
+            let repo = py
+                .allow_threads(|| loader.load_at_head())
+                .map_err(map_backend_err)?;
+            Ok((repo.start_transaction(), name, root))
+        })();
+        match started {
+            Ok((tx, name, root)) => Ok(PyTransaction::new(
+                tx,
+                self.tx_open.clone(),
+                name,
+                root,
+                self.user_email.clone(),
+            )),
+            Err(err) => {
+                self.tx_open.store(false, Ordering::Release);
+                Err(err)
+            }
+        }
     }
 }
