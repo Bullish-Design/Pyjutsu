@@ -25,12 +25,13 @@ use pyo3::types::PyDict;
 use jj_lib::backend::CommitId;
 use jj_lib::commit::Commit;
 use jj_lib::object_id::ObjectId;
-use jj_lib::ref_name::WorkspaceNameBuf;
+use jj_lib::op_store::RefTarget;
+use jj_lib::ref_name::{RefName, RemoteName, WorkspaceNameBuf};
 use jj_lib::repo::Repo;
 use jj_lib::rewrite::merge_commit_trees;
 use jj_lib::transaction::Transaction;
 
-use crate::convert::CommitData;
+use crate::convert::{BookmarkData, CommitData};
 use crate::errors::{
     ImmutableCommitError, PyjutsuError, RevsetError, map_backend_err, map_edit_err,
 };
@@ -239,6 +240,130 @@ impl PyTransaction {
         repo.record_abandoned_commit(&target);
         repo.rebase_descendants().map_err(map_backend_err)?;
         Ok(())
+    }
+
+    /// Create a **new** local bookmark `name` at the single revision named by `commit`, returning
+    /// the new bookmark as a plain dict. Errors with `PyjutsuError` if a local bookmark of that
+    /// name already exists (matches `jj bookmark create`, which refuses to clobber).
+    ///
+    /// Bookmark writes rewrite no commit and never move `@`, so there is no `rebase_descendants()`
+    /// and no checkout: the view mutation is read straight back (§1.2). `set_local_bookmark_target`
+    /// adds the target as a head, so pointing at a non-head commit is fine.
+    fn create_bookmark<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+        commit: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs); pure in-memory view mutation.
+        let repo = tx.repo_mut();
+        let target = self.resolve_single(&*repo, commit)?;
+        let ref_name = RefName::new(name);
+        if !repo.get_local_bookmark(ref_name).is_absent() {
+            return Err(PyjutsuError::new_err(format!(
+                "bookmark '{name}' already exists"
+            )));
+        }
+        repo.set_local_bookmark_target(ref_name, RefTarget::normal(target.id().clone()));
+        let new_target = repo.get_local_bookmark(ref_name);
+        BookmarkData::local(name, &new_target).to_dict(py)
+    }
+
+    /// Point local bookmark `name` at the single revision named by `commit`, creating it if absent
+    /// (create-or-move; matches `jj bookmark set`). Identical to `create_bookmark` without the
+    /// existence guard. Returns the bookmark as a plain dict.
+    fn set_bookmark<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+        commit: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs); pure in-memory view mutation.
+        let repo = tx.repo_mut();
+        let target = self.resolve_single(&*repo, commit)?;
+        let ref_name = RefName::new(name);
+        repo.set_local_bookmark_target(ref_name, RefTarget::normal(target.id().clone()));
+        let new_target = repo.get_local_bookmark(ref_name);
+        BookmarkData::local(name, &new_target).to_dict(py)
+    }
+
+    /// Delete local bookmark `name` by setting its target absent (matches `jj bookmark delete`).
+    /// Returns nothing. Errors with `PyjutsuError` if no such local bookmark exists, so a typo
+    /// doesn't silently no-op.
+    fn delete_bookmark(&self, name: &str) -> PyResult<()> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs); pure in-memory view mutation.
+        let repo = tx.repo_mut();
+        let ref_name = RefName::new(name);
+        if repo.get_local_bookmark(ref_name).is_absent() {
+            return Err(PyjutsuError::new_err(format!("no such bookmark '{name}'")));
+        }
+        repo.set_local_bookmark_target(ref_name, RefTarget::absent());
+        Ok(())
+    }
+
+    /// Start tracking the remote-tracking bookmark `name@remote` (matches `jj bookmark track`),
+    /// merging it into the local bookmark and flipping the remote ref's state to tracked. Returns
+    /// the **remote** bookmark row. Errors with `PyjutsuError` if no such remote bookmark exists.
+    fn track_bookmark<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+        remote: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs); pure in-memory view mutation.
+        let repo = tx.repo_mut();
+        let symbol = RefName::new(name).to_remote_symbol(RemoteName::new(remote));
+        if repo.get_remote_bookmark(symbol).target.is_absent() {
+            return Err(PyjutsuError::new_err(format!(
+                "no such remote bookmark '{name}@{remote}'"
+            )));
+        }
+        repo.track_remote_bookmark(symbol).map_err(map_backend_err)?;
+        let remote_ref = repo.get_remote_bookmark(symbol);
+        BookmarkData::remote(name, remote, &remote_ref).to_dict(py)
+    }
+
+    /// Stop tracking the remote-tracking bookmark `name@remote` (matches `jj bookmark untrack`),
+    /// flipping the remote ref's state to untracked. Returns the **remote** bookmark row. Errors
+    /// with `PyjutsuError` if no such remote bookmark exists. `untrack_remote_bookmark` returns
+    /// `()`, so there is no fallible jj-lib call to map here.
+    fn untrack_bookmark<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+        remote: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs); pure in-memory view mutation.
+        let repo = tx.repo_mut();
+        let symbol = RefName::new(name).to_remote_symbol(RemoteName::new(remote));
+        if repo.get_remote_bookmark(symbol).target.is_absent() {
+            return Err(PyjutsuError::new_err(format!(
+                "no such remote bookmark '{name}@{remote}'"
+            )));
+        }
+        repo.untrack_remote_bookmark(symbol);
+        let remote_ref = repo.get_remote_bookmark(symbol);
+        BookmarkData::remote(name, remote, &remote_ref).to_dict(py)
     }
 
     /// Commit the transaction with `description`, publishing exactly one operation, and return

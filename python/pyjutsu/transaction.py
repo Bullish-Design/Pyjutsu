@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .models import Commit
+from .models import Bookmark, Commit
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -145,6 +145,52 @@ class Transaction:
         :class:`~pyjutsu.errors.ImmutableCommitError`. Must be called inside the ``with`` block.
         """
         self._require_open().abandon(commit)
+
+    def create_bookmark(self, name: str, commit: str) -> Bookmark:
+        """Create a new local bookmark ``name`` at ``commit`` → the new :class:`Bookmark`.
+
+        ``commit`` is any single-revision revset. Raises
+        :class:`~pyjutsu.errors.PyjutsuError` if a local bookmark ``name`` already exists (matches
+        ``jj bookmark create``, which refuses to clobber), or
+        :class:`~pyjutsu.errors.RevsetError` unless ``commit`` names exactly one revision. Must be
+        called inside the transaction's ``with`` block.
+        """
+        return Bookmark.model_validate(self._require_open().create_bookmark(name, commit))
+
+    def set_bookmark(self, name: str, commit: str) -> Bookmark:
+        """Point local bookmark ``name`` at ``commit``, creating it if absent → the :class:`Bookmark`.
+
+        Create-or-move (matches ``jj bookmark set``): unlike :meth:`create_bookmark`, it does not
+        error if ``name`` already exists. ``commit`` must name exactly one revision (else
+        :class:`~pyjutsu.errors.RevsetError`). Must be called inside the ``with`` block.
+        """
+        return Bookmark.model_validate(self._require_open().set_bookmark(name, commit))
+
+    def delete_bookmark(self, name: str) -> None:
+        """Delete local bookmark ``name`` (matches ``jj bookmark delete``).
+
+        Returns nothing. Raises :class:`~pyjutsu.errors.PyjutsuError` if no such local bookmark
+        exists, so a typo doesn't silently no-op. Must be called inside the ``with`` block.
+        """
+        self._require_open().delete_bookmark(name)
+
+    def track_bookmark(self, name: str, remote: str) -> Bookmark:
+        """Start tracking remote bookmark ``name@remote`` → its :class:`Bookmark` row.
+
+        Matches ``jj bookmark track name@remote``: merges the remote bookmark into the local one and
+        marks it tracked. Raises :class:`~pyjutsu.errors.PyjutsuError` if no such remote bookmark
+        exists. Must be called inside the ``with`` block.
+        """
+        return Bookmark.model_validate(self._require_open().track_bookmark(name, remote))
+
+    def untrack_bookmark(self, name: str, remote: str) -> Bookmark:
+        """Stop tracking remote bookmark ``name@remote`` → its :class:`Bookmark` row.
+
+        Matches ``jj bookmark untrack name@remote``: marks the remote bookmark untracked. Raises
+        :class:`~pyjutsu.errors.PyjutsuError` if no such remote bookmark exists. Must be called
+        inside the ``with`` block.
+        """
+        return Bookmark.model_validate(self._require_open().untrack_bookmark(name, remote))
 
     @property
     def description(self) -> str:
