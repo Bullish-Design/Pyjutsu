@@ -38,6 +38,12 @@ class JjCli:
     def __init__(self, config: Path) -> None:
         self._config = config
 
+    def append_config(self, toml: str) -> None:
+        """Append ``toml`` to the shared config file (read by both the CLI and the binding via
+        ``JJ_CONFIG``). Use before loading the workspace so both sides see the same settings."""
+        with self._config.open("a") as fh:
+            fh.write("\n" + toml.rstrip() + "\n")
+
     def _env(self) -> dict[str, str]:
         env = dict(os.environ)
         env["JJ_CONFIG"] = str(self._config)

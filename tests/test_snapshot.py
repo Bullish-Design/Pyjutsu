@@ -114,6 +114,52 @@ def test_auto_snapshot_disabled(scratch_repo: Path) -> None:
     assert len(ws.operations()) == ops_before + 1
 
 
+def test_snapshot_respects_gitignore_matches_cli(
+    scratch_repo: Path, tmp_path: Path, jj: JjCli
+) -> None:
+    # A repo-root `.gitignore` excludes `ignored.txt` from `@`'s snapshotted tree (jj's snapshotter
+    # chains it itself); `tracked.txt` is captured. Binding tree id must equal the CLI's.
+    other = _copy_repo(scratch_repo, tmp_path / "copy")
+    for d in (scratch_repo, other):
+        (d / ".gitignore").write_text("ignored.txt\n")
+        (d / "ignored.txt").write_text("secret\n")
+        (d / "tracked.txt").write_text("ok\n")
+
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    op = ws.snapshot()
+    jj(other, "status")  # force the CLI's implicit snapshot
+
+    assert op is not None
+    files = set(jj(scratch_repo, "file", "list", "-r", "@").split())
+    assert ".gitignore" in files
+    assert "tracked.txt" in files
+    assert "ignored.txt" not in files  # the gitignore kept it out of the tree
+    # Tree parity: identical `@` commit id on both sides.
+    assert jj.commit_id(scratch_repo, "@") == jj.commit_id(other, "@")
+
+
+def test_snapshot_max_file_size_matches_cli(
+    scratch_repo: Path, tmp_path: Path, jj: JjCli
+) -> None:
+    # With `snapshot.max-new-file-size = "10KiB"`, a 20 KiB new file is skipped exactly as the CLI
+    # skips it (left untracked), so `@`'s tree — and commit id — match.
+    jj.append_config('[snapshot]\nmax-new-file-size = "10KiB"')
+    other = _copy_repo(scratch_repo, tmp_path / "copy")
+    for d in (scratch_repo, other):
+        (d / "big.txt").write_bytes(b"x" * 20_000)  # > 10 KiB cap
+        (d / "small.txt").write_text("ok\n")
+
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    op = ws.snapshot()
+    jj(other, "status")
+
+    assert op is not None
+    files = set(jj(scratch_repo, "file", "list", "-r", "@").split())
+    assert "small.txt" in files
+    assert "big.txt" not in files  # the configured cap kept it out of the tree
+    assert jj.commit_id(scratch_repo, "@") == jj.commit_id(other, "@")
+
+
 def test_snapshot_modified_tracked_file(linear_repo: Path, tmp_path: Path, jj: JjCli) -> None:
     # Modifying an already-tracked file dirties `@`; the snapshot records it and matches the CLI.
     other = _copy_repo(linear_repo, tmp_path / "copy")

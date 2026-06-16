@@ -29,7 +29,7 @@ use jj_lib::op_walk;
 use jj_lib::ref_name::{RefName, RefNameBuf, RemoteName, WorkspaceName, WorkspaceNameBuf};
 use jj_lib::refs::BookmarkPushUpdate;
 use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader, StoreFactories};
-use jj_lib::settings::UserSettings;
+use jj_lib::settings::{HumanByteSize, UserSettings};
 use jj_lib::str_util::{StringExpression, StringPattern};
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
 use jj_lib::workspace::{Workspace, default_working_copy_factories, default_working_copy_factory};
@@ -369,6 +369,17 @@ impl PyWorkspace {
                 .map_err(map_backend_err)?
         };
         let name = ws.workspace_name().to_owned();
+
+        // Read the configured new-file cap now (a plain `u64`), before the working-copy lock
+        // mutably borrows `ws`. Honors `snapshot.max-new-file-size` (jj's `<N>`/`<N>KiB|MiB|…`
+        // form, via `HumanByteSize`), defaulting to 1 MiB when unset or unparseable — matching
+        // the CLI, which otherwise skips oversized new files (changing `@`'s tree).
+        let max_new_file_size = ws
+            .repo_loader()
+            .settings()
+            .get_value_with("snapshot.max-new-file-size", HumanByteSize::try_from)
+            .map_or(1 << 20, |size| size.0);
+
         let Some(wc_commit_id) = repo.view().get_wc_commit_id(&name).cloned() else {
             return Ok(None);
         };
@@ -404,11 +415,13 @@ impl PyWorkspace {
 
         // 3. Snapshot the on-disk tree (off the GIL — `LockedWorkspace` is `Send`).
         //
-        // NOTE: `SnapshotOptions` fidelity is the one documented refinement (slice 5 guide §2).
-        // `base_ignores = empty` + `max_new_file_size = 1 MiB` reproduce the CLI for repos without
-        // a `.gitignore` and without oversized files (every fixture; `.jj`/`.git` are excluded
-        // internally by the snapshotter). Full fidelity — chain the user/repo `.gitignore` and read
-        // `snapshot.max-new-file-size`/`snapshot.auto-track` from settings — is future work.
+        // `base_ignores` is `empty()` because the snapshotter chains every directory's own
+        // `.gitignore` as it descends (rooted at `base_ignores`; local_working_copy.rs:1524), so
+        // the repo's and nested `.gitignore` files are already honored — verified tree-id-identical
+        // to the CLI (0.4.0 slice 4). The only layer `base_ignores` would still add is the *global*
+        // git-excludes (`core.excludesFile`, `.git/info/exclude`, `~/.config/git/ignore`); chaining
+        // that, and wiring `snapshot.auto-track` into `start_tracking_matcher`, remain flagged.
+        // `max_new_file_size` now honors `snapshot.max-new-file-size` (read above).
         let everything = EverythingMatcher;
         let nothing = NothingMatcher;
         let options = SnapshotOptions {
@@ -416,7 +429,7 @@ impl PyWorkspace {
             progress: None,
             start_tracking_matcher: &everything,
             force_tracking_matcher: &nothing,
-            max_new_file_size: 1 << 20, // 1 MiB — the jj CLI's `snapshot.max-new-file-size` default.
+            max_new_file_size,
         };
         let new_tree = py
             .allow_threads(|| pollster::block_on(locked_ws.locked_wc().snapshot(&options)))
