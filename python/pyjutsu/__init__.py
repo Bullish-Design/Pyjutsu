@@ -11,6 +11,7 @@ from . import _pyjutsu as _ext
 from .errors import (
     BackendError,
     ConflictError,
+    GitError,
     ImmutableCommitError,
     PyjutsuError,
     RevsetError,
@@ -27,6 +28,7 @@ from .models import (
     DiffStat,
     FileStat,
     Operation,
+    Remote,
     Signature,
     WorkspaceInfo,
 )
@@ -63,6 +65,7 @@ __all__ = [
     "Operation",
     "Bookmark",
     "WorkspaceInfo",
+    "Remote",
     "Conflict",
     "DiffStat",
     "FileStat",
@@ -77,6 +80,7 @@ __all__ = [
     "WorkingCopyError",
     "StaleWorkingCopyError",
     "ImmutableCommitError",
+    "GitError",
     "JJ_VERSION",
     "__version__",
 ]

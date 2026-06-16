@@ -160,6 +160,17 @@ class JjCli:
         out = self(repo, "workspace", "list", "-T", 'name ++ "\\n"')
         return {line for line in out.splitlines() if line}
 
+    def remotes(self, repo: Path) -> dict[str, str]:
+        """Map of git remote name → fetch url from `jj git remote list` (lines: ``name url``)."""
+        out = self(repo, "git", "remote", "list")
+        result: dict[str, str] = {}
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            name, url = line.split(" ", 1)
+            result[name] = url
+        return result
+
     def signature(self, repo: Path, revset: str, which: str) -> dict[str, object]:
         """The ``author``/``committer`` of ``revset`` as {name, email, epoch, tz_minutes}."""
         name = self.template(repo, revset, f"{which}.name()")

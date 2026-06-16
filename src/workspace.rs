@@ -5,32 +5,36 @@
 //! a `Mutex`, since it owns a `MutableRepo`). The Python `tx` object is a thin token whose methods
 //! re-enter this handle. A mutation transaction publishes exactly one jj operation on commit.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use gix::remote::{Direction, fetch::Tags};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use jj_lib::commit::Commit;
 use jj_lib::config::{ConfigSource, StackedConfig};
+use jj_lib::git::{self, GitImportOptions};
 use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_store::OperationId;
 use jj_lib::op_walk;
 use jj_lib::ref_name::{WorkspaceName, WorkspaceNameBuf};
-use jj_lib::repo::{ReadonlyRepo, Repo, StoreFactories};
+use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader, StoreFactories};
 use jj_lib::settings::UserSettings;
+use jj_lib::str_util::StringExpression;
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
 use jj_lib::workspace::{Workspace, default_working_copy_factories, default_working_copy_factory};
 use jj_lib::workspace_store::{SimpleWorkspaceStore, WorkspaceStore};
 
-use crate::convert::{CommitData, OperationData, WorkspaceInfoData};
+use crate::convert::{CommitData, OperationData, RemoteData, WorkspaceInfoData};
 use crate::errors::{
-    PyjutsuError, StaleWorkingCopyError, map_backend_err, map_edit_err, map_workingcopy_err,
-    map_workspace_err, to_py_err,
+    PyjutsuError, StaleWorkingCopyError, map_backend_err, map_edit_err, map_git_err,
+    map_workingcopy_err, map_workspace_err, to_py_err,
 };
 use crate::repo_view::PyRepoView;
 use crate::transaction::PyTransaction;
@@ -178,6 +182,20 @@ impl PyWorkspace {
             Self::checkout_locked(py, ws, op_id, &new_commit)?;
         }
         OperationData::build(new_repo.operation()).to_dict(py)
+    }
+
+    /// A freshly-loaded `RepoLoader` that re-opens the store (and its git backend) from disk. The
+    /// git-config-touching verbs (`remotes`/`add_remote`/`remove_remote`/`rename_remote`/
+    /// `set_remote_url`) need this: a `GitBackend`'s gix repository freezes a config **snapshot** at
+    /// open time, and the workspace's own cached loader is opened once at `Workspace::load`. So a
+    /// remote added through this handle would be invisible to a later read on the same handle if both
+    /// went through the cached loader (the CLI sidesteps this by being a fresh process per command).
+    /// Re-opening per verb reads the current on-disk git config, matching the CLI's behaviour.
+    fn fresh_loader(ws: &Workspace) -> PyResult<RepoLoader> {
+        let settings = ws.repo_loader().settings().clone();
+        let store_factories = StoreFactories::default();
+        RepoLoader::init_from_file_system(&settings, ws.repo_path(), &store_factories)
+            .map_err(map_backend_err)
     }
 }
 
@@ -670,6 +688,188 @@ impl PyWorkspace {
                 .collect()
         })?;
         rows.iter().map(|r| r.to_dict(py)).collect()
+    }
+
+    /// Reflect changes in the backing git repo into jj's view (`jj git import`): import HEAD + refs,
+    /// publishing one operation — or `None` if nothing changed. If the import abandons the commit `@`
+    /// sat on, the on-disk working copy is checked out to the new `@` (off the GIL).
+    ///
+    /// `import_refs` can abandon unreachable git commits (its `abandon_unreachable_commits` option),
+    /// which registers rewrites — so `rebase_descendants()` runs before commit (landmine #1). The
+    /// `!Send` `Transaction` is created **and dropped inside one synchronous off-GIL closure on one
+    /// thread** (as in `forget_workspace`), so the backend I/O runs off the GIL without the
+    /// transaction crossing a thread boundary. `has_changes()` is the no-op signal: when the import
+    /// changed nothing, the tx is dropped uncommitted and no operation is published.
+    fn git_import<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let mut guard = self.locked()?;
+        let ws: &mut Workspace = &mut guard;
+        let name = ws.workspace_name().to_owned();
+        let repo = {
+            let loader = ws.repo_loader();
+            py.allow_threads(|| loader.load_at_head())
+                .map_err(map_backend_err)?
+        };
+
+        let new_repo = py.allow_threads(|| -> PyResult<Option<Arc<ReadonlyRepo>>> {
+            // Plain `jj git import` options (jj-lib's `default_import_options`): no
+            // auto-local-bookmark, abandon unreachable git commits, no per-remote auto-track (the
+            // `--remote`/track refinements are out of scope). `GitImportOptions` has no `Default`,
+            // so build it explicitly — and inside this closure, since it is `!Sync` (its
+            // `StringMatcher` map) and would otherwise break the `allow_threads` `Ungil` bound.
+            let options = GitImportOptions {
+                auto_local_bookmark: false,
+                abandon_unreachable_commits: true,
+                remote_auto_track_bookmarks: HashMap::new(),
+            };
+            let mut tx = repo.start_transaction();
+            git::import_head(tx.repo_mut()).map_err(map_git_err)?;
+            git::import_refs(tx.repo_mut(), &options).map_err(map_git_err)?;
+            tx.repo_mut().rebase_descendants().map_err(map_backend_err)?;
+            if !tx.repo_mut().has_changes() {
+                return Ok(None);
+            }
+            Ok(Some(tx.commit("import git refs").map_err(map_backend_err)?))
+        })?;
+        let Some(new_repo) = new_repo else {
+            return Ok(None);
+        };
+        Ok(Some(self.finish_op(py, ws, &name, &repo, &new_repo)?))
+    }
+
+    /// Export jj's bookmarks/tags to the backing git repo's refs (`jj git export`), publishing one
+    /// operation — or `None` if nothing changed. Raises `GitError` listing any bookmark that failed
+    /// to export (a partial export is a real failure the caller must see). Export is `@`-neutral in
+    /// practice, but it is run through the same `finish_op` tail uniformly with import.
+    fn git_export<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let mut guard = self.locked()?;
+        let ws: &mut Workspace = &mut guard;
+        let name = ws.workspace_name().to_owned();
+        let repo = {
+            let loader = ws.repo_loader();
+            py.allow_threads(|| loader.load_at_head())
+                .map_err(map_backend_err)?
+        };
+
+        let new_repo = py.allow_threads(|| -> PyResult<Option<Arc<ReadonlyRepo>>> {
+            let mut tx = repo.start_transaction();
+            let stats = git::export_refs(tx.repo_mut()).map_err(map_git_err)?;
+            if !stats.failed_bookmarks.is_empty() {
+                let names = stats
+                    .failed_bookmarks
+                    .iter()
+                    .map(|(symbol, _reason)| symbol.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(map_git_err(format!(
+                    "failed to export some bookmarks: {names}"
+                )));
+            }
+            if !tx.repo_mut().has_changes() {
+                return Ok(None);
+            }
+            Ok(Some(tx.commit("export git refs").map_err(map_backend_err)?))
+        })?;
+        let Some(new_repo) = new_repo else {
+            return Ok(None);
+        };
+        Ok(Some(self.finish_op(py, ws, &name, &repo, &new_repo)?))
+    }
+
+    /// List the configured git remotes: each remote's name + its **fetch** URL. Read-only; matches
+    /// `jj git remote list`. jj-lib exposes `get_all_remote_names` (names only), so the URL is read
+    /// from the git config via `get_git_repo(store).find_remote(name).url(Direction::Fetch)` and
+    /// stringified Rust-side — **no `gix` type crosses the FFI**. A remote with no fetch URL ⇒ `None`.
+    fn remotes<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let guard = self.locked()?;
+        let loader = Self::fresh_loader(&guard)?;
+        let rows = py.allow_threads(move || -> PyResult<Vec<RemoteData>> {
+            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let store = repo.store();
+            let names = git::get_all_remote_names(store).map_err(map_git_err)?;
+            let git_repo = git::get_git_repo(store).map_err(map_git_err)?;
+            names
+                .iter()
+                .map(|n| {
+                    let url = git_repo
+                        .find_remote(n.as_str())
+                        .ok()
+                        .and_then(|r| r.url(Direction::Fetch).map(|u| u.to_string()));
+                    Ok(RemoteData::new(n.as_str(), url.as_deref()))
+                })
+                .collect()
+        })?;
+        rows.iter().map(|r| r.to_dict(py)).collect()
+    }
+
+    /// Add a git remote (`jj git remote add`), publishing one operation. `push_url`, `fetch_tags`,
+    /// and per-remote auto-track are the CLI's defaults (`None` / `Tags::None` / match-all) — the
+    /// refinements are out of scope, not exposed. A duplicate name raises `GitError`.
+    ///
+    /// `add_remote` is a `&mut MutableRepo` mutation that changes the view, so it runs inside a
+    /// transaction publishing exactly one op. The `!Send` `Transaction` stays inside one off-GIL
+    /// closure on one thread (as in `forget_workspace`).
+    fn add_remote(&self, py: Python<'_>, name: &str, url: &str) -> PyResult<()> {
+        let guard = self.locked()?;
+        let loader = Self::fresh_loader(&guard)?;
+        py.allow_threads(move || -> PyResult<()> {
+            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let mut tx = repo.start_transaction();
+            git::add_remote(
+                tx.repo_mut(),
+                name.as_ref(),
+                url,
+                None,
+                Tags::None,
+                &StringExpression::all(),
+            )
+            .map_err(map_git_err)?;
+            tx.commit(format!("add git remote '{name}'"))
+                .map_err(map_backend_err)?;
+            Ok(())
+        })
+    }
+
+    /// Remove a git remote (`jj git remote remove`), publishing one operation; also deletes the
+    /// remote's git refs from the view. An unknown remote raises `GitError`.
+    fn remove_remote(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        let guard = self.locked()?;
+        let loader = Self::fresh_loader(&guard)?;
+        py.allow_threads(move || -> PyResult<()> {
+            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let mut tx = repo.start_transaction();
+            git::remove_remote(tx.repo_mut(), name.as_ref()).map_err(map_git_err)?;
+            tx.commit(format!("remove git remote '{name}'"))
+                .map_err(map_backend_err)?;
+            Ok(())
+        })
+    }
+
+    /// Rename a git remote (`jj git remote rename`), publishing one operation. An unknown `old`
+    /// remote (or a `new` that already exists) raises `GitError`.
+    fn rename_remote(&self, py: Python<'_>, old: &str, new: &str) -> PyResult<()> {
+        let guard = self.locked()?;
+        let loader = Self::fresh_loader(&guard)?;
+        py.allow_threads(move || -> PyResult<()> {
+            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let mut tx = repo.start_transaction();
+            git::rename_remote(tx.repo_mut(), old.as_ref(), new.as_ref()).map_err(map_git_err)?;
+            tx.commit(format!("rename git remote '{old}' to '{new}'"))
+                .map_err(map_backend_err)?;
+            Ok(())
+        })
+    }
+
+    /// Change a remote's fetch URL (`jj git remote set-url`). `set_remote_urls` takes `&Store` and
+    /// only rewrites git config — it changes no jj view, so it publishes **NO jj operation** (the
+    /// asymmetry vs the other CRUD verbs). An unknown remote raises `GitError`.
+    fn set_remote_url(&self, py: Python<'_>, name: &str, url: &str) -> PyResult<()> {
+        let guard = self.locked()?;
+        let loader = Self::fresh_loader(&guard)?;
+        py.allow_threads(move || -> PyResult<()> {
+            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            git::set_remote_urls(repo.store(), name.as_ref(), Some(url), None)
+                .map_err(map_git_err)
+        })
     }
 
     /// Open a transaction: claim the single-tx slot, reload the repo at head, start a native

@@ -235,6 +235,30 @@ impl WorkspaceInfoData {
     }
 }
 
+/// Plain git-remote row: one configured remote's name + its **fetch** URL (concept §134). `url` is
+/// stringified Rust-side from `gix::Url` so no `gix` type crosses the FFI; it is `None` if the remote
+/// has no fetch URL configured.
+pub(crate) struct RemoteData {
+    name: String,
+    url: Option<String>,
+}
+
+impl RemoteData {
+    pub(crate) fn new(name: &str, url: Option<&str>) -> Self {
+        Self {
+            name: name.to_owned(),
+            url: url.map(str::to_owned),
+        }
+    }
+
+    pub(crate) fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        dict.set_item("name", &self.name)?;
+        dict.set_item("url", self.url.as_deref())?;
+        Ok(dict)
+    }
+}
+
 /// Plain conflict row: one per conflicted path in a commit's tree. jj conflicts are N-sided
 /// (concept §8.9) — `num_sides` is the number of positive terms, `num_bases` the negative
 /// (removed) terms. A regular 3-way merge conflict is `num_sides=2, num_bases=1`.

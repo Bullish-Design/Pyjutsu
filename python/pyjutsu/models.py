@@ -136,6 +136,21 @@ class WorkspaceInfo(BaseModel):
     wc_commit_id: CommitId
 
 
+class Remote(BaseModel):
+    """A configured git remote: its name and **fetch** URL (``jj git remote list``).
+
+    jj stores its history in a git backend (concept §134); a *remote* is a named URL jj can later
+    fetch from / push to. ``url`` is the fetch URL; a remote's push URL is available in jj but out
+    of scope here.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    #: The remote's fetch URL; ``None`` if the remote has no fetch URL configured.
+    url: str | None
+
+
 class Operation(BaseModel):
     """One entry in jj's operation log — an atomic change to the repo state."""
 

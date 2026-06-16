@@ -37,6 +37,10 @@
     "path",
     "wc_commit_id"
   ],
+  "Remote": [
+    "name",
+    "url"
+  ],
   "Conflict": [
     "num_bases",
     "num_sides",

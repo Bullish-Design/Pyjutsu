@@ -23,6 +23,9 @@ create_exception!(_pyjutsu, WorkingCopyError, PyjutsuError, "The working copy co
 // StaleWorkingCopyError ⊂ WorkingCopyError: operating on a `@` another operation has moved past.
 create_exception!(_pyjutsu, StaleWorkingCopyError, WorkingCopyError, "The working copy is stale (another operation moved `@`).");
 create_exception!(_pyjutsu, ImmutableCommitError, PyjutsuError, "An attempt was made to rewrite or abandon an immutable commit (e.g. the root).");
+// GitError ⊂ BackendError: a git import/export or remote-management operation failed (the backing
+// git repo or its config). Subclasses BackendError because git is jj's store/backend (concept §134).
+create_exception!(_pyjutsu, GitError, BackendError, "A git import/export or remote operation failed.");
 
 /// Register the exception types on the module (one `add` per type so Python can import them).
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -34,6 +37,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("WorkingCopyError", m.py().get_type::<WorkingCopyError>())?;
     m.add("StaleWorkingCopyError", m.py().get_type::<StaleWorkingCopyError>())?;
     m.add("ImmutableCommitError", m.py().get_type::<ImmutableCommitError>())?;
+    m.add("GitError", m.py().get_type::<GitError>())?;
     Ok(())
 }
 
@@ -62,6 +66,12 @@ pub(crate) fn map_revset_err<E: std::fmt::Display>(err: E) -> PyErr {
 /// `WorkingCopyError`. Reused by every `@`-rewriting slice's post-commit on-disk checkout.
 pub(crate) fn map_workingcopy_err<E: std::fmt::Display>(err: E) -> PyErr {
     WorkingCopyError::new_err(err.to_string())
+}
+
+/// Git import/export + remote-management failures (`GitImportError`, `GitExportError`,
+/// `GitRemoteManagementError`, `UnexpectedGitBackendError`) → `GitError`. Display-only crosses FFI.
+pub(crate) fn map_git_err<E: std::fmt::Display>(err: E) -> PyErr {
+    GitError::new_err(err.to_string())
 }
 
 /// `edit` failures: rewriting the root → `ImmutableCommitError`; everything else is a backend

@@ -11,7 +11,15 @@ import os
 from pathlib import Path
 
 from ._pyjutsu import PyWorkspace
-from .models import Bookmark, Commit, Conflict, DiffStat, Operation, WorkspaceInfo
+from .models import (
+    Bookmark,
+    Commit,
+    Conflict,
+    DiffStat,
+    Operation,
+    Remote,
+    WorkspaceInfo,
+)
 from .repo_view import RepoView
 from .transaction import Transaction
 
@@ -70,6 +78,68 @@ class Workspace:
         list``): the ``default`` workspace plus any added with :meth:`add_workspace`.
         """
         return [WorkspaceInfo.model_validate(row) for row in self._handle.workspaces()]
+
+    def git_import(self) -> Operation | None:
+        """Reflect changes in the backing git repo into jj's view → the published :class:`Operation`,
+        or ``None`` if nothing changed (no operation published).
+
+        Matches ``jj git import``: imports git HEAD and refs (creating/updating bookmarks for new git
+        branches, abandoning commits that became unreachable in git). If the import moves ``@``, the
+        on-disk working copy is checked out to the new ``@``. Raises
+        :class:`~pyjutsu.errors.GitError` on a git backend failure.
+        """
+        row = self._handle.git_import()
+        return Operation.model_validate(row) if row is not None else None
+
+    def git_export(self) -> Operation | None:
+        """Export jj's bookmarks to the backing git repo's refs → the published :class:`Operation`,
+        or ``None`` if nothing changed (no operation published).
+
+        Matches ``jj git export``: writes each jj bookmark to its ``refs/heads/<name>`` git ref.
+        Raises :class:`~pyjutsu.errors.GitError` listing any bookmark that failed to export.
+        """
+        row = self._handle.git_export()
+        return Operation.model_validate(row) if row is not None else None
+
+    def remotes(self) -> list[Remote]:
+        """The configured git remotes → their :class:`Remote` rows (``jj git remote list``).
+
+        Each row carries the remote's name and **fetch** URL (``None`` if none is configured).
+        Read-only.
+        """
+        return [Remote.model_validate(row) for row in self._handle.remotes()]
+
+    def add_remote(self, name: str, url: str) -> None:
+        """Add a git remote ``name`` → ``url`` (``jj git remote add``), publishing one operation.
+
+        ``url`` is used as both the fetch and push URL (the CLI default). Raises
+        :class:`~pyjutsu.errors.GitError` if a remote ``name`` already exists.
+        """
+        self._handle.add_remote(name, url)
+
+    def remove_remote(self, name: str) -> None:
+        """Remove the git remote ``name`` (``jj git remote remove``), publishing one operation.
+
+        Also drops the remote's tracking refs from jj's view. Raises
+        :class:`~pyjutsu.errors.GitError` if no remote ``name`` exists.
+        """
+        self._handle.remove_remote(name)
+
+    def rename_remote(self, old: str, new: str) -> None:
+        """Rename git remote ``old`` to ``new`` (``jj git remote rename``), publishing one operation.
+
+        Raises :class:`~pyjutsu.errors.GitError` if ``old`` doesn't exist or ``new`` already does.
+        """
+        self._handle.rename_remote(old, new)
+
+    def set_remote_url(self, name: str, url: str) -> None:
+        """Change git remote ``name``'s fetch URL to ``url`` (``jj git remote set-url``).
+
+        This is a pure git-config write — it changes no jj view and so publishes **no** jj operation
+        (unlike the other remote verbs). Raises :class:`~pyjutsu.errors.GitError` if no remote
+        ``name`` exists.
+        """
+        self._handle.set_remote_url(name, url)
 
     @property
     def name(self) -> str:

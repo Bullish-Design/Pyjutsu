@@ -10,6 +10,7 @@ from __future__ import annotations
 from ._pyjutsu import (
     BackendError,
     ConflictError,
+    GitError,
     ImmutableCommitError,
     PyjutsuError,
     RevsetError,
@@ -27,4 +28,5 @@ __all__ = [
     "WorkingCopyError",
     "StaleWorkingCopyError",
     "ImmutableCommitError",
+    "GitError",
 ]
