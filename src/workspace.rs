@@ -25,7 +25,7 @@ use jj_lib::settings::UserSettings;
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
 use jj_lib::workspace::{Workspace, default_working_copy_factories};
 
-use crate::convert::OperationData;
+use crate::convert::{CommitData, OperationData};
 use crate::errors::{
     PyjutsuError, StaleWorkingCopyError, map_backend_err, map_workingcopy_err, map_workspace_err,
     to_py_err,
@@ -317,6 +317,90 @@ impl PyWorkspace {
             .map_err(map_workingcopy_err)?;
 
         let data = OperationData::build(new_repo.operation());
+        Ok(Some(data.to_dict(py)?))
+    }
+
+    /// Whether the on-disk working copy is **stale** relative to the repo's current `@` — i.e. the
+    /// repo advanced past (or diverged from) the operation the working copy was last written at, and
+    /// the on-disk tree no longer matches `@`. A read-only probe (matches what `jj` checks before
+    /// each command); mutating or snapshotting a stale `@` raises `StaleWorkingCopyError`.
+    fn is_stale(&self, py: Python<'_>) -> PyResult<bool> {
+        let mut guard = self.locked()?;
+        let ws: &mut Workspace = &mut guard;
+
+        let repo = {
+            let loader = ws.repo_loader();
+            py.allow_threads(|| loader.load_at_head())
+                .map_err(map_backend_err)?
+        };
+        let name = ws.workspace_name().to_owned();
+        let Some(wc_commit_id) = repo.view().get_wc_commit_id(&name).cloned() else {
+            return Ok(false); // no `@` in this workspace ⇒ nothing can be stale
+        };
+        let wc_commit = repo
+            .store()
+            .get_commit(&wc_commit_id)
+            .map_err(map_backend_err)?;
+
+        // `check_stale` needs the WC lock (`old_operation_id` + `old_tree`); take it, check, drop it.
+        let mut locked_ws = ws
+            .start_working_copy_mutation()
+            .map_err(map_workingcopy_err)?;
+        let freshness = WorkingCopyFreshness::check_stale(locked_ws.locked_wc(), &wc_commit, &repo)
+            .map_err(map_backend_err)?;
+        Ok(matches!(
+            freshness,
+            WorkingCopyFreshness::WorkingCopyStale | WorkingCopyFreshness::SiblingOperation
+        ))
+    }
+
+    /// Reconcile a stale working copy: check out the repo's current `@` into it (matches
+    /// `jj workspace update-stale`), returning the now-current `@` as a plain dict — or `None` if the
+    /// working copy was already fresh (nothing to do). The checkout is I/O and runs **off the GIL**.
+    fn update_stale<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let mut guard = self.locked()?;
+        let ws: &mut Workspace = &mut guard;
+
+        let repo = {
+            let loader = ws.repo_loader();
+            py.allow_threads(|| loader.load_at_head())
+                .map_err(map_backend_err)?
+        };
+        let name = ws.workspace_name().to_owned();
+        let Some(wc_commit_id) = repo.view().get_wc_commit_id(&name).cloned() else {
+            return Ok(None);
+        };
+        let wc_commit = repo
+            .store()
+            .get_commit(&wc_commit_id)
+            .map_err(map_backend_err)?;
+
+        // 1. Staleness check (own lock scope; dropped before the forced checkout re-locks).
+        let stale = {
+            let mut locked_ws = ws
+                .start_working_copy_mutation()
+                .map_err(map_workingcopy_err)?;
+            let freshness =
+                WorkingCopyFreshness::check_stale(locked_ws.locked_wc(), &wc_commit, &repo)
+                    .map_err(map_backend_err)?;
+            matches!(
+                freshness,
+                WorkingCopyFreshness::WorkingCopyStale | WorkingCopyFreshness::SiblingOperation
+            )
+        };
+        if !stale {
+            return Ok(None); // matches the CLI's "the working copy is not stale" no-op
+        }
+
+        // 2. Forced checkout of `@` at head. `old_tree = None` bypasses the `ConcurrentCheckout`
+        //    guard — which would otherwise trip on exactly the stale on-disk tree we mean to
+        //    overwrite (so the slice-2 `checkout_wc`, which passes `Some`, cannot be reused here).
+        let op_id = repo.operation().id().clone();
+        py.allow_threads(|| ws.check_out(op_id, None, &wc_commit))
+            .map_err(map_workingcopy_err)?;
+
+        // 3. Return the reconciled `@` (build off the GIL — `is_empty` touches the backend).
+        let data = py.allow_threads(|| CommitData::build(&*repo, &wc_commit))?;
         Ok(Some(data.to_dict(py)?))
     }
 

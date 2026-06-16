@@ -69,6 +69,26 @@ class Workspace:
         row = self._handle.snapshot()
         return Operation.model_validate(row) if row is not None else None
 
+    def is_stale(self) -> bool:
+        """Whether the on-disk working copy is stale relative to the repo's current ``@``.
+
+        The repo advanced past (or diverged from) the operation the working copy was last written
+        at, and the on-disk tree no longer matches ``@`` — a ``jj`` command would auto-reconcile (or
+        refuse). Mutating or snapshotting a stale ``@`` raises
+        :class:`~pyjutsu.errors.StaleWorkingCopyError`; call :meth:`update_stale` to reconcile.
+        """
+        return self._handle.is_stale()
+
+    def update_stale(self) -> Commit | None:
+        """Reconcile a stale working copy by checking out the repo's current ``@`` → that
+        :class:`Commit`, or ``None`` if the working copy was already fresh (nothing to do).
+
+        Matches ``jj workspace update-stale``. The on-disk files are updated to ``@``'s tree and the
+        working copy's recorded operation is advanced to the repo head.
+        """
+        row = self._handle.update_stale()
+        return Commit.model_validate(row) if row is not None else None
+
     def head(self) -> RepoView:
         """A :class:`RepoView` of the repo at its **head** operation, scoped to this workspace.
 
