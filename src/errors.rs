@@ -4,6 +4,7 @@
 //! when mapping a `jj-lib` error; `python/pyjutsu/errors.py` merely re-exports these. The thin
 //! layer never leaks the concrete `jj-lib` error type — only its `Display` message is carried.
 
+use jj_lib::repo::EditCommitError;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -61,4 +62,13 @@ pub(crate) fn map_revset_err<E: std::fmt::Display>(err: E) -> PyErr {
 /// `WorkingCopyError`. Reused by every `@`-rewriting slice's post-commit on-disk checkout.
 pub(crate) fn map_workingcopy_err<E: std::fmt::Display>(err: E) -> PyErr {
     WorkingCopyError::new_err(err.to_string())
+}
+
+/// `edit` failures: rewriting the root → `ImmutableCommitError`; everything else is a backend
+/// problem. Variant-matching (not `Display`-only) so the immutable case raises the precise subclass.
+pub(crate) fn map_edit_err(err: EditCommitError) -> PyErr {
+    match err {
+        EditCommitError::RewriteRootCommit(_) => ImmutableCommitError::new_err(err.to_string()),
+        _ => BackendError::new_err(err.to_string()),
+    }
 }

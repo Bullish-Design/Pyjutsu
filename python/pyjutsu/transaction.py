@@ -125,6 +125,27 @@ class Transaction:
             revsets = list(parents)
         return Commit.model_validate(self._require_open().new(revsets))
 
+    def edit(self, commit: str) -> Commit:
+        """Point ``@`` at the existing ``commit`` (single-revision revset) → that :class:`Commit`.
+
+        Unlike :meth:`new`, no new commit is written: ``@`` is moved onto an existing commit, whose
+        content is returned unchanged. The on-disk working copy is updated to the edited commit's
+        tree when the transaction commits. ``commit`` must name exactly one revision (else
+        :class:`~pyjutsu.errors.RevsetError`); editing the root raises
+        :class:`~pyjutsu.errors.ImmutableCommitError`. Must be called inside the ``with`` block.
+        """
+        return Commit.model_validate(self._require_open().edit(commit))
+
+    def abandon(self, commit: str) -> None:
+        """Abandon ``commit`` (single-revision revset); its children rebase onto its parent(s).
+
+        Returns nothing — the commit is gone. Abandoning ``@`` advances ``@`` to a fresh empty
+        commit on top of the old parents. ``commit`` must name exactly one revision (else
+        :class:`~pyjutsu.errors.RevsetError`); abandoning the root raises
+        :class:`~pyjutsu.errors.ImmutableCommitError`. Must be called inside the ``with`` block.
+        """
+        self._require_open().abandon(commit)
+
     @property
     def description(self) -> str:
         """The operation description this transaction commits with."""

@@ -31,7 +31,9 @@ use jj_lib::rewrite::merge_commit_trees;
 use jj_lib::transaction::Transaction;
 
 use crate::convert::CommitData;
-use crate::errors::{PyjutsuError, RevsetError, map_backend_err};
+use crate::errors::{
+    ImmutableCommitError, PyjutsuError, RevsetError, map_backend_err, map_edit_err,
+};
 use crate::revset;
 use crate::workspace::PyWorkspace;
 
@@ -191,6 +193,52 @@ impl PyTransaction {
         repo.rebase_descendants().map_err(map_backend_err)?;
         let data = CommitData::build(&*repo, &new_commit)?;
         data.to_dict(py)
+    }
+
+    /// Point `@` at the existing commit named by `revset_str` (no new commit is written; contrast
+    /// `new`), returning that commit as a plain dict. `MutableRepo::edit` may abandon the old `@`
+    /// if it was discardable (registering a rewrite), so we `rebase_descendants()` before reading
+    /// the result back; the target's own commit id is unchanged, but bookmarks around it may move.
+    /// Editing the **root** returns `EditCommitError::RewriteRootCommit` → `ImmutableCommitError`.
+    /// `@` moves to the target, so `commit`'s checkout updates the on-disk working copy.
+    fn edit<'py>(&self, py: Python<'py>, revset_str: &str) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs).
+        let repo = tx.repo_mut();
+        let target = self.resolve_single(&*repo, revset_str)?;
+        repo.edit(self.workspace_name.clone(), &target)
+            .map_err(map_edit_err)?;
+        repo.rebase_descendants().map_err(map_backend_err)?;
+        let target = self.resolve_single(&*repo, revset_str)?; // re-read post-rebase
+        let data = CommitData::build(&*repo, &target)?;
+        data.to_dict(py)
+    }
+
+    /// Abandon the commit named by `revset_str`; its children are rebased onto its parent(s).
+    /// Returns nothing (the commit is gone). Abandoning `@` advances `@` to a fresh empty commit
+    /// on top of the old parents, so `commit`'s checkout fires.
+    ///
+    /// `record_abandoned_commit` `assert_ne!`s on the root commit (it would **panic**, surfacing as
+    /// a generic `PanicException` through PyO3), so we guard the root explicitly and raise
+    /// `ImmutableCommitError`. Only the root is enforced — jj's configurable `immutable_heads()`
+    /// set is CLI workflow policy, which the thin layer deliberately does not replicate.
+    fn abandon(&self, revset_str: &str) -> PyResult<()> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs).
+        let repo = tx.repo_mut();
+        let target = self.resolve_single(&*repo, revset_str)?;
+        if target.id() == repo.store().root_commit_id() {
+            return Err(ImmutableCommitError::new_err("cannot abandon the root commit"));
+        }
+        repo.record_abandoned_commit(&target);
+        repo.rebase_descendants().map_err(map_backend_err)?;
+        Ok(())
     }
 
     /// Commit the transaction with `description`, publishing exactly one operation, and return
