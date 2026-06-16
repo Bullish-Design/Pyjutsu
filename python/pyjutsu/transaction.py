@@ -107,6 +107,24 @@ class Transaction:
             self._require_open().describe(commit, _complete_newline(message))
         )
 
+    def new(self, parents: list[str] | str | None = None) -> Commit:
+        """Create a new commit on top of ``parents`` and point ``@`` at it → the new :class:`Commit`.
+
+        ``parents`` may be a single revset, a list of revsets, or ``None`` (the default), in which
+        case the new commit is a child of the current ``@`` (the common ``jj new``). With multiple
+        parents the new commit is a merge: its tree is the merge of the parents' trees. Each revset
+        must name exactly one revision (else :class:`~pyjutsu.errors.RevsetError`). The on-disk
+        working copy is updated to the new ``@`` when the transaction commits. Must be called
+        inside the transaction's ``with`` block.
+        """
+        if parents is None:
+            revsets: list[str] | None = None
+        elif isinstance(parents, str):
+            revsets = [parents]
+        else:
+            revsets = list(parents)
+        return Commit.model_validate(self._require_open().new(revsets))
+
     @property
     def description(self) -> str:
         """The operation description this transaction commits with."""

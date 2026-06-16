@@ -8,9 +8,10 @@
 You are continuing **M2 (the write layer)** of **Pyjutsu** (`import pyjutsu`): the Pythonic +
 Pydantic binding to **jujutsu's Rust engine (`jj-lib`) via PyO3/maturin**, in-process, no
 subprocess backend, no text parsing. **M0 (build spike), M1 (read layer, released `0.39.0`), and
-M2 slices 0–1 are done.** Slices 0–1 are **in the working tree on `main`** (consider committing
-them first). M2 ships as pyjutsu **`0.40.0`** (versioned independently of jj; pin stays
-`jj-lib = "=0.38.0"`).
+M2 slices 0–1 are done.** Slices 0–1 are **committed and merged to `main`** and **released as
+pyjutsu `0.40.0`** (tag `v0.40.0`); the working tree is clean, so start from `main`. The remaining
+M2 slices (2–11) continue on their own cadence; the **completed** write layer will bump to
+**`0.41.0`** (versioned independently of jj; pin stays `jj-lib = "=0.38.0"`).
 
 **Read `M2_CONTINUATION_GUIDE.md` end to end first** — it has the current code map, the *verified*
 corrections to the original guide, the reusable mutation/test templates, and a detailed plan for
@@ -87,9 +88,10 @@ the slice boundary** before slice 3.
   The refs are verified, but **confirm any signature marked "verify at slice N"** before wiring —
   especially `rebase` (`move_commits` field names, rewrite.rs:525–600, slice 8) and `undo`
   (`merge`-based reverse vs the CLI's view-restore, slice 7).
-- **On completion of all slices:** bump `__version__ = "0.40.0"`, update concept §3/§5 status to
-  "M2 implemented", regenerate goldens (`WorkspaceInfo`/`Remote`), confirm the
-  `JJ_VERSION == JJ_LIB_TARGET` tripwire is green.
+- **On completion of all slices:** bump to **`0.41.0`** (in `python/pyjutsu/__init__.py`,
+  `pyproject.toml`, `Cargo.toml`; rebuild to refresh `Cargo.lock`/`uv.lock`) — `0.40.0` already
+  shipped slices 0–1. Update concept §3/§5 status to "M2 implemented", regenerate goldens
+  (`WorkspaceInfo`/`Remote`), confirm the `JJ_VERSION == JJ_LIB_TARGET` tripwire is green.
 
 ## Guardrails
 
@@ -100,7 +102,7 @@ the slice boundary** before slice 3.
 - Don't forget `rebase_descendants()` before commit (process-abort landmine).
 - Don't try to move a `Transaction`/`MutableRepo` across `allow_threads` (it's `!Send`).
 - Don't run bare host tooling — everything through devenv. No AI attribution.
-- Don't tie the pyjutsu version to jj (M2 is the independent bump `→ 0.40.0`).
+- Don't tie the pyjutsu version to jj (slices 0–1 shipped `0.40.0`; completed M2 → `0.41.0`).
 
 **Start by reading `M2_CONTINUATION_GUIDE.md` and skimming the slice 0–1 code, then implement
 Slice 2 (`tx.new` + the `PyTransaction`→`PyWorkspace` back-reference + the post-commit on-disk

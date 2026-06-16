@@ -22,15 +22,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
+use jj_lib::backend::CommitId;
 use jj_lib::commit::Commit;
 use jj_lib::object_id::ObjectId;
 use jj_lib::ref_name::WorkspaceNameBuf;
 use jj_lib::repo::Repo;
+use jj_lib::rewrite::merge_commit_trees;
 use jj_lib::transaction::Transaction;
 
 use crate::convert::CommitData;
 use crate::errors::{PyjutsuError, RevsetError, map_backend_err};
 use crate::revset;
+use crate::workspace::PyWorkspace;
 
 #[pyclass(unsendable, module = "pyjutsu._pyjutsu")]
 pub(crate) struct PyTransaction {
@@ -39,28 +42,40 @@ pub(crate) struct PyTransaction {
     tx: RefCell<Option<Transaction>>,
     /// The owning workspace's single-transaction guard, released when this tx is consumed/dropped.
     tx_open: Arc<AtomicBool>,
+    /// Back-reference to the owning workspace, used by `commit` to drive the on-disk checkout when
+    /// the transaction moves `@`. `Py<PyWorkspace>` is `Send`; the workspace only holds an
+    /// `AtomicBool` + a `Mutex<Workspace>`, so there is no reference cycle to worry about.
+    workspace: Py<PyWorkspace>,
     /// Revset-resolution context (mirrors `PyRepoView`): the workspace's name + root + author
     /// email, so `@`, `file()`, `mine()`, … resolve the same way reads do — but here against the
     /// open `MutableRepo`, which sees this transaction's in-flight rewrites.
     workspace_name: WorkspaceNameBuf,
     workspace_root: PathBuf,
     user_email: String,
+    /// `@`'s commit id when the transaction began. `commit` compares the post-commit `@` against
+    /// this to decide whether the on-disk working copy needs a checkout.
+    starting_wc_commit: Option<CommitId>,
 }
 
 impl PyTransaction {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         tx: Transaction,
         tx_open: Arc<AtomicBool>,
+        workspace: Py<PyWorkspace>,
         workspace_name: WorkspaceNameBuf,
         workspace_root: PathBuf,
         user_email: String,
+        starting_wc_commit: Option<CommitId>,
     ) -> Self {
         Self {
             tx: RefCell::new(Some(tx)),
             tx_open,
+            workspace,
             workspace_name,
             workspace_root,
             user_email,
+            starting_wc_commit,
         }
     }
 
@@ -131,17 +146,82 @@ impl PyTransaction {
         data.to_dict(py)
     }
 
+    /// Create a new commit on top of `parents` (each a single-revision revset) and point `@` at
+    /// it, returning the new commit as a plain dict. With no parents, the new commit is a child of
+    /// the current `@` (the common `jj new`). The new commit's tree is the merge of its parents'
+    /// trees, so a multi-parent `new` is a merge.
+    ///
+    /// `edit` may abandon the old `@` if it was discardable, registering a rewrite, so we run
+    /// `rebase_descendants()` before reading the result back (and `commit` re-runs it safely).
+    /// The on-disk working copy is updated by `commit`'s checkout, since `@` moved.
+    #[pyo3(name = "new", signature = (parents=None))]
+    fn py_new<'py>(
+        &self,
+        py: Python<'py>,
+        parents: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs).
+        let repo = tx.repo_mut();
+
+        let revsets = parents.unwrap_or_else(|| vec!["@".to_owned()]);
+        let parent_commits: Vec<Commit> = revsets
+            .iter()
+            .map(|r| self.resolve_single(&*repo, r))
+            .collect::<PyResult<_>>()?;
+        let name = self.workspace_name.clone();
+
+        let new_commit = if let [parent] = parent_commits.as_slice() {
+            // Single parent: `check_out` is exactly `new_commit(vec![p], p.tree()).write()` + edit.
+            repo.check_out(name, parent).map_err(map_backend_err)?
+        } else {
+            let tree = pollster::block_on(merge_commit_trees(&*repo, &parent_commits))
+                .map_err(map_backend_err)?;
+            let parent_ids = parent_commits.iter().map(|c| c.id().clone()).collect();
+            let new = repo
+                .new_commit(parent_ids, tree)
+                .write()
+                .map_err(map_backend_err)?;
+            repo.edit(name, &new).map_err(map_backend_err)?;
+            new
+        };
+        repo.rebase_descendants().map_err(map_backend_err)?;
+        let data = CommitData::build(&*repo, &new_commit)?;
+        data.to_dict(py)
+    }
+
     /// Commit the transaction with `description`, publishing exactly one operation, and return
     /// the new head operation id. Centralizes `rebase_descendants()` so every rewriting mutation
     /// is safe against `Transaction::commit`'s `!has_rewrites()` assert (landmine #1: a violation
     /// aborts the process); for a non-rewriting tx it is a harmless no-op. Raises if already closed.
-    fn commit(&self, description: String) -> PyResult<String> {
+    ///
+    /// If the transaction moved `@`, the on-disk working copy is checked out to the new `@`
+    /// **after** the operation is published (off the GIL, on the `Send` `Workspace`), so a later
+    /// `jj` command on the same repo sees a working copy in lockstep with the repo head. This is
+    /// the shared piece every `@`-rewriting mutation (`new`, `describe` of `@`, edit, abandon, …)
+    /// relies on.
+    fn commit(&self, py: Python<'_>, description: String) -> PyResult<String> {
         let mut tx = self.take()?;
         // NOTE: on the GIL — `Transaction` is `!Send` (see module docs), so it cannot be moved
         // into `allow_threads`. The op-store write here is light; heavy I/O is off-GIL elsewhere.
         tx.repo_mut().rebase_descendants().map_err(map_backend_err)?;
         let new_repo = tx.commit(description).map_err(map_backend_err)?;
         self.release_slot();
+
+        let new_wc_commit = new_repo.view().get_wc_commit_id(&self.workspace_name).cloned();
+        if new_wc_commit != self.starting_wc_commit
+            && let Some(new_id) = new_wc_commit
+        {
+            let new_commit = new_repo.store().get_commit(&new_id).map_err(map_backend_err)?;
+            let op_id = new_repo.operation().id().clone();
+            self.workspace
+                .bind(py)
+                .borrow()
+                .checkout_wc(py, op_id, &new_commit)?;
+        }
         Ok(new_repo.operation().id().hex())
     }
 

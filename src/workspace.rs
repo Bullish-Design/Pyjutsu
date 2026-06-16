@@ -12,14 +12,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::prelude::*;
 
+use jj_lib::commit::Commit;
 use jj_lib::config::{ConfigSource, StackedConfig};
 use jj_lib::object_id::ObjectId;
+use jj_lib::op_store::OperationId;
 use jj_lib::op_walk;
 use jj_lib::repo::StoreFactories;
 use jj_lib::settings::UserSettings;
 use jj_lib::workspace::{Workspace, default_working_copy_factories};
 
-use crate::errors::{PyjutsuError, map_backend_err, map_workspace_err, to_py_err};
+use crate::errors::{
+    PyjutsuError, map_backend_err, map_workingcopy_err, map_workspace_err, to_py_err,
+};
 use crate::repo_view::PyRepoView;
 use crate::transaction::PyTransaction;
 
@@ -107,6 +111,31 @@ impl PyWorkspace {
             .lock()
             .map_err(|_| PyjutsuError::new_err("workspace lock poisoned"))
     }
+
+    /// Update the on-disk working copy to `new_commit`, recording it at `op_id` so the working
+    /// copy's operation stays in lockstep with the repo head (matching `Workspace::check_out`,
+    /// workspace.rs:437). Called by `PyTransaction::commit` whenever a committed transaction
+    /// moved `@`. The file I/O runs **off the GIL**: `Workspace` is `Send`, so the only thing on
+    /// the GIL is acquiring the handle's `Mutex`.
+    pub(crate) fn checkout_wc(
+        &self,
+        py: Python<'_>,
+        op_id: OperationId,
+        new_commit: &Commit,
+    ) -> PyResult<()> {
+        let mut guard = self.locked()?;
+        let ws: &mut Workspace = &mut guard;
+        // The tree the in-memory workspace believes is on disk; `check_out` compares it against
+        // the freshly-locked working copy to detect a concurrent checkout by another process.
+        let old_tree = ws
+            .working_copy()
+            .tree()
+            .map_err(map_workingcopy_err)?
+            .clone();
+        py.allow_threads(move || ws.check_out(op_id, Some(&old_tree), new_commit))
+            .map_err(map_workingcopy_err)?;
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -182,35 +211,44 @@ impl PyWorkspace {
     /// `Transaction`, and hand it back wrapped in a `PyTransaction`. Raises if one is already
     /// open. Reloading at head mirrors the CLI, which observes the latest op before each command.
     ///
+    /// Takes `slf` by `Bound` so the `PyTransaction` can hold a `Py<PyWorkspace>` back-reference:
+    /// it needs the workspace to drive the post-commit on-disk checkout (`checkout_wc`) when a
+    /// committed transaction moves `@`. We also capture the starting `@` commit id here so commit
+    /// can tell whether `@` actually moved.
+    ///
     /// (Auto-snapshot of a dirty `@` is layered on in slice 5; this is the bare start.)
-    fn begin_transaction(&self, py: Python<'_>) -> PyResult<PyTransaction> {
+    fn begin_transaction(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<PyTransaction> {
+        let this = slf.borrow();
         // Claim the slot atomically; bail (without claiming) if a tx is already live.
-        if self.tx_open.swap(true, Ordering::AcqRel) {
+        if this.tx_open.swap(true, Ordering::AcqRel) {
             return Err(PyjutsuError::new_err(
                 "a transaction is already open on this workspace",
             ));
         }
         // From here, any early return must release the slot or the workspace stays wedged.
         let started = (|| -> PyResult<_> {
-            let ws = self.locked()?;
+            let ws = this.locked()?;
             let name = ws.workspace_name().to_owned();
             let root = ws.workspace_root().to_owned();
             let loader = ws.repo_loader();
             let repo = py
                 .allow_threads(|| loader.load_at_head())
                 .map_err(map_backend_err)?;
-            Ok((repo.start_transaction(), name, root))
+            let starting_wc = repo.view().get_wc_commit_id(&name).cloned();
+            Ok((repo.start_transaction(), name, root, starting_wc))
         })();
         match started {
-            Ok((tx, name, root)) => Ok(PyTransaction::new(
+            Ok((tx, name, root, starting_wc)) => Ok(PyTransaction::new(
                 tx,
-                self.tx_open.clone(),
+                this.tx_open.clone(),
+                slf.clone().unbind(),
                 name,
                 root,
-                self.user_email.clone(),
+                this.user_email.clone(),
+                starting_wc,
             )),
             Err(err) => {
-                self.tx_open.store(false, Ordering::Release);
+                this.tx_open.store(false, Ordering::Release);
                 Err(err)
             }
         }

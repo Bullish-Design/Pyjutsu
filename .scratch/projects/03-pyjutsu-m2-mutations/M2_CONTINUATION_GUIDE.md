@@ -9,16 +9,17 @@
 > wins** — it records facts verified against the pinned source and against a green build/test, and
 > the original guide got two things materially wrong (see §1).
 >
-> **Pin unchanged:** `jj-lib = "=0.38.0"`. Pyjutsu still targets `0.40.0` on completion. API refs
-> are `file:line` into `~/.cargo/registry/.../jj-lib-0.38.0/src/`.
+> **Pin unchanged:** `jj-lib = "=0.38.0"`. Slices 0–1 already **shipped as pyjutsu `0.40.0`**
+> (tag `v0.40.0`); the **completed** write layer should bump to the next minor, **`0.41.0`** (see
+> §5). API refs are `file:line` into `~/.cargo/registry/.../jj-lib-0.38.0/src/`.
 
 ---
 
 ## 0. Where we are
 
-**Slices 0 and 1 are implemented and green** (build + pytest + `cargo test` + clippy `-D warnings`
-+ ruff, all via devenv). They are in the **working tree** on `main` (commit them before/at the
-start of the next session, or just continue from the working tree).
+**Slices 0 and 1 are implemented, green, and released.** They are **committed and merged to `main`**
+(build + pytest + `cargo test` + clippy `-D warnings` + ruff all green via devenv) and **tagged
+`v0.40.0`** (`pyjutsu 0.40.0`). The working tree is clean; start the next session from `main`.
 
 - **Slice 0 — identity + tx scaffolding.** Real stacked `UserSettings` (user + repo config, with
   the CLI's `JJ_CONFIG` env policy replicated); `Workspace.transaction()` context manager; the
@@ -328,7 +329,9 @@ test (recipe §2.3). Ship at each boundary. **All `@`-rewriting slices reuse the
 - Invariants: "1 tx == 1 op" (clean), "+1 snapshot op" (dirty), "0 ops on rollback".
 - New error subclasses raised on their failure modes, with tests.
 - `Cargo.lock` committed; pin `=0.38.0`; `JJ_VERSION == JJ_LIB_TARGET` tripwire green.
-- Concept §3/§5 status → "M2 implemented"; `__version__ = "0.40.0"`; goldens regenerated for
+- Concept §3/§5 status → "M2 implemented"; **bump to `0.41.0`** in `python/pyjutsu/__init__.py`,
+  `pyproject.toml`, and `Cargo.toml` (rebuild to refresh `Cargo.lock`/`uv.lock`) — `0.40.0` already
+  shipped slices 0–1, so the completed write layer takes the next minor; goldens regenerated for
   `WorkspaceInfo`/`Remote`.
 - No subprocess/CLI **backend**, no compat shim, no workflow policy, **no AI attribution**.
 

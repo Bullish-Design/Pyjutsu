@@ -56,3 +56,9 @@ pub(crate) fn map_backend_err<E: std::fmt::Display>(err: E) -> PyErr {
 pub(crate) fn map_revset_err<E: std::fmt::Display>(err: E) -> PyErr {
     RevsetError::new_err(err.to_string())
 }
+
+/// Working-copy lock/snapshot/checkout failures (`CheckoutError`, `WorkingCopyStateError`) →
+/// `WorkingCopyError`. Reused by every `@`-rewriting slice's post-commit on-disk checkout.
+pub(crate) fn map_workingcopy_err<E: std::fmt::Display>(err: E) -> PyErr {
+    WorkingCopyError::new_err(err.to_string())
+}

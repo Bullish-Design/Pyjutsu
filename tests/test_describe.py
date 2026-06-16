@@ -52,6 +52,12 @@ def test_describe_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli) -> 
     assert len(ws.operations()) == ops_before + 1
     assert len(jj.op_log_ids(other)) == ops_before + 1
 
+    # Backfill (slice 2): the post-commit checkout keeps the on-disk working copy in lockstep with
+    # the repo head, so the CLI can now read the *Pyjutsu-mutated* repo directly. `@` is the
+    # described commit, and `jj` adds no spurious snapshot op of its own.
+    assert jj.commit_id(scratch_repo, "@") == described.commit_id
+    assert len(jj.op_log_ids(scratch_repo)) == ops_before + 1
+
 
 def test_describe_by_change_id_targets_the_right_commit(linear_repo: Path, jj: JjCli) -> None:
     # Describe a non-`@` commit named by its change id; the rest of the graph is untouched.
