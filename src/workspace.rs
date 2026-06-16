@@ -891,76 +891,96 @@ impl PyWorkspace {
         Ok(Some(self.finish_op(py, ws, &name, &repo, &new_repo)?))
     }
 
-    /// Push local `bookmark` to `remote` (`jj git push --bookmark <bookmark>`): run a `git push`
-    /// subprocess and update the remote-tracking bookmark in the view, publishing one operation — or
-    /// `None` if nothing changed. `allow_new=False` (the default) refuses to create a bookmark that
-    /// doesn't yet exist on the remote (mirrors the CLI's `--allow-new` gate). Raises `GitError` if:
-    /// the local bookmark is missing or conflicted, the bookmark is new and `allow_new` is false, or
-    /// the remote rejects the push (the rejected ref names are reported).
+    /// Push local `bookmarks` to `remote` (`jj git push --bookmark <…>`): run a `git push`
+    /// subprocess and update the remote-tracking bookmarks in the view, publishing one operation —
+    /// or `None` if nothing changed. Several bookmarks push in one operation. `allow_new=False` (the
+    /// default) refuses to create a bookmark that doesn't yet exist on the remote (mirrors the CLI's
+    /// `--allow-new` gate). `delete=True` removes each named bookmark **on the remote**
+    /// (`BookmarkPushUpdate { new_target: None }`); it requires a remote-tracking ref but **not** a
+    /// local bookmark (you're deleting the remote ref). Raises `GitError` if: `bookmarks` is empty;
+    /// a non-delete bookmark is missing/conflicted locally or new without `allow_new`; a delete
+    /// target has no remote ref; or the remote rejects the push (the rejected ref names are reported).
     ///
     /// Subprocess + network → **off the GIL**; the `!Send` `Transaction` lives and dies inside the
     /// one closure on one thread. The local + remote-tracking targets are read from the view before
     /// the tx starts. A fresh loader is used so the remote is found (slice-10 staleness). Push moves
     /// only remote-tracking bookmarks (no commit rewrite), so `rebase_descendants` is unnecessary.
-    #[pyo3(signature = (remote, bookmark, allow_new=false))]
+    #[pyo3(signature = (remote, bookmarks, allow_new=false, delete=false))]
     fn git_push<'py>(
         &self,
         py: Python<'py>,
         remote: &str,
-        bookmark: &str,
+        bookmarks: Vec<String>,
         allow_new: bool,
+        delete: bool,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if bookmarks.is_empty() {
+            return Err(map_git_err("no bookmarks to push".to_owned()));
+        }
         let mut guard = self.locked()?;
         let ws: &mut Workspace = &mut guard;
         let name = ws.workspace_name().to_owned();
         let loader = Self::fresh_loader(ws)?;
         let settings = ws.repo_loader().settings().clone();
         let remote = remote.to_owned();
-        let bookmark = bookmark.to_owned();
 
         let new_repo = py.allow_threads(move || -> PyResult<Option<Arc<ReadonlyRepo>>> {
             let repo = loader.load_at_head().map_err(map_backend_err)?;
             let subprocess = GitSubprocessOptions::from_settings(&settings).map_err(map_git_err)?;
             let remote_name: &RemoteName = remote.as_str().as_ref();
-            let bookmark_ref: &RefName = bookmark.as_str().as_ref();
 
-            // Read both targets from the view (the read borrow ends once `targets` is built).
+            // Read each bookmark's local + remote-tracking targets from the view, then build one
+            // `BookmarkPushUpdate` per bookmark. The read borrow ends with `view` before the tx.
             let view = repo.view();
-            let local = view.get_local_bookmark(bookmark_ref);
-            if local.is_absent() {
-                return Err(map_git_err(format!("no local bookmark '{bookmark}'")));
-            }
-            let Some(new_target) = local.as_normal().cloned() else {
-                return Err(map_git_err(format!(
-                    "refusing to push conflicted bookmark '{bookmark}'"
-                )));
-            };
-            let remote_ref = view.get_remote_bookmark(bookmark_ref.to_remote_symbol(remote_name));
-            let old_target = if remote_ref.target.is_absent() {
-                None
-            } else if let Some(id) = remote_ref.target.as_normal() {
-                Some(id.clone())
-            } else {
-                return Err(map_git_err(format!(
-                    "remote bookmark '{bookmark}@{remote}' is conflicted"
-                )));
-            };
-            // `allow_new` gate: a bookmark with no remote-tracking ref is new on the remote.
-            if old_target.is_none() && !allow_new {
-                return Err(map_git_err(format!(
-                    "bookmark '{bookmark}' doesn't exist on remote '{remote}'; pass allow_new=True"
-                )));
-            }
-
-            let targets = GitBranchPushTargets {
-                branch_updates: vec![(
+            let mut branch_updates = Vec::with_capacity(bookmarks.len());
+            for bookmark in &bookmarks {
+                let bookmark_ref: &RefName = bookmark.as_str().as_ref();
+                let remote_ref = view.get_remote_bookmark(bookmark_ref.to_remote_symbol(remote_name));
+                let old_target = if remote_ref.target.is_absent() {
+                    None
+                } else if let Some(id) = remote_ref.target.as_normal() {
+                    Some(id.clone())
+                } else {
+                    return Err(map_git_err(format!(
+                        "remote bookmark '{bookmark}@{remote}' is conflicted"
+                    )));
+                };
+                let new_target = if delete {
+                    // Deleting the *remote* ref: requires a remote-tracking target, not a local one.
+                    if old_target.is_none() {
+                        return Err(map_git_err(format!(
+                            "bookmark '{bookmark}' doesn't exist on remote '{remote}'"
+                        )));
+                    }
+                    None
+                } else {
+                    let local = view.get_local_bookmark(bookmark_ref);
+                    if local.is_absent() {
+                        return Err(map_git_err(format!("no local bookmark '{bookmark}'")));
+                    }
+                    let Some(target) = local.as_normal().cloned() else {
+                        return Err(map_git_err(format!(
+                            "refusing to push conflicted bookmark '{bookmark}'"
+                        )));
+                    };
+                    // `allow_new` gate: a bookmark with no remote-tracking ref is new on the remote.
+                    if old_target.is_none() && !allow_new {
+                        return Err(map_git_err(format!(
+                            "bookmark '{bookmark}' doesn't exist on remote '{remote}'; pass allow_new=True"
+                        )));
+                    }
+                    Some(target)
+                };
+                branch_updates.push((
                     RefNameBuf::from(bookmark.as_str()),
                     BookmarkPushUpdate {
                         old_target,
-                        new_target: Some(new_target),
+                        new_target,
                     },
-                )],
-            };
+                ));
+            }
+
+            let targets = GitBranchPushTargets { branch_updates };
 
             let mut tx = repo.start_transaction();
             let stats =

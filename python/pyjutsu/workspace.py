@@ -118,19 +118,29 @@ class Workspace:
         return Operation.model_validate(row) if row is not None else None
 
     def git_push(
-        self, remote: str, bookmark: str, *, allow_new: bool = False
+        self,
+        remote: str,
+        bookmark: str | list[str],
+        *,
+        allow_new: bool = False,
+        delete: bool = False,
     ) -> Operation | None:
-        """Push local ``bookmark`` to ``remote`` → the published :class:`Operation`, or ``None`` if
-        nothing changed (no operation published).
+        """Push local ``bookmark`` (one name or a list) to ``remote`` → the published
+        :class:`Operation`, or ``None`` if nothing changed (no operation published).
 
-        Matches ``jj git push --bookmark <bookmark>``: runs a ``git push`` and updates the
-        remote-tracking bookmark. ``allow_new=False`` (the default) refuses to create a bookmark
-        that doesn't yet exist on the remote (the CLI's ``--allow-new`` gate); pass
-        ``allow_new=True`` to create it. Raises :class:`~pyjutsu.errors.GitError` if the local
-        bookmark is missing or conflicted, the bookmark is new and ``allow_new`` is false, or the
-        remote rejects the push.
+        Matches ``jj git push --bookmark <…>``: runs a ``git push`` and updates the remote-tracking
+        bookmark(s). Pass a list to push several bookmarks in one operation. ``allow_new=False`` (the
+        default) refuses to create a bookmark that doesn't yet exist on the remote (the CLI's
+        ``--allow-new`` gate); pass ``allow_new=True`` to create it. ``delete=True`` removes each
+        named bookmark **on the remote** (it needs a remote-tracking ref but not a local bookmark).
+
+        Raises :class:`~pyjutsu.errors.GitError` if ``bookmark`` is empty, a (non-delete) local
+        bookmark is missing or conflicted, a bookmark is new and ``allow_new`` is false, a delete
+        target has no remote ref, or the remote rejects the push. Force-push, ``--all``/``--tracked``
+        selection, and ``-r <rev>`` remain out of scope.
         """
-        row = self._handle.git_push(remote, bookmark, allow_new)
+        names = [bookmark] if isinstance(bookmark, str) else list(bookmark)
+        row = self._handle.git_push(remote, names, allow_new, delete)
         return Operation.model_validate(row) if row is not None else None
 
     @classmethod

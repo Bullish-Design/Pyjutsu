@@ -103,6 +103,77 @@ def test_push_unknown_bookmark_raises(scratch_repo: Path, tmp_path: Path) -> Non
         ws.git_push("origin", "ghost", allow_new=True)
 
 
+def test_push_delete_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    # Push `feature`, then delete it on the remote. Oracle: `jj bookmark delete` + `jj git push
+    # --deleted`. The differential assertion is ref state in each side's own bare origin.
+    other = tmp_path / "copy"
+    subprocess.run(["cp", "-r", str(scratch_repo), str(other)], check=True)
+    origin_b = _init_bare(tmp_path / "origin_b.git")
+    origin_c = _init_bare(tmp_path / "origin_c.git")
+
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    with ws.transaction("new") as tx:
+        tx.new()
+    with ws.transaction("bookmark") as tx:
+        tx.create_bookmark("feature", "@-")
+    ws.add_remote("origin", str(origin_b))
+    ws.git_push("origin", "feature", allow_new=True)
+    assert _has_ref(origin_b, "refs/heads/feature")
+
+    op = ws.git_push("origin", "feature", delete=True)
+    assert op is not None
+    assert "push" in op.description.lower()
+    assert not _has_ref(origin_b, "refs/heads/feature")  # gone on the remote
+
+    # CLI oracle on the sibling: same push, then delete-and-push → ref gone there too.
+    jj(other, "new")
+    jj(other, "bookmark", "create", "feature", "-r", "@-")
+    jj(other, "git", "remote", "add", "origin", str(origin_c))
+    jj.git_push(other, "feature", allow_new=True)
+    assert _has_ref(origin_c, "refs/heads/feature")
+    jj(other, "bookmark", "delete", "feature")
+    jj(other, "git", "push", "--deleted")
+    assert not _has_ref(origin_c, "refs/heads/feature")
+
+
+def test_push_multiple_bookmarks(scratch_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    # Push two bookmarks in one call → both refs land on the remote, one op published.
+    origin = _init_bare(tmp_path / "origin.git")
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    with ws.transaction("new") as tx:
+        tx.new()
+    with ws.transaction("bookmarks") as tx:
+        tx.create_bookmark("feat-a", "@-")
+        tx.create_bookmark("feat-b", "@-")
+    ws.add_remote("origin", str(origin))
+    ops_before = _op_count(scratch_repo, jj)
+
+    op = ws.git_push("origin", ["feat-a", "feat-b"], allow_new=True)
+
+    assert op is not None
+    assert _has_ref(origin, "refs/heads/feat-a")
+    assert _has_ref(origin, "refs/heads/feat-b")
+    # One operation for the whole multi-bookmark push.
+    assert _op_count(scratch_repo, jj) == ops_before + 1
+
+
+def test_push_delete_nonexistent_raises(scratch_repo: Path, tmp_path: Path) -> None:
+    origin = _init_bare(tmp_path / "origin.git")
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    ws.add_remote("origin", str(origin))
+    # No remote-tracking ref for `ghost` ⇒ nothing to delete on the remote.
+    with pytest.raises(GitError):
+        ws.git_push("origin", "ghost", delete=True)
+
+
+def test_push_empty_bookmarks_raises(scratch_repo: Path, tmp_path: Path) -> None:
+    origin = _init_bare(tmp_path / "origin.git")
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    ws.add_remote("origin", str(origin))
+    with pytest.raises(GitError):
+        ws.git_push("origin", [])
+
+
 # --- git_fetch (headline) ---------------------------------------------------------------------
 
 
