@@ -8,17 +8,20 @@ in M1–M3.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+import shutil
+import subprocess
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 from ._pyjutsu import PyWorkspace
-from .errors import PyjutsuError
+from .errors import JjCliError, PyjutsuError
 from .models import (
     Bookmark,
     Commit,
     Conflict,
     Diff,
     DiffStat,
+    JjResult,
     Operation,
     Remote,
     WorkspaceInfo,
@@ -31,7 +34,12 @@ __all__ = ["Workspace"]
 
 
 class Workspace:
-    """A loaded jj workspace bound to a single working-copy path."""
+    """A loaded jj workspace bound to a single working-copy path.
+
+    **Async usage:** every method releases the GIL while it touches the backend, so in an asyncio
+    app wrap a call in :func:`asyncio.to_thread` (e.g. ``await asyncio.to_thread(ws.git_fetch,
+    "origin")``) to run it off the event loop. A native async facade is intentionally not provided.
+    """
 
     __slots__ = ("_handle",)
 
@@ -386,6 +394,82 @@ class Workspace:
         Reads observe that past repo state; the on-disk working copy is untouched.
         """
         return RepoView(self._handle.at_operation(op))
+
+    def run_jj(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        input: str | None = None,
+        jj_binary: str | None = None,
+    ) -> JjResult:
+        """**Escape hatch:** run the external ``jj`` binary against this workspace → its raw result.
+
+        A deliberate, clearly-labeled *exit* from pyjutsu's typed in-process surface for operations
+        it doesn't (yet) bind. It returns the captured :class:`~pyjutsu.JjResult` (args, exit code,
+        stdout, stderr) and **parses nothing** into models — that is the whole point. ``args`` is the
+        ``jj`` command **without** the leading ``jj`` (e.g. ``["describe", "-m", "msg"]``); it is
+        passed verbatim with no shell, so values are never shell-interpreted.
+
+        The subprocess runs with this workspace's root as its cwd and inherits the current process
+        environment (so ``JJ_CONFIG`` and friends flow through). The binary is resolved in order:
+        the ``jj_binary`` argument, the ``PYJUTSU_JJ`` env var, then ``jj`` on ``PATH``.
+
+        ``check=True`` (the default) raises :class:`~pyjutsu.errors.JjCliError` on a non-zero exit;
+        ``check=False`` returns the result regardless. Pass ``input`` to send text on stdin.
+
+        .. caution::
+            Unlike the rest of pyjutsu, this depends on an **external** ``jj`` binary on ``PATH``,
+            which the library cannot guarantee matches the linked engine
+            (``pyjutsu.JJ_LIB_TARGET``). For fidelity it should match; this is an escape hatch, not
+            part of the in-process guarantee. See :meth:`jj_version` to assert the match yourself.
+
+        Raises :class:`~pyjutsu.errors.JjCliError` if no ``jj`` binary can be found or launched.
+        """
+        argv = list(args)
+        binary = jj_binary or os.environ.get("PYJUTSU_JJ") or shutil.which("jj")
+        if binary is None:
+            raise JjCliError(
+                "jj binary not found (pass jj_binary=, set PYJUTSU_JJ, or put jj on PATH)",
+                command=argv,
+                returncode=None,
+                stdout="",
+                stderr="",
+            )
+        try:
+            proc = subprocess.run(
+                [binary, *argv],
+                cwd=self.root,
+                env=os.environ,
+                capture_output=True,
+                text=True,
+                input=input,
+            )
+        except OSError as exc:
+            raise JjCliError(
+                f"could not launch jj binary {binary!r}: {exc}",
+                command=argv,
+                returncode=None,
+                stdout="",
+                stderr=str(exc),
+            ) from exc
+        result = JjResult(
+            args=argv, returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr
+        )
+        if check and proc.returncode != 0:
+            raise JjCliError(
+                f"jj {' '.join(argv)} exited with status {proc.returncode}",
+                command=argv,
+                returncode=proc.returncode,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+            )
+        return result
+
+    def jj_version(self, *, jj_binary: str | None = None) -> str:
+        """The external ``jj`` binary's version string (``jj --version``), for asserting it matches
+        :data:`pyjutsu.JJ_LIB_TARGET` before relying on :meth:`run_jj`. Runs one subprocess."""
+        return self.run_jj(["--version"], jj_binary=jj_binary).stdout.strip()
 
     def __repr__(self) -> str:
         return f"Workspace(name={self.name!r}, root={str(self.root)!r})"

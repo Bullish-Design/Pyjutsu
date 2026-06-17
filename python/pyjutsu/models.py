@@ -215,6 +215,23 @@ class Remote(BaseModel):
     url: str | None
 
 
+class JjResult(BaseModel):
+    """The captured result of a ``jj`` subprocess run by :meth:`pyjutsu.Workspace.run_jj`.
+
+    This is the escape hatch's return value — **raw** text and exit code, parsed into no further
+    structure (that is the point: leaving the typed in-process surface, not re-entering it).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The ``jj`` args that were run (without the leading ``jj``).
+    args: list[str]
+    #: The process exit code (``0`` on success).
+    returncode: int
+    stdout: str
+    stderr: str
+
+
 class Operation(BaseModel):
     """One entry in jj's operation log — an atomic change to the repo state."""
 
