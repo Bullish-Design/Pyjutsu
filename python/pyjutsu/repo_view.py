@@ -9,7 +9,7 @@ and never snapshots the working copy (M1).
 from __future__ import annotations
 
 from ._pyjutsu import PyRepoView
-from .models import Bookmark, Commit, Conflict, DiffStat, Operation
+from .models import Bookmark, Commit, Conflict, Diff, DiffStat, Operation
 
 __all__ = ["RepoView"]
 
@@ -65,3 +65,11 @@ class RepoView:
         Raises :class:`~pyjutsu.errors.RevsetError` unless ``revset`` names exactly one revision.
         """
         return DiffStat.model_validate(self._handle.diff_stat(revset))
+
+    def diff(self, revset: str) -> Diff:
+        """The name-status diff of the single commit named by ``revset`` against its parent(s).
+
+        Returns each changed path and how it changed (added/modified/removed/type_changed).
+        Raises :class:`~pyjutsu.errors.RevsetError` unless ``revset`` names exactly one revision.
+        """
+        return Diff.model_validate(self._handle.diff(revset))

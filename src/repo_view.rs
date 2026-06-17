@@ -21,6 +21,7 @@ use jj_lib::ref_name::WorkspaceNameBuf;
 use jj_lib::repo::{ReadonlyRepo, Repo};
 
 use crate::convert::{BookmarkData, CommitData, ConflictData, OperationData};
+use crate::diff::{self, DiffData};
 use crate::diff_stat::{self, DiffStatData};
 use crate::errors::{PyjutsuError, RevsetError, map_backend_err};
 use crate::revset;
@@ -249,6 +250,42 @@ impl PyRepoView {
         dict.set_item("files", files)?;
         dict.set_item("total_insertions", data.total_insertions)?;
         dict.set_item("total_deletions", data.total_deletions)?;
+        Ok(dict)
+    }
+
+    /// Name-status diff (changed paths + how each changed) of the single commit named by
+    /// `revset_str` against its parent(s). `RevsetError` if the revset isn't exactly one commit.
+    fn diff<'py>(&self, py: Python<'py>, revset_str: &str) -> PyResult<Bound<'py, PyDict>> {
+        let data = py.allow_threads(|| -> PyResult<DiffData> {
+            let repo = self.repo.as_ref();
+            let commits = revset::evaluate(
+                repo,
+                revset_str,
+                &self.workspace_name,
+                &self.workspace_root,
+                &self.user_email,
+            )?;
+            if commits.len() != 1 {
+                return Err(RevsetError::new_err(format!(
+                    "revset '{revset_str}' resolved to {} revisions, expected exactly 1",
+                    commits.len()
+                )));
+            }
+            diff::compute(repo, &commits[0])
+        })?;
+
+        let dict = PyDict::new(py);
+        let files: Vec<Bound<'py, PyDict>> = data
+            .files
+            .iter()
+            .map(|f| {
+                let file = PyDict::new(py);
+                file.set_item("path", &f.path)?;
+                file.set_item("kind", f.kind)?;
+                Ok(file)
+            })
+            .collect::<PyResult<_>>()?;
+        dict.set_item("files", files)?;
         Ok(dict)
     }
 }

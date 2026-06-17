@@ -128,6 +128,28 @@ class JjCli:
                 deletions = int(part.split()[0])
         return insertions, deletions
 
+    #: Maps the leading letter of a `jj diff --summary` line to a Pyjutsu name-status kind. jj
+    #: renders a type change (file↔symlink) as a plain `M`, so the oracle flattens it to
+    #: "modified"; tests that need the binding's finer `type_changed` assert it directly.
+    _SUMMARY_KINDS = {"A": "added", "M": "modified", "D": "removed"}
+
+    def diff_summary(self, repo: Path, revset: str) -> dict[str, str]:
+        """Name-status map ``{path: kind}`` from `jj diff -r <revset> --summary`.
+
+        Lines look like ``"M a.txt"`` / ``"A b.txt"`` / ``"D old.txt"``. Renames/copies
+        (``R``/``C``, rendered ``R {old => new}``) are skipped here — they are slice 3's concern;
+        :meth:`rename_summary` parses those.
+        """
+        result: dict[str, str] = {}
+        for line in self(repo, "diff", "-r", revset, "--summary").splitlines():
+            if not line.strip():
+                continue
+            letter, path = line.split(" ", 1)
+            kind = self._SUMMARY_KINDS.get(letter)
+            if kind is not None:
+                result[path] = kind
+        return result
+
     def conflicted_paths(self, repo: Path) -> dict[str, int]:
         """Map of conflicted path → number of sides, from `jj resolve --list` (operates on `@`).
 

@@ -11,6 +11,7 @@
 //! than aborting the process.
 
 mod convert;
+mod diff;
 mod diff_stat;
 mod errors;
 mod repo_view;

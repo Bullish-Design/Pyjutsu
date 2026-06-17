@@ -16,6 +16,7 @@ from .models import (
     Bookmark,
     Commit,
     Conflict,
+    Diff,
     DiffStat,
     Operation,
     Remote,
@@ -361,6 +362,10 @@ class Workspace:
     def diff_stat(self, revset: str) -> DiffStat:
         """The diff stat of the single commit named by ``revset`` (delegates to a head view)."""
         return self.head().diff_stat(revset)
+
+    def diff(self, revset: str) -> Diff:
+        """The name-status diff of the single commit named by ``revset`` (delegates to a head view)."""
+        return self.head().diff(revset)
 
     def head_operation(self) -> str:
         """The id of the current head operation."""

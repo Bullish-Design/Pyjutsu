@@ -8,7 +8,7 @@ boundary (concept §4), which also acts as a drift tripwire against jj-lib chang
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
@@ -86,6 +86,33 @@ class DiffStat(BaseModel):
     files: list[FileStat]
     total_insertions: int
     total_deletions: int
+
+
+class FileChange(BaseModel):
+    """One changed path in a :class:`Diff` and how it changed.
+
+    ``kind`` mirrors jj's name-status: ``added`` / ``modified`` / ``removed``, plus
+    ``type_changed`` when a path switches entry kind (e.g. file↔symlink) — jj's ``--summary``
+    renders that as a plain ``M``, but the binding distinguishes it. An executable-bit-only edit
+    stays ``modified``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str
+    kind: Literal["added", "modified", "removed", "type_changed"]
+
+
+class Diff(BaseModel):
+    """A commit's name-status diff vs its parent(s): one :class:`FileChange` per changed path.
+
+    The diff stream never yields unchanged or pure-directory paths, so every entry is a real
+    file-level change. Same single-commit-vs-parent framing as :class:`DiffStat`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    files: list[FileChange]
 
 
 class Conflict(BaseModel):
