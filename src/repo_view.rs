@@ -15,6 +15,7 @@ use pyo3::PyErr;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
+use jj_lib::backend::CommitId;
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_walk;
 use jj_lib::ref_name::WorkspaceNameBuf;
@@ -253,6 +254,36 @@ impl PyRepoView {
         Ok(dict)
     }
 
+    /// A lazy iterator over a revset's commits: evaluate to ids eagerly (cheap, off the GIL),
+    /// then build one `CommitData` per `__next__`. For huge histories the caller can stream and
+    /// discard rather than materialize the whole `log` list. `limit` truncates the id list.
+    #[pyo3(signature = (revset_str, limit=None))]
+    fn log_stream(
+        &self,
+        py: Python<'_>,
+        revset_str: &str,
+        limit: Option<usize>,
+    ) -> PyResult<PyCommitStream> {
+        let ids = py.allow_threads(|| -> PyResult<Vec<CommitId>> {
+            let mut ids = revset::evaluate_ids(
+                self.repo.as_ref(),
+                revset_str,
+                &self.workspace_name,
+                &self.workspace_root,
+                &self.user_email,
+            )?;
+            if let Some(n) = limit {
+                ids.truncate(n);
+            }
+            Ok(ids)
+        })?;
+        Ok(PyCommitStream {
+            repo: self.repo.clone(),
+            ids,
+            pos: 0,
+        })
+    }
+
     /// Name-status diff (changed paths + how each changed) of the single commit named by
     /// `revset_str` against its parent(s). `RevsetError` if the revset isn't exactly one commit.
     fn diff<'py>(&self, py: Python<'py>, revset_str: &str) -> PyResult<Bound<'py, PyDict>> {
@@ -313,5 +344,38 @@ impl PyRepoView {
             .collect::<PyResult<_>>()?;
         dict.set_item("files", files)?;
         Ok(dict)
+    }
+}
+
+/// A one-shot iterator yielding a revset's commits as plain dicts, one per `__next__`. Holds the
+/// `Arc<ReadonlyRepo>` (`Send + Sync`) plus the pre-evaluated id list and a cursor — it owns ids,
+/// not the revset/iter (which borrow the repo), so there are no self-referential lifetimes. The
+/// expensive `CommitData::build` (commit object, signatures, bookmarks) is deferred to each step.
+#[pyclass(module = "pyjutsu._pyjutsu")]
+pub(crate) struct PyCommitStream {
+    repo: Arc<ReadonlyRepo>,
+    ids: Vec<CommitId>,
+    pos: usize,
+}
+
+#[pymethods]
+impl PyCommitStream {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Build and return the next commit dict, or `None` (→ `StopIteration`) when exhausted.
+    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if self.pos >= self.ids.len() {
+            return Ok(None);
+        }
+        let id = self.ids[self.pos].clone();
+        self.pos += 1;
+        let data = py.allow_threads(|| {
+            let repo = self.repo.as_ref();
+            let commit = repo.store().get_commit(&id).map_err(map_backend_err)?;
+            CommitData::build(repo, &commit)
+        })?;
+        Ok(Some(data.to_dict(py)?))
     }
 }

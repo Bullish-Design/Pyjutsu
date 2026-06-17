@@ -8,6 +8,8 @@ and never snapshots the working copy (M1).
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from ._pyjutsu import PyRepoView
 from .models import Bookmark, Commit, Conflict, Diff, DiffStat, Operation
 from .revset import Revset, _revset_str
@@ -45,6 +47,16 @@ class RepoView:
         return [
             Commit.model_validate(row) for row in self._handle.log(_revset_str(revset), limit)
         ]
+
+    def iter_log(self, revset: str | Revset, limit: int | None = None) -> Iterator[Commit]:
+        """Lazily yield the revset's commits as validated models (for huge histories).
+
+        Same commits, same order as :meth:`log`, but builds one :class:`Commit` model at a time per
+        step instead of a whole list — so a caller can process-and-discard rather than hold them all.
+        Accepts a revset string or a :class:`~pyjutsu.Revset` builder; ``limit`` caps the count.
+        """
+        for row in self._handle.log_stream(_revset_str(revset), limit):
+            yield Commit.model_validate(row)
 
     def operations(self, limit: int | None = None) -> list[Operation]:
         """The op log from this view's operation: it and its ancestors, newest first."""

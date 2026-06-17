@@ -21,7 +21,7 @@ mod workspace;
 
 use pyo3::prelude::*;
 
-use repo_view::PyRepoView;
+use repo_view::{PyCommitStream, PyRepoView};
 use transaction::PyTransaction;
 use workspace::PyWorkspace;
 
@@ -41,6 +41,7 @@ fn _pyjutsu(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_class::<PyWorkspace>()?;
     m.add_class::<PyRepoView>()?;
+    m.add_class::<PyCommitStream>()?;
     m.add_class::<PyTransaction>()?;
     errors::register(m)?;
     Ok(())

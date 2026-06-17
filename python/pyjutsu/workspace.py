@@ -8,6 +8,7 @@ in M1–M3.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 from ._pyjutsu import PyWorkspace
@@ -347,6 +348,13 @@ class Workspace:
     def log(self, revset: str | Revset, limit: int | None = None) -> list[Commit]:
         """Evaluate a revset → its :class:`Commit` list (delegates to a head view)."""
         return self.head().log(revset, limit)
+
+    def iter_log(self, revset: str | Revset, limit: int | None = None) -> Iterator[Commit]:
+        """Lazily yield a revset's commits one model at a time (delegates to a head view).
+
+        Same commits/order as :meth:`log`, for huge histories; see :meth:`RepoView.iter_log`.
+        """
+        return self.head().iter_log(revset, limit)
 
     def operations(self, limit: int | None = None) -> list[Operation]:
         """The op log (head operation + ancestors, newest first), capped at ``limit``."""
