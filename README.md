@@ -10,11 +10,13 @@ no subprocess and no text parsing.
   reports the linked jj-lib at runtime.
 - **Spec:** see [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md).
 
-**Status: M1 (read layer) complete** — a side-effect-free read surface, differential-tested
-against the pinned `jj` CLI. Mutations, transactions, and git interop (M2+) are not yet
-implemented.
+**Status: 0.7.0 — power-user surface.** The reads, transactions/mutations, op-log time travel,
+workspaces, and git interop are all implemented and differential-tested against the pinned `jj`
+CLI. 0.7.0 adds a revset builder, a streaming log, and a `run_jj` escape hatch. Still flagged out
+of scope: a native async facade, two-revset `diff(from, to)`, word/inline diff, and assorted
+git/rewrite refinements (see `docs/PYJUTSU_CONCEPT.md` §12).
 
-## Reads (M1)
+## Reads
 
 Reads return frozen Pydantic models and never mutate the repo (no working-copy snapshot):
 
@@ -26,9 +28,11 @@ ws = Workspace.load("my-repo")
 ws.working_copy()                # Commit for @
 ws.resolve("trunk()")            # single-revision revset -> Commit
 ws.log("trunk()..@", limit=50)   # list[Commit] in revset order
+ws.iter_log("::@")               # lazy Iterator[Commit] for huge histories
 ws.bookmarks()                   # list[Bookmark] (local + remote-tracking)
 ws.operations(limit=20)          # list[Operation] (the op log)
 ws.diff_stat("@")                # DiffStat (per-file + total line counts)
+ws.diff("@")                     # Diff (name-status + content hunks)
 ws.conflicts("@")                # list[Conflict] (first-class, N-sided)
 
 # Time travel: read a historical repo state (writes nothing)
@@ -38,6 +42,60 @@ view.log("::@")                  # every read also lives on a RepoView
 
 All reads are also available on a `RepoView` (`ws.head()` for the current state,
 `ws.at_operation(op)` for history); the `Workspace` conveniences delegate to a fresh head view.
+
+## Transactions & git
+
+Mutations run in a transaction context manager that publishes exactly one operation on clean exit
+and rolls back on any exception; git interop and workspace management live on the `Workspace`:
+
+```python
+with ws.transaction("describe @") as tx:
+    tx.describe("@", "a better message")
+
+ws.git_fetch("origin")           # fetch + import remote-tracking refs
+ws.git_push("origin", "main", allow_new=True)
+ws.undo()                        # revert the head operation
+```
+
+## Revset builder
+
+A typed, composable builder renders to jj revset strings (it evaluates nothing) — escaping mirrors
+jj's own `escape_string`, so a built query is identical to the hand-written one, without f-string
+quoting hazards. It's accepted anywhere a revset string is, and `R.raw(...)` covers anything
+unbound:
+
+```python
+from pyjutsu import revset as R, Pattern
+
+ws.log(R.author("alice") & R.description("fix"))   # (author(substring:"alice") & description(substring:"fix"))
+ws.log(R.range(R.root(), R.working_copy()))        # root()..@
+ws.log(R.bookmark("main").descendants())           # main::
+ws.log(R.description(Pattern.glob("release-*")))   # explicit pattern kind
+```
+
+## Escape hatch: `run_jj`
+
+For operations not yet bound, `run_jj` runs the external `jj` binary against the workspace and
+returns raw stdout/stderr/exit — it parses nothing into models (that is the point: a labeled exit
+from the typed in-process surface). It depends on a `jj` binary on `PATH`, which should match
+`pyjutsu.JJ_LIB_TARGET` for fidelity; this is not part of the in-process guarantee.
+
+```python
+result = ws.run_jj(["describe", "-m", "msg"])   # JjResult(args, returncode, stdout, stderr)
+ws.run_jj(["bad-command"], check=False)         # don't raise on non-zero exit
+```
+
+## Async usage
+
+Every `Workspace`/`RepoView`/`Transaction` method releases the GIL while it touches the backend,
+so in an asyncio app wrap calls in `asyncio.to_thread(...)` to run them off the event loop:
+
+```python
+await asyncio.to_thread(ws.git_fetch, "origin")
+```
+
+A native async facade is intentionally not provided — jj's `!Send` transaction model makes one
+costly for little gain over `to_thread`.
 
 ## Development
 
