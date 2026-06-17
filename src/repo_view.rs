@@ -282,6 +282,31 @@ impl PyRepoView {
                 let file = PyDict::new(py);
                 file.set_item("path", &f.path)?;
                 file.set_item("kind", f.kind)?;
+                file.set_item("binary", f.binary)?;
+                let hunks: Vec<Bound<'py, PyDict>> = f
+                    .hunks
+                    .iter()
+                    .map(|h| {
+                        let hunk = PyDict::new(py);
+                        hunk.set_item("old_start", h.old_start)?;
+                        hunk.set_item("old_lines", h.old_lines)?;
+                        hunk.set_item("new_start", h.new_start)?;
+                        hunk.set_item("new_lines", h.new_lines)?;
+                        let lines: Vec<Bound<'py, PyDict>> = h
+                            .lines
+                            .iter()
+                            .map(|l| {
+                                let line = PyDict::new(py);
+                                line.set_item("kind", l.kind)?;
+                                line.set_item("content", &l.content)?;
+                                Ok(line)
+                            })
+                            .collect::<PyResult<_>>()?;
+                        hunk.set_item("lines", lines)?;
+                        Ok(hunk)
+                    })
+                    .collect::<PyResult<_>>()?;
+                file.set_item("hunks", hunks)?;
                 Ok(file)
             })
             .collect::<PyResult<_>>()?;

@@ -88,19 +88,52 @@ class DiffStat(BaseModel):
     total_deletions: int
 
 
+class HunkLine(BaseModel):
+    """One line within a :class:`Hunk`. ``added`` lines exist only on the new side, ``removed``
+    only on the old; ``content`` keeps its trailing newline (lossy-utf8 decoded)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["context", "added", "removed"]
+    content: str
+
+
+class Hunk(BaseModel):
+    """A contiguous changed span of a text file, with 1-based old/new line ranges.
+
+    Pyjutsu groups one hunk per changed span with **no surrounding context** (so ``lines`` holds
+    only ``added``/``removed`` lines). This is a faithful structured diff but not a byte-exact
+    ``@@`` unified-diff header; git-style 3-line-context grouping is intentionally not emitted.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    old_start: int
+    old_lines: int
+    new_start: int
+    new_lines: int
+    lines: list[HunkLine]
+
+
 class FileChange(BaseModel):
-    """One changed path in a :class:`Diff` and how it changed.
+    """One changed path in a :class:`Diff`: how it changed, and its content hunks.
 
     ``kind`` mirrors jj's name-status: ``added`` / ``modified`` / ``removed``, plus
     ``type_changed`` when a path switches entry kind (e.g. file↔symlink) — jj's ``--summary``
     renders that as a plain ``M``, but the binding distinguishes it. An executable-bit-only edit
     stays ``modified``.
+
+    ``binary`` is ``True`` for a non-line-diffable file (binary, symlink, submodule, or
+    conflict); such files carry no ``hunks``, matching how :class:`DiffStat` lists them with zero
+    counts.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     path: str
     kind: Literal["added", "modified", "removed", "type_changed"]
+    binary: bool = False
+    hunks: list[Hunk] = []
 
 
 class Diff(BaseModel):

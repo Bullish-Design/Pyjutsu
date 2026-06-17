@@ -83,7 +83,7 @@ pub(crate) fn compute(repo: &dyn Repo, commit: &Commit) -> Result<DiffStatData, 
 /// Read a tree value's bytes if it is a resolved text file. `Some(bytes)` for a present file
 /// (or empty for an absent side); `None` for anything not line-diffable (symlink, submodule,
 /// tree, conflict, or binary content with a NUL byte).
-async fn read_text(
+pub(crate) async fn read_text(
     store: &Store,
     path: &RepoPath,
     value: &MergedTreeValue,

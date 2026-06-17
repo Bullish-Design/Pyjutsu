@@ -150,6 +150,40 @@ class JjCli:
                 result[path] = kind
         return result
 
+    def diff_git(self, repo: Path, revset: str) -> dict[str, tuple[list[str], list[str]]]:
+        """Per-file ``{target_path: (added_lines, removed_lines)}`` from `jj diff -r <rev> --git`.
+
+        Each body line is the content with its leading ``+``/``-`` and trailing newline stripped;
+        file boundaries are ``diff --git a/<old> b/<new>`` headers (the target is ``b/<new>``).
+        Hunk/index headers, ``+++``/``---`` lines, and ``\\ No newline`` markers are skipped. Lines
+        are returned in file order; compare as multisets (the binding groups them by hunk).
+        """
+        result: dict[str, tuple[list[str], list[str]]] = {}
+        added: list[str] = []
+        removed: list[str] = []
+        path: str | None = None
+
+        def flush() -> None:
+            if path is not None:
+                result[path] = (added, removed)
+
+        for line in self(repo, "diff", "-r", revset, "--git").splitlines():
+            if line.startswith("diff --git "):
+                flush()
+                # "diff --git a/<old> b/<new>" → take the b/ side as the target path.
+                path = line.split(" b/", 1)[1]
+                added, removed = [], []
+            elif line.startswith(("+++", "---", "@@", "index ", "new file", "deleted file")):
+                continue
+            elif line.startswith("rename ") or line.startswith("copy ") or line.startswith("\\"):
+                continue
+            elif line.startswith("+"):
+                added.append(line[1:])
+            elif line.startswith("-"):
+                removed.append(line[1:])
+        flush()
+        return result
+
     def conflicted_paths(self, repo: Path) -> dict[str, int]:
         """Map of conflicted path → number of sides, from `jj resolve --list` (operates on `@`).
 
