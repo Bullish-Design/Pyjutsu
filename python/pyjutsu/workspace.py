@@ -23,6 +23,7 @@ from .models import (
     WorkspaceInfo,
 )
 from .repo_view import RepoView
+from .revset import Revset
 from .transaction import Transaction
 
 __all__ = ["Workspace"]
@@ -339,11 +340,11 @@ class Workspace:
         """Read ``@`` — this workspace's working-copy commit. Read-only (no snapshot)."""
         return self.head().working_copy()
 
-    def resolve(self, revset: str) -> Commit:
+    def resolve(self, revset: str | Revset) -> Commit:
         """Resolve a single-revision revset → its :class:`Commit` (delegates to a head view)."""
         return self.head().resolve(revset)
 
-    def log(self, revset: str, limit: int | None = None) -> list[Commit]:
+    def log(self, revset: str | Revset, limit: int | None = None) -> list[Commit]:
         """Evaluate a revset → its :class:`Commit` list (delegates to a head view)."""
         return self.head().log(revset, limit)
 
@@ -355,15 +356,15 @@ class Workspace:
         """All bookmarks (local + remote-tracking) at the head operation."""
         return self.head().bookmarks()
 
-    def conflicts(self, revset: str) -> list[Conflict]:
+    def conflicts(self, revset: str | Revset) -> list[Conflict]:
         """The conflicts in the single commit named by ``revset`` (delegates to a head view)."""
         return self.head().conflicts(revset)
 
-    def diff_stat(self, revset: str) -> DiffStat:
+    def diff_stat(self, revset: str | Revset) -> DiffStat:
         """The diff stat of the single commit named by ``revset`` (delegates to a head view)."""
         return self.head().diff_stat(revset)
 
-    def diff(self, revset: str) -> Diff:
+    def diff(self, revset: str | Revset) -> Diff:
         """The name-status diff of the single commit named by ``revset`` (delegates to a head view)."""
         return self.head().diff(revset)
 

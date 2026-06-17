@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from ._pyjutsu import PyRepoView
 from .models import Bookmark, Commit, Conflict, Diff, DiffStat, Operation
+from .revset import Revset, _revset_str
 
 __all__ = ["RepoView"]
 
@@ -27,17 +28,23 @@ class RepoView:
         """Read ``@`` — the originating workspace's working-copy commit. Read-only (no snapshot)."""
         return Commit.model_validate(self._handle.working_copy())
 
-    def resolve(self, revset: str) -> Commit:
+    def resolve(self, revset: str | Revset) -> Commit:
         """Resolve a revset naming **exactly one** revision → its :class:`Commit`.
 
-        Raises :class:`~pyjutsu.errors.RevsetError` if the revset matches zero or many
-        revisions (mirrors jj's "must resolve to a single revision").
+        Accepts a revset string or a :class:`~pyjutsu.Revset` builder. Raises
+        :class:`~pyjutsu.errors.RevsetError` if the revset matches zero or many revisions
+        (mirrors jj's "must resolve to a single revision").
         """
-        return Commit.model_validate(self._handle.resolve(revset))
+        return Commit.model_validate(self._handle.resolve(_revset_str(revset)))
 
-    def log(self, revset: str, limit: int | None = None) -> list[Commit]:
-        """Evaluate a revset → its :class:`Commit` list in revset order, capped at ``limit``."""
-        return [Commit.model_validate(row) for row in self._handle.log(revset, limit)]
+    def log(self, revset: str | Revset, limit: int | None = None) -> list[Commit]:
+        """Evaluate a revset → its :class:`Commit` list in revset order, capped at ``limit``.
+
+        Accepts a revset string or a :class:`~pyjutsu.Revset` builder.
+        """
+        return [
+            Commit.model_validate(row) for row in self._handle.log(_revset_str(revset), limit)
+        ]
 
     def operations(self, limit: int | None = None) -> list[Operation]:
         """The op log from this view's operation: it and its ancestors, newest first."""
@@ -52,24 +59,29 @@ class RepoView:
         """All bookmarks at this operation: local rows (``remote=None``) then remote-tracking refs."""
         return [Bookmark.model_validate(row) for row in self._handle.bookmarks()]
 
-    def conflicts(self, revset: str) -> list[Conflict]:
+    def conflicts(self, revset: str | Revset) -> list[Conflict]:
         """The conflicts in the single commit named by ``revset`` — one row per conflicted path.
 
-        Raises :class:`~pyjutsu.errors.RevsetError` unless ``revset`` names exactly one revision.
+        Accepts a revset string or a :class:`~pyjutsu.Revset` builder. Raises
+        :class:`~pyjutsu.errors.RevsetError` unless ``revset`` names exactly one revision.
         """
-        return [Conflict.model_validate(row) for row in self._handle.conflicts(revset)]
+        return [
+            Conflict.model_validate(row) for row in self._handle.conflicts(_revset_str(revset))
+        ]
 
-    def diff_stat(self, revset: str) -> DiffStat:
+    def diff_stat(self, revset: str | Revset) -> DiffStat:
         """The diff stat of the single commit named by ``revset`` against its parent(s).
 
-        Raises :class:`~pyjutsu.errors.RevsetError` unless ``revset`` names exactly one revision.
+        Accepts a revset string or a :class:`~pyjutsu.Revset` builder. Raises
+        :class:`~pyjutsu.errors.RevsetError` unless ``revset`` names exactly one revision.
         """
-        return DiffStat.model_validate(self._handle.diff_stat(revset))
+        return DiffStat.model_validate(self._handle.diff_stat(_revset_str(revset)))
 
-    def diff(self, revset: str) -> Diff:
+    def diff(self, revset: str | Revset) -> Diff:
         """The name-status diff of the single commit named by ``revset`` against its parent(s).
 
-        Returns each changed path and how it changed (added/modified/removed/type_changed).
-        Raises :class:`~pyjutsu.errors.RevsetError` unless ``revset`` names exactly one revision.
+        Accepts a revset string or a :class:`~pyjutsu.Revset` builder. Returns each changed path and
+        how it changed (added/modified/removed/type_changed). Raises
+        :class:`~pyjutsu.errors.RevsetError` unless ``revset`` names exactly one revision.
         """
-        return Diff.model_validate(self._handle.diff(revset))
+        return Diff.model_validate(self._handle.diff(_revset_str(revset)))

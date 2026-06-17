@@ -37,6 +37,7 @@ from .models import (
     WorkspaceInfo,
 )
 from .repo_view import RepoView
+from .revset import Pattern, Revset
 from .transaction import Transaction
 from .workspace import Workspace
 
@@ -64,6 +65,8 @@ __all__ = [
     "Workspace",
     "Transaction",
     "RepoView",
+    "Revset",
+    "Pattern",
     "Commit",
     "Signature",
     "Operation",
