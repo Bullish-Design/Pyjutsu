@@ -177,6 +177,14 @@ class JjCli:
             args.append("--allow-new")
         self(repo, *args)
 
+    def git_push_all(self, repo: Path) -> None:
+        """``jj git push --all`` in ``repo`` (push every local bookmark)."""
+        self(repo, "git", "push", "--all")
+
+    def git_push_tracked(self, repo: Path) -> None:
+        """``jj git push --tracked`` in ``repo`` (push every tracked bookmark)."""
+        self(repo, "git", "push", "--tracked")
+
     def git_clone(self, url: str, dest: Path, *, colocate: bool = False) -> None:
         """``jj git clone [--colocate] <url> <dest>`` (run from ``dest``'s parent)."""
         args = ["git", "clone"]

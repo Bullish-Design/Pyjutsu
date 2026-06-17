@@ -37,6 +37,17 @@ def _has_ref(git_dir: Path, ref: str) -> bool:
     return result.returncode == 0
 
 
+def _remote_heads(git_dir: Path) -> set[str]:
+    """The set of branch names under ``refs/heads/`` in the (bare) git repo at ``git_dir``."""
+    # `git show-ref --heads` exits non-zero when there are no heads, so don't `check`.
+    out = subprocess.run(
+        ["git", "-C", str(git_dir), "show-ref", "--heads"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    return {line.split("refs/heads/", 1)[1] for line in out.splitlines() if "refs/heads/" in line}
+
+
 # --- git_push (headline) ----------------------------------------------------------------------
 
 
@@ -155,6 +166,98 @@ def test_push_multiple_bookmarks(scratch_repo: Path, tmp_path: Path, jj: JjCli) 
     assert _has_ref(origin, "refs/heads/feat-b")
     # One operation for the whole multi-bookmark push.
     assert _op_count(scratch_repo, jj) == ops_before + 1
+
+
+def test_push_all_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    # `all=True` pushes every local bookmark (creating new ones), one op. Both sides start from the
+    # byte-identical `scratch_repo` and push to their own bare origin; the head sets must match.
+    other = tmp_path / "copy"
+    subprocess.run(["cp", "-r", str(scratch_repo), str(other)], check=True)
+    origin_b = _init_bare(tmp_path / "origin_b.git")
+    origin_c = _init_bare(tmp_path / "origin_c.git")
+
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    with ws.transaction("new") as tx:
+        tx.new()
+    with ws.transaction("bookmarks") as tx:
+        tx.create_bookmark("feat-a", "@-")
+        tx.create_bookmark("feat-b", "@-")
+    ws.add_remote("origin", str(origin_b))
+    ops_before = _op_count(scratch_repo, jj)
+
+    op = ws.git_push("origin", all=True)
+
+    assert op is not None
+    assert _op_count(scratch_repo, jj) == ops_before + 1  # one op for the whole bulk push
+
+    # CLI oracle on the sibling.
+    jj(other, "new")
+    jj(other, "bookmark", "create", "feat-a", "-r", "@-")
+    jj(other, "bookmark", "create", "feat-b", "-r", "@-")
+    jj(other, "git", "remote", "add", "origin", str(origin_c))
+    jj.git_push_all(other)
+
+    assert _remote_heads(origin_b) == _remote_heads(origin_c) == {"feat-a", "feat-b"}
+
+
+def test_push_tracked_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    # `tracked=True` pushes only bookmarks already tracking the remote: feat-a (pushed, then moved
+    # forward) is pushed; the never-pushed feat-b is left alone, not created on the remote.
+    other = tmp_path / "copy"
+    subprocess.run(["cp", "-r", str(scratch_repo), str(other)], check=True)
+    origin_b = _init_bare(tmp_path / "origin_b.git")
+    origin_c = _init_bare(tmp_path / "origin_c.git")
+
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    with ws.transaction("new") as tx:
+        tx.new()
+    with ws.transaction("bookmark") as tx:
+        tx.create_bookmark("feat-a", "@-")
+    ws.add_remote("origin", str(origin_b))
+    ws.git_push("origin", "feat-a", allow_new=True)  # feat-a is now tracked on origin
+    # Move feat-a to a described, direct child of @- (so its push has something to do and never
+    # drags an empty-description commit along), and add an untracked feat-b.
+    with ws.transaction("advance") as tx:
+        c = tx.new("@-")
+        tx.describe(c.change_id, "advance feat-a")
+        tx.set_bookmark("feat-a", c.change_id)
+        tx.create_bookmark("feat-b", c.change_id)
+    ops_before = _op_count(scratch_repo, jj)
+
+    op = ws.git_push("origin", tracked=True)
+
+    assert op is not None
+    assert _op_count(scratch_repo, jj) == ops_before + 1
+    assert _remote_heads(origin_b) == {"feat-a"}  # feat-b (untracked) was not pushed
+
+    # CLI oracle on the sibling: same logical shape.
+    jj(other, "new")
+    jj(other, "bookmark", "create", "feat-a", "-r", "@-")
+    jj(other, "git", "remote", "add", "origin", str(origin_c))
+    jj.git_push(other, "feat-a", allow_new=True)
+    jj(other, "new", "-r", "@-", "-m", "advance feat-a")
+    jj(other, "bookmark", "set", "feat-a", "-r", "@")
+    jj(other, "bookmark", "create", "feat-b", "-r", "@")
+    jj.git_push_tracked(other)
+
+    assert _remote_heads(origin_c) == {"feat-a"}
+    assert _remote_heads(origin_b) == _remote_heads(origin_c)
+
+
+def test_push_all_and_tracked_raises(scratch_repo: Path, tmp_path: Path) -> None:
+    origin = _init_bare(tmp_path / "origin.git")
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    ws.add_remote("origin", str(origin))
+    with pytest.raises(GitError):
+        ws.git_push("origin", all=True, tracked=True)
+
+
+def test_push_all_with_names_raises(scratch_repo: Path, tmp_path: Path) -> None:
+    origin = _init_bare(tmp_path / "origin.git")
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    ws.add_remote("origin", str(origin))
+    with pytest.raises(GitError):
+        ws.git_push("origin", "feature", all=True)
 
 
 def test_push_delete_nonexistent_raises(scratch_repo: Path, tmp_path: Path) -> None:

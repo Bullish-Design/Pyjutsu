@@ -962,15 +962,26 @@ impl PyWorkspace {
     /// default) refuses to create a bookmark that doesn't yet exist on the remote (mirrors the CLI's
     /// `--allow-new` gate). `delete=True` removes each named bookmark **on the remote**
     /// (`BookmarkPushUpdate { new_target: None }`); it requires a remote-tracking ref but **not** a
-    /// local bookmark (you're deleting the remote ref). Raises `GitError` if: `bookmarks` is empty;
-    /// a non-delete bookmark is missing/conflicted locally or new without `allow_new`; a delete
-    /// target has no remote ref; or the remote rejects the push (the rejected ref names are reported).
+    /// local bookmark (you're deleting the remote ref).
+    ///
+    /// `all=True` (`jj git push --all`) pushes **every local bookmark** — creating new ones and
+    /// fast-forwarding existing ones; `tracked=True` (`jj git push --tracked`) pushes only the
+    /// bookmarks already **tracking** this remote. These are bulk *selection* modes: they ignore the
+    /// `bookmarks` list (which must be empty) and are mutually exclusive. Neither deletes: a
+    /// locally-absent bookmark is skipped, matching jj 0.38 (deletions need `delete=True`; the CLI's
+    /// `--deleted` / `--change` / force-push remain out of scope).
+    ///
+    /// Raises `GitError` if: `bookmarks` is empty without a bulk mode (or non-empty with one); both
+    /// `all` and `tracked` are set; `delete` is combined with a bulk mode; a non-delete named
+    /// bookmark is missing/conflicted locally or new without `allow_new`; a delete target has no
+    /// remote ref; or the remote rejects the push (the rejected ref names are reported).
     ///
     /// Subprocess + network → **off the GIL**; the `!Send` `Transaction` lives and dies inside the
     /// one closure on one thread. The local + remote-tracking targets are read from the view before
     /// the tx starts. A fresh loader is used so the remote is found (slice-10 staleness). Push moves
     /// only remote-tracking bookmarks (no commit rewrite), so `rebase_descendants` is unnecessary.
-    #[pyo3(signature = (remote, bookmarks, allow_new=false, delete=false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (remote, bookmarks, allow_new=false, delete=false, all=false, tracked=false))]
     fn git_push<'py>(
         &self,
         py: Python<'py>,
@@ -978,8 +989,26 @@ impl PyWorkspace {
         bookmarks: Vec<String>,
         allow_new: bool,
         delete: bool,
+        all: bool,
+        tracked: bool,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
-        if bookmarks.is_empty() {
+        // `all`/`tracked` are mutually-exclusive *bulk* selection modes that ignore the named
+        // `bookmarks` list; the named list and the bulk modes can't be combined. `delete` is a
+        // named-only verb (bulk push never deletes — jj 0.38's `--all`/`--tracked` skip deletions,
+        // which require the separate `--deleted`, left flagged).
+        if all && tracked {
+            return Err(map_git_err("pass at most one of all/tracked".to_owned()));
+        }
+        let bulk = all || tracked;
+        if bulk && delete {
+            return Err(map_git_err("delete is not supported with all/tracked".to_owned()));
+        }
+        if bulk && !bookmarks.is_empty() {
+            return Err(map_git_err(
+                "bookmarks must be empty when all/tracked is set".to_owned(),
+            ));
+        }
+        if !bulk && bookmarks.is_empty() {
             return Err(map_git_err("no bookmarks to push".to_owned()));
         }
         let mut guard = self.locked()?;
@@ -997,7 +1026,41 @@ impl PyWorkspace {
             // Read each bookmark's local + remote-tracking targets from the view, then build one
             // `BookmarkPushUpdate` per bookmark. The read borrow ends with `view` before the tx.
             let view = repo.view();
-            let mut branch_updates = Vec::with_capacity(bookmarks.len());
+            let mut branch_updates = Vec::new();
+            // Bulk selection (`all`/`tracked`): scan every bookmark present locally and/or on the
+            // remote and emit an update wherever the local and remote-tracking targets differ.
+            // `tracked` restricts to bookmarks already tracking this remote; `all` also creates new
+            // ones. A locally-absent bookmark (a deletion) is skipped in both modes — matching jj
+            // 0.38, whose `--all`/`--tracked` refuse deletions (those need the named `delete=True`).
+            // When `bulk` is false the named loop below runs instead (`bookmarks` is empty here).
+            if bulk {
+                for (bookmark, pair) in view.local_remote_bookmarks(remote_name) {
+                    if tracked && !pair.remote_ref.is_tracked() {
+                        continue;
+                    }
+                    let Some(new_target) = pair.local_target.as_normal() else {
+                        // Absent local = deletion; conflicted local = unrepresentable. Skip both.
+                        continue;
+                    };
+                    let old_target = if pair.remote_ref.is_absent() {
+                        None
+                    } else if let Some(id) = pair.remote_ref.target.as_normal() {
+                        Some(id.clone())
+                    } else {
+                        continue; // conflicted remote: skip
+                    };
+                    if old_target.as_ref() == Some(new_target) {
+                        continue; // local already matches remote: no-op
+                    }
+                    branch_updates.push((
+                        bookmark.to_owned(),
+                        BookmarkPushUpdate {
+                            old_target,
+                            new_target: Some(new_target.clone()),
+                        },
+                    ));
+                }
+            }
             for bookmark in &bookmarks {
                 let bookmark_ref: &RefName = bookmark.as_str().as_ref();
                 let remote_ref = view.get_remote_bookmark(bookmark_ref.to_remote_symbol(remote_name));
@@ -1045,6 +1108,9 @@ impl PyWorkspace {
                 ));
             }
 
+            if branch_updates.is_empty() {
+                return Ok(None); // nothing selected changed ⇒ no operation
+            }
             let targets = GitBranchPushTargets { branch_updates };
 
             let mut tx = repo.start_transaction();

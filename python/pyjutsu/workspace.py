@@ -131,27 +131,42 @@ class Workspace:
     def git_push(
         self,
         remote: str,
-        bookmark: str | list[str],
+        bookmark: str | list[str] | None = None,
         *,
         allow_new: bool = False,
         delete: bool = False,
+        all: bool = False,
+        tracked: bool = False,
     ) -> Operation | None:
-        """Push local ``bookmark`` (one name or a list) to ``remote`` → the published
-        :class:`Operation`, or ``None`` if nothing changed (no operation published).
+        """Push local bookmarks to ``remote`` → the published :class:`Operation`, or ``None`` if
+        nothing changed (no operation published).
 
-        Matches ``jj git push --bookmark <…>``: runs a ``git push`` and updates the remote-tracking
-        bookmark(s). Pass a list to push several bookmarks in one operation. ``allow_new=False`` (the
-        default) refuses to create a bookmark that doesn't yet exist on the remote (the CLI's
-        ``--allow-new`` gate); pass ``allow_new=True`` to create it. ``delete=True`` removes each
-        named bookmark **on the remote** (it needs a remote-tracking ref but not a local bookmark).
+        Matches ``jj git push``: runs a ``git push`` and updates the remote-tracking bookmark(s).
+        Pass ``bookmark`` (one name or a list) to push named bookmarks (``--bookmark``); several
+        push in one operation. ``allow_new=False`` (the default) refuses to create a bookmark that
+        doesn't yet exist on the remote (the CLI's ``--allow-new`` gate); pass ``allow_new=True`` to
+        create it. ``delete=True`` removes each named bookmark **on the remote** (it needs a
+        remote-tracking ref but not a local bookmark).
 
-        Raises :class:`~pyjutsu.errors.GitError` if ``bookmark`` is empty, a (non-delete) local
-        bookmark is missing or conflicted, a bookmark is new and ``allow_new`` is false, a delete
-        target has no remote ref, or the remote rejects the push. Force-push, ``--all``/``--tracked``
-        selection, and ``-r <rev>`` remain out of scope.
+        ``all=True`` (``--all``) pushes **every local bookmark** — creating new ones and
+        fast-forwarding existing ones; ``tracked=True`` (``--tracked``) pushes only bookmarks already
+        **tracking** this remote. These bulk modes ignore ``bookmark`` (which must be ``None``/empty)
+        and are mutually exclusive. Neither deletes: a locally-absent bookmark is skipped, matching
+        jj 0.38 (deletions need ``delete=True``).
+
+        Raises :class:`~pyjutsu.errors.GitError` if no bookmark is given without a bulk mode (or one
+        is given with a bulk mode), both ``all`` and ``tracked`` are set, ``delete`` is combined with
+        a bulk mode, a (non-delete) named bookmark is missing/conflicted or new without
+        ``allow_new``, a delete target has no remote ref, or the remote rejects the push. Force-push,
+        ``--deleted``/``--change``/``-r <rev>`` selection remain out of scope.
         """
-        names = [bookmark] if isinstance(bookmark, str) else list(bookmark)
-        row = self._handle.git_push(remote, names, allow_new, delete)
+        if bookmark is None:
+            names: list[str] = []
+        elif isinstance(bookmark, str):
+            names = [bookmark]
+        else:
+            names = list(bookmark)
+        row = self._handle.git_push(remote, names, allow_new, delete, all, tracked)
         return Operation.model_validate(row) if row is not None else None
 
     @classmethod
