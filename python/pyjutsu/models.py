@@ -121,7 +121,9 @@ class FileChange(BaseModel):
     ``kind`` mirrors jj's name-status: ``added`` / ``modified`` / ``removed``, plus
     ``type_changed`` when a path switches entry kind (e.g. file↔symlink) — jj's ``--summary``
     renders that as a plain ``M``, but the binding distinguishes it. An executable-bit-only edit
-    stays ``modified``.
+    stays ``modified``. A delete+add pair the backend recognizes as a move is ``renamed`` (or
+    ``copied`` if the source survives), with ``source`` set to the origin ``path``; jj detects
+    renames but not similarity-based copies, so ``copied`` is rare.
 
     ``binary`` is ``True`` for a non-line-diffable file (binary, symlink, submodule, or
     conflict); such files carry no ``hunks``, matching how :class:`DiffStat` lists them with zero
@@ -131,9 +133,11 @@ class FileChange(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     path: str
-    kind: Literal["added", "modified", "removed", "type_changed"]
+    kind: Literal["added", "modified", "removed", "type_changed", "renamed", "copied"]
     binary: bool = False
     hunks: list[Hunk] = []
+    #: The origin path for a ``renamed``/``copied`` change; ``None`` otherwise.
+    source: str | None = None
 
 
 class Diff(BaseModel):

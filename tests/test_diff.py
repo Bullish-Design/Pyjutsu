@@ -2,6 +2,7 @@
 
 Slice 1: name-status (`diff()`) vs `jj diff --summary`.
 Slice 2: content hunks vs `jj diff --git` (per-file added/removed line multisets).
+Slice 3: copy/rename detection vs `jj diff --summary` (`R {old => new}`).
 """
 
 from __future__ import annotations
@@ -109,3 +110,27 @@ def test_diff_hunk_line_kinds(tmp_path: Path, jj: JjCli) -> None:
     assert {ln.kind for h in add.hunks for ln in h.lines} == {"added"}
     rm = next(f for f in ws.diff("@").files if f.path == "added.txt")
     assert {ln.kind for h in rm.hunks for ln in h.lines} == {"removed"}
+
+
+def test_diff_rename_matches_cli(tmp_path: Path, jj: JjCli) -> None:
+    repo = tmp_path / "rename"
+    repo.mkdir()
+    jj.init_colocated(repo)
+    (repo / "old.txt").write_text("one\ntwo\nthree\nfour\nfive\n")
+    jj(repo, "describe", "-m", "base")
+    jj(repo, "new")
+    # A plain move (no `git mv`) — jj's git backend detects the delete+add as a rename.
+    (repo / "old.txt").rename(repo / "new.txt")
+    jj(repo, "describe", "-m", "rename")
+
+    diff = pyjutsu.Workspace.load(repo).diff("@")
+    cli = jj.rename_summary(repo, "@")
+    assert cli == {"new.txt": ("renamed", "old.txt")}  # backend emits the rename record
+    moved = next(f for f in diff.files if f.path == "new.txt")
+    assert moved.kind == "renamed"
+    assert moved.source == "old.txt"
+    assert moved.binary is False
+    assert moved.hunks == []  # identical content moved ⇒ no line changes
+    # The binding agrees with the CLI's (kind, source).
+    binding = {f.path: (f.kind, f.source) for f in diff.files}
+    assert binding == cli

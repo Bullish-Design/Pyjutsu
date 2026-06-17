@@ -283,6 +283,7 @@ impl PyRepoView {
                 file.set_item("path", &f.path)?;
                 file.set_item("kind", f.kind)?;
                 file.set_item("binary", f.binary)?;
+                file.set_item("source", f.source.as_deref())?;
                 let hunks: Vec<Bound<'py, PyDict>> = f
                     .hunks
                     .iter()

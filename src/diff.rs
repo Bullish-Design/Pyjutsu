@@ -12,11 +12,14 @@ use pyo3::PyErr;
 
 use jj_lib::backend::TreeValue;
 use jj_lib::commit::Commit;
+use jj_lib::copies::{CopyOperation, CopyRecords};
 use jj_lib::diff::{ContentDiff, DiffHunkKind};
 use jj_lib::matchers::EverythingMatcher;
-use jj_lib::merge::MergedTreeValue;
+use jj_lib::merge::{Diff as TreeValueDiff, MergedTreeValue};
 use jj_lib::repo::Repo;
+use jj_lib::repo_path::{RepoPath, RepoPathBuf};
 use jj_lib::rewrite::merge_commit_trees;
+use jj_lib::store::Store;
 
 use crate::diff_stat::read_text;
 use crate::errors::map_backend_err;
@@ -41,11 +44,13 @@ pub(crate) struct HunkData {
 /// One changed path, how it changed, and (for text files) its content hunks.
 pub(crate) struct FileChangeData {
     pub path: String,
-    /// "added" | "modified" | "removed" | "type_changed".
+    /// "added" | "modified" | "removed" | "type_changed" | "renamed" | "copied".
     pub kind: &'static str,
     /// True for a non-line-diffable file (binary, symlink, submodule, or conflict): no hunks.
     pub binary: bool,
     pub hunks: Vec<HunkData>,
+    /// The origin path for a "renamed"/"copied" change; `None` otherwise.
+    pub source: Option<String>,
 }
 
 /// A commit's whole name-status: one row per changed path.
@@ -68,26 +73,68 @@ pub(crate) fn compute(repo: &dyn Repo, commit: &Commit) -> Result<DiffData, PyEr
             .map_err(map_backend_err)?;
         let to_tree = commit.tree();
 
-        let mut stream = from_tree.diff_stream(&to_tree, &EverythingMatcher);
         let mut files = Vec::new();
-        while let Some(entry) = stream.next().await {
-            let diff = entry.values.map_err(map_backend_err)?;
-            // Reuse diff_stat's text/binary discipline so the two reads never disagree about a
-            // file's diffability: `Some(bytes)` ⇒ resolved text, `None` ⇒ non-line-diffable.
-            let before = read_text(store, &entry.path, &diff.before).await?;
-            let after = read_text(store, &entry.path, &diff.after).await?;
-            let (binary, hunks) = match (before, after) {
-                (Some(b), Some(a)) => (false, content_hunks(&b, &a)),
-                _ => (true, Vec::new()),
-            };
-            files.push(FileChangeData {
-                path: entry.path.as_internal_file_string().to_owned(),
-                kind: classify_change(&diff.before, &diff.after),
-                binary,
-                hunks,
-            });
+        // Copy/rename detection is only well-defined against a single parent. For root commits
+        // (no parent) and merges (many parents), `get_copy_records`'s (root, head) pair is
+        // ambiguous, so fall back to plain name-status there (matching jj's own behavior).
+        if parents.len() == 1 {
+            let mut copy_records = CopyRecords::default();
+            let records: Vec<_> = store
+                .get_copy_records(None, parents[0].id(), commit.id())
+                .map_err(map_backend_err)?
+                .collect()
+                .await;
+            copy_records.add_records(records).map_err(map_backend_err)?;
+
+            let mut stream =
+                from_tree.diff_stream_with_copies(&to_tree, &EverythingMatcher, &copy_records);
+            while let Some(entry) = stream.next().await {
+                let diff = entry.values.map_err(map_backend_err)?;
+                let source = entry.path.source.as_ref().map(|(p, op)| (p, *op));
+                files.push(build_file_change(store, entry.path.target(), source, &diff).await?);
+            }
+        } else {
+            let mut stream = from_tree.diff_stream(&to_tree, &EverythingMatcher);
+            while let Some(entry) = stream.next().await {
+                let diff = entry.values.map_err(map_backend_err)?;
+                files.push(build_file_change(store, &entry.path, None, &diff).await?);
+            }
         }
         Ok(DiffData { files })
+    })
+}
+
+/// Build one row from a diff entry: classify its kind, then (for resolved text files) read both
+/// sides and compute hunks. `source` carries the origin path + copy/rename op when the backend
+/// detected one; for a rename the before side is read from the source path, the after from the
+/// target. Reuses `diff_stat::read_text`'s text/binary discipline so the two reads agree.
+async fn build_file_change(
+    store: &Store,
+    target: &RepoPath,
+    source: Option<(&RepoPathBuf, CopyOperation)>,
+    diff: &TreeValueDiff<MergedTreeValue>,
+) -> Result<FileChangeData, PyErr> {
+    let kind = match source {
+        Some((_, CopyOperation::Rename)) => "renamed",
+        Some((_, CopyOperation::Copy)) => "copied",
+        None => classify_change(&diff.before, &diff.after),
+    };
+    let before_path: &RepoPath = match source {
+        Some((p, _)) => p,
+        None => target,
+    };
+    let before = read_text(store, before_path, &diff.before).await?;
+    let after = read_text(store, target, &diff.after).await?;
+    let (binary, hunks) = match (before, after) {
+        (Some(b), Some(a)) => (false, content_hunks(&b, &a)),
+        _ => (true, Vec::new()),
+    };
+    Ok(FileChangeData {
+        path: target.as_internal_file_string().to_owned(),
+        kind,
+        binary,
+        hunks,
+        source: source.map(|(p, _)| p.as_internal_file_string().to_owned()),
     })
 }
 

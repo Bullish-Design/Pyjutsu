@@ -150,6 +150,38 @@ class JjCli:
                 result[path] = kind
         return result
 
+    @staticmethod
+    def _parse_rename_token(token: str) -> tuple[str, str]:
+        """Split jj's ``{old => new}`` rename token into ``(source, target)`` paths.
+
+        Handles git's common-prefix/suffix folding (``dir/{a => b}``, ``{a => b}.txt``); a
+        root-level rename is the plain ``{old.txt => new.txt}`` form.
+        """
+        if "{" in token and " => " in token and "}" in token:
+            before, rest = token.split("{", 1)
+            mid, after = rest.split("}", 1)
+            old, new = mid.split(" => ", 1)
+            return before + old + after, before + new + after
+        old, new = token.split(" => ", 1)
+        return old, new
+
+    def rename_summary(self, repo: Path, revset: str) -> dict[str, tuple[str, str]]:
+        """Rename/copy map ``{target: (kind, source)}`` from `jj diff -r <revset> --summary`.
+
+        Parses the ``R``/``C`` lines (``R {old => new}``) that :meth:`diff_summary` skips; ``kind``
+        is ``"renamed"`` for ``R`` and ``"copied"`` for ``C``.
+        """
+        result: dict[str, tuple[str, str]] = {}
+        for line in self(repo, "diff", "-r", revset, "--summary").splitlines():
+            if not line.strip():
+                continue
+            letter, token = line.split(" ", 1)
+            if letter not in ("R", "C"):
+                continue
+            source, target = self._parse_rename_token(token.strip())
+            result[target] = ("renamed" if letter == "R" else "copied", source)
+        return result
+
     def diff_git(self, repo: Path, revset: str) -> dict[str, tuple[list[str], list[str]]]:
         """Per-file ``{target_path: (added_lines, removed_lines)}`` from `jj diff -r <rev> --git`.
 
