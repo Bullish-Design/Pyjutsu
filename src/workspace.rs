@@ -22,6 +22,7 @@ use jj_lib::git::{
     GitSidebandLineTerminator, GitSubprocessCallback, GitSubprocessOptions,
 };
 use jj_lib::fileset::{self, FilesetDiagnostics};
+use jj_lib::git_backend::GitBackend;
 use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::matchers::NothingMatcher;
 use jj_lib::object_id::ObjectId;
@@ -402,6 +403,21 @@ impl PyWorkspace {
                 .map_err(map_fileset_err)?
                 .to_matcher();
 
+        // Build `base_ignores` from the repo-local global git-excludes file `.git/info/exclude`
+        // (the CLI composes it into its own `base_ignores`), so its patterns keep matching files
+        // out of `@`'s tree. `chain_with_file` is a no-op when the file is absent. The *global*
+        // `core.excludesFile` / `~/.config/git/ignore` layer the CLI also composes is NOT wired
+        // here — gix 0.78's excludes-file accessor is `pub(crate)`, and matching the CLI's exact
+        // interpolation + XDG-default fallback risks divergence, so it stays flagged. (Per-directory
+        // `.gitignore` is the snapshotter's own job, not `base_ignores`' — verified 0.4.0 slice 4.)
+        let mut base_ignores = GitIgnoreFile::empty();
+        if let Some(git_backend) = repo.store().backend_impl::<GitBackend>() {
+            let info_exclude = git_backend.git_repo_path().join("info").join("exclude");
+            base_ignores = base_ignores
+                .chain_with_file("", info_exclude)
+                .map_err(map_workingcopy_err)?;
+        }
+
         let Some(wc_commit_id) = repo.view().get_wc_commit_id(&name).cloned() else {
             return Ok(None);
         };
@@ -437,16 +453,14 @@ impl PyWorkspace {
 
         // 3. Snapshot the on-disk tree (off the GIL — `LockedWorkspace` is `Send`).
         //
-        // `base_ignores` is `empty()` because the snapshotter chains every directory's own
-        // `.gitignore` as it descends (rooted at `base_ignores`; local_working_copy.rs:1524), so
-        // the repo's and nested `.gitignore` files are already honored — verified tree-id-identical
-        // to the CLI (0.4.0 slice 4). The only layer `base_ignores` would still add is the *global*
-        // git-excludes (`core.excludesFile`, `.git/info/exclude`), which remains flagged.
-        // `start_tracking_matcher` honors `snapshot.auto-track` (parsed above) and
-        // `max_new_file_size` honors `snapshot.max-new-file-size` (read above).
+        // The snapshotter chains every directory's own `.gitignore` as it descends (rooted at
+        // `base_ignores`; local_working_copy.rs:1524), so repo/nested `.gitignore` files are already
+        // honored. `base_ignores` adds the repo-local `.git/info/exclude` layer (built above);
+        // `start_tracking_matcher` honors `snapshot.auto-track` (parsed above) and `max_new_file_size`
+        // honors `snapshot.max-new-file-size` (read above).
         let nothing = NothingMatcher;
         let options = SnapshotOptions {
-            base_ignores: GitIgnoreFile::empty(),
+            base_ignores,
             progress: None,
             start_tracking_matcher: auto_track_matcher.as_ref(),
             force_tracking_matcher: &nothing,

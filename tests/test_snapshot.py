@@ -225,6 +225,29 @@ def test_snapshot_bad_auto_track_raises(scratch_repo: Path, jj: JjCli) -> None:
         ws.snapshot()
 
 
+def test_snapshot_info_exclude_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    # The repo-local global git-excludes file `.git/info/exclude` keeps `excluded.txt` out of `@`'s
+    # tree, exactly as the CLI does; `kept.txt` is captured. copytree copies the exclude file into
+    # the sibling, so both sides read it → identical `@` commit id.
+    info_dir = scratch_repo / ".git" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "exclude").write_text("excluded.txt\n")
+    other = _copy_repo(scratch_repo, tmp_path / "copy")
+    for d in (scratch_repo, other):
+        (d / "excluded.txt").write_text("secret\n")
+        (d / "kept.txt").write_text("ok\n")
+
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    op = ws.snapshot()
+    jj(other, "status")  # force the CLI's implicit snapshot
+
+    assert op is not None
+    files = set(jj(scratch_repo, "file", "list", "-r", "@").split())
+    assert "kept.txt" in files
+    assert "excluded.txt" not in files  # .git/info/exclude kept it out of the tree
+    assert jj.commit_id(scratch_repo, "@") == jj.commit_id(other, "@")
+
+
 def test_snapshot_modified_tracked_file(linear_repo: Path, tmp_path: Path, jj: JjCli) -> None:
     # Modifying an already-tracked file dirties `@`; the snapshot records it and matches the CLI.
     other = _copy_repo(linear_repo, tmp_path / "copy")
