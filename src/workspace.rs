@@ -21,14 +21,16 @@ use jj_lib::git::{
     self, GitBranchPushTargets, GitFetch, GitFetchRefExpression, GitImportOptions, GitProgress,
     GitSidebandLineTerminator, GitSubprocessCallback, GitSubprocessOptions,
 };
+use jj_lib::fileset::{self, FilesetDiagnostics};
 use jj_lib::gitignore::GitIgnoreFile;
-use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
+use jj_lib::matchers::NothingMatcher;
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_store::OperationId;
 use jj_lib::op_walk;
 use jj_lib::ref_name::{RefName, RefNameBuf, RemoteName, WorkspaceName, WorkspaceNameBuf};
 use jj_lib::refs::BookmarkPushUpdate;
 use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader, StoreFactories};
+use jj_lib::repo_path::RepoPathUiConverter;
 use jj_lib::settings::{HumanByteSize, UserSettings};
 use jj_lib::str_util::{StringExpression, StringPattern};
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
@@ -37,8 +39,8 @@ use jj_lib::workspace_store::{SimpleWorkspaceStore, WorkspaceStore};
 
 use crate::convert::{CommitData, OperationData, RemoteData, WorkspaceInfoData};
 use crate::errors::{
-    PyjutsuError, StaleWorkingCopyError, map_backend_err, map_edit_err, map_git_err,
-    map_workingcopy_err, map_workspace_err, to_py_err,
+    PyjutsuError, StaleWorkingCopyError, map_backend_err, map_edit_err, map_fileset_err,
+    map_git_err, map_workingcopy_err, map_workspace_err, to_py_err,
 };
 use crate::repo_view::PyRepoView;
 use crate::transaction::PyTransaction;
@@ -380,6 +382,26 @@ impl PyWorkspace {
             .get_value_with("snapshot.max-new-file-size", HumanByteSize::try_from)
             .map_or(1 << 20, |size| size.0);
 
+        // Read & parse `snapshot.auto-track` now (also before the lock), defaulting to `all()` when
+        // unset — matching the CLI, which auto-tracks every new file unless this fileset restricts
+        // it. The matcher decides which *new* files start being tracked, so it can change `@`'s tree
+        // (and commit id). The owned `Box<dyn Matcher>` must outlive `SnapshotOptions`, whose
+        // `start_tracking_matcher` borrows it. A malformed fileset ⇒ `WorkingCopyError`, not a panic.
+        let auto_track = ws
+            .repo_loader()
+            .settings()
+            .get_string("snapshot.auto-track")
+            .unwrap_or_else(|_| "all()".to_owned());
+        let path_converter = RepoPathUiConverter::Fs {
+            cwd: ws.workspace_root().to_path_buf(),
+            base: ws.workspace_root().to_path_buf(),
+        };
+        let mut fileset_diagnostics = FilesetDiagnostics::new();
+        let auto_track_matcher =
+            fileset::parse(&mut fileset_diagnostics, &auto_track, &path_converter)
+                .map_err(map_fileset_err)?
+                .to_matcher();
+
         let Some(wc_commit_id) = repo.view().get_wc_commit_id(&name).cloned() else {
             return Ok(None);
         };
@@ -419,15 +441,14 @@ impl PyWorkspace {
         // `.gitignore` as it descends (rooted at `base_ignores`; local_working_copy.rs:1524), so
         // the repo's and nested `.gitignore` files are already honored — verified tree-id-identical
         // to the CLI (0.4.0 slice 4). The only layer `base_ignores` would still add is the *global*
-        // git-excludes (`core.excludesFile`, `.git/info/exclude`, `~/.config/git/ignore`); chaining
-        // that, and wiring `snapshot.auto-track` into `start_tracking_matcher`, remain flagged.
-        // `max_new_file_size` now honors `snapshot.max-new-file-size` (read above).
-        let everything = EverythingMatcher;
+        // git-excludes (`core.excludesFile`, `.git/info/exclude`), which remains flagged.
+        // `start_tracking_matcher` honors `snapshot.auto-track` (parsed above) and
+        // `max_new_file_size` honors `snapshot.max-new-file-size` (read above).
         let nothing = NothingMatcher;
         let options = SnapshotOptions {
             base_ignores: GitIgnoreFile::empty(),
             progress: None,
-            start_tracking_matcher: &everything,
+            start_tracking_matcher: auto_track_matcher.as_ref(),
             force_tracking_matcher: &nothing,
             max_new_file_size,
         };

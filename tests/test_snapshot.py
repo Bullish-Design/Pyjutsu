@@ -14,6 +14,7 @@ import shutil
 from pathlib import Path
 
 import pyjutsu
+import pytest
 
 from tests.diff.jj_cli import JjCli
 
@@ -158,6 +159,70 @@ def test_snapshot_max_file_size_matches_cli(
     assert "small.txt" in files
     assert "big.txt" not in files  # the configured cap kept it out of the tree
     assert jj.commit_id(scratch_repo, "@") == jj.commit_id(other, "@")
+
+
+def test_snapshot_auto_track_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    # `snapshot.auto-track` restricts which *new* files start being tracked. With it set to a glob
+    # matching only `tracked.txt`, the sibling `other.txt` stays untracked — out of `@`'s tree — on
+    # both sides, so the binding's `@` commit id matches the CLI's.
+    jj.append_config('[snapshot]\nauto-track = \'glob:"tracked.txt"\'')
+    other = _copy_repo(scratch_repo, tmp_path / "copy")
+    for d in (scratch_repo, other):
+        (d / "tracked.txt").write_text("yes\n")
+        (d / "other.txt").write_text("no\n")
+
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    op = ws.snapshot()
+    jj(other, "status")  # force the CLI's implicit snapshot
+
+    assert op is not None
+    files = set(jj(scratch_repo, "file", "list", "-r", "@").split())
+    assert "tracked.txt" in files
+    assert "other.txt" not in files  # auto-track kept the unmatched new file untracked
+    assert jj.commit_id(scratch_repo, "@") == jj.commit_id(other, "@")
+
+
+def test_snapshot_auto_track_none_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    # `auto-track = "none()"` tracks no new file at all: a brand-new file leaves `@`'s tree unchanged,
+    # so there's nothing to snapshot — `snapshot()` returns `None` and the CLI publishes no op either.
+    jj.append_config('[snapshot]\nauto-track = "none()"')
+    other = _copy_repo(scratch_repo, tmp_path / "copy")
+    ops_before = len(jj.op_log_ids(scratch_repo))
+    for d in (scratch_repo, other):
+        (d / "new.txt").write_text("ignored by auto-track\n")
+
+    ws = pyjutsu.Workspace.load(scratch_repo)
+
+    assert ws.snapshot() is None  # nothing newly tracked ⇒ tree unchanged ⇒ no op
+    jj(other, "status")
+    assert "new.txt" not in set(jj(scratch_repo, "file", "list", "-r", "@").split())
+    assert len(jj.op_log_ids(other)) == ops_before  # CLI snapshots nothing either
+
+
+def test_snapshot_auto_track_default_unchanged(scratch_repo: Path, tmp_path: Path, jj: JjCli) -> None:
+    # With no `snapshot.auto-track` set, the default is `all()`: every new file is tracked, exactly
+    # as before this slice. A new file enters `@` and the commit id matches the CLI's.
+    other = _copy_repo(scratch_repo, tmp_path / "copy")
+    for d in (scratch_repo, other):
+        (d / "new.txt").write_text("tracked by default\n")
+
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    op = ws.snapshot()
+    jj(other, "status")
+
+    assert op is not None
+    assert "new.txt" in set(jj(scratch_repo, "file", "list", "-r", "@").split())
+    assert jj.commit_id(scratch_repo, "@") == jj.commit_id(other, "@")
+
+
+def test_snapshot_bad_auto_track_raises(scratch_repo: Path, jj: JjCli) -> None:
+    # A malformed `snapshot.auto-track` fileset is reported as a WorkingCopyError, not a panic.
+    jj.append_config('[snapshot]\nauto-track = "no_such_fileset_function()"')
+    (scratch_repo / "new.txt").write_text("x\n")
+
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    with pytest.raises(pyjutsu.WorkingCopyError):
+        ws.snapshot()
 
 
 def test_snapshot_modified_tracked_file(linear_repo: Path, tmp_path: Path, jj: JjCli) -> None:

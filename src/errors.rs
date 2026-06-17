@@ -68,6 +68,12 @@ pub(crate) fn map_workingcopy_err<E: std::fmt::Display>(err: E) -> PyErr {
     WorkingCopyError::new_err(err.to_string())
 }
 
+/// Fileset parse failures (`FilesetParseError`) → `WorkingCopyError`: a malformed
+/// `snapshot.auto-track` fileset means the working copy can't be snapshotted. Display-only.
+pub(crate) fn map_fileset_err<E: std::fmt::Display>(err: E) -> PyErr {
+    WorkingCopyError::new_err(err.to_string())
+}
+
 /// Git import/export + remote-management failures (`GitImportError`, `GitExportError`,
 /// `GitRemoteManagementError`, `UnexpectedGitBackendError`) → `GitError`. Display-only crosses FFI.
 pub(crate) fn map_git_err<E: std::fmt::Display>(err: E) -> PyErr {
