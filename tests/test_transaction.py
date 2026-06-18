@@ -72,3 +72,35 @@ def test_transaction_token_is_not_reusable(scratch_repo: Path) -> None:
     with pytest.raises(RuntimeError):
         with tx:
             pass
+
+
+def test_failed_commit_releases_transaction_slot(scratch_repo: Path) -> None:
+    """H1 regression: if the op-store write fails when committing, the single-transaction slot
+    must still be released so the workspace isn't permanently wedged (otherwise every later
+    `transaction()` would raise "already open").
+
+    We force the failure by making the op-store's `operations`/`views` directories read-only, so
+    `Transaction::commit`'s attempt to write the new operation/view file errors. The mutation
+    itself (`describe`) is in-memory and succeeds; only the publish fails.
+    """
+    ws = pyjutsu.Workspace.load(scratch_repo)
+
+    op_store = scratch_repo / ".jj" / "repo" / "op_store"
+    locked = [op_store / "operations", op_store / "views"]
+    original = {d: d.stat().st_mode for d in locked}
+    try:
+        for d in locked:
+            d.chmod(0o555)  # r-x: creating a new file inside fails (EACCES)
+        with pytest.raises(pyjutsu.PyjutsuError):
+            # auto_snapshot=False so the failure is isolated to this transaction's commit.
+            with ws.transaction("doomed", auto_snapshot=False) as tx:
+                tx.describe("@", "never lands")
+    finally:
+        for d, mode in original.items():
+            d.chmod(mode)
+
+    # The slot must be free: a fresh transaction opens (not "already open") and commits cleanly.
+    with ws.transaction("recovers", auto_snapshot=False) as tx:
+        tx.describe("@", "ok")
+    assert tx.operation_id is not None
+    assert ws.head_operation() == tx.operation_id

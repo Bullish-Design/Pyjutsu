@@ -76,11 +76,14 @@ impl CommitData {
     pub(crate) fn build(repo: &dyn Repo, commit: &Commit) -> Result<Self, PyErr> {
         // change_id uses jj's canonical "reverse hex" (z-k digits) — the letter form `jj` shows
         // and users type; commit_id is plain hex (git-style), as `jj` displays it.
-        let bookmarks = repo
+        // Sort the names explicitly so the `Commit.bookmarks` "sorted" contract holds at the FFI
+        // boundary, independent of jj-lib's view iteration order.
+        let mut bookmarks: Vec<String> = repo
             .view()
             .local_bookmarks_for_commit(commit.id())
             .map(|(name, _target)| name.as_str().to_owned())
             .collect();
+        bookmarks.sort();
         Ok(Self {
             change_id: commit.change_id().reverse_hex(),
             commit_id: commit.id().hex(),

@@ -56,6 +56,20 @@ def test_run_jj_binary_missing(scratch_repo: Path) -> None:
         ws.run_jj(["status"], jj_binary="/nonexistent/jj")
 
 
+def test_run_jj_binary_not_found(scratch_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No resolvable jj binary (no arg, no PYJUTSU_JJ, none on PATH) raises before spawning:
+    JjCliError with returncode=None and the attempted args."""
+    monkeypatch.delenv("PYJUTSU_JJ", raising=False)
+    # Force resolution to fail deterministically regardless of what's installed on PATH.
+    monkeypatch.setattr("pyjutsu.workspace.shutil.which", lambda _name: None)
+    ws = Workspace.load(scratch_repo)
+    with pytest.raises(JjCliError) as excinfo:
+        ws.run_jj(["status"])
+    err = excinfo.value
+    assert err.returncode is None
+    assert err.command == ["status"]
+
+
 def test_jj_version(scratch_repo: Path) -> None:
     """The optional version helper returns the external jj's version string."""
     ws = Workspace.load(scratch_repo)

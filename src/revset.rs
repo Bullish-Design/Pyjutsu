@@ -100,7 +100,10 @@ pub(crate) fn evaluate_ids(
     let revset = evaluate_revset(repo, revset_str, workspace_name, workspace_root, user_email)?;
     let mut ids = Vec::new();
     for id in revset.iter() {
-        ids.push(id.map_err(map_revset_err)?);
+        // Parse/resolve errors already surfaced in `evaluate_revset` (mapped to `RevsetError`); a
+        // failure *iterating* the evaluated set is a backend/store read, so classify it like
+        // `evaluate`'s per-commit error (`map_backend_err`) — the two paths must agree.
+        ids.push(id.map_err(map_backend_err)?);
     }
     Ok(ids)
 }

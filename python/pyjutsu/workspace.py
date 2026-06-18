@@ -39,6 +39,20 @@ class Workspace:
     **Async usage:** every method releases the GIL while it touches the backend, so in an asyncio
     app wrap a call in :func:`asyncio.to_thread` (e.g. ``await asyncio.to_thread(ws.git_fetch,
     "origin")``) to run it off the event loop. A native async facade is intentionally not provided.
+
+    **Concurrency:** only :meth:`transaction` is guarded against re-entry (at most one open
+    transaction per workspace). The other mutators (:meth:`undo`, :meth:`restore_operation`,
+    :meth:`snapshot`, the ``git_*`` verbs, the remote-CRUD verbs) are **not** mutually excluded with
+    an open transaction — an open transaction does not hold the workspace lock. If you run one of
+    them (e.g. via :func:`asyncio.to_thread`) while a ``with ws.transaction(...)`` block is open,
+    both publish operations; jj records them as divergent operations that later merge (this is jj's
+    normal concurrency model, not corruption), but the interleaving may surprise you. Keep writes on
+    one workspace serialized unless you specifically want concurrent operations.
+
+    **Performance:** each read *shortcut* on this facade (:meth:`log`, :meth:`diff_stat`,
+    :meth:`bookmarks`, …) loads a fresh head view — i.e. re-reads the repo at its latest operation,
+    like the CLI. For several reads of the same state, obtain one view with ``view = ws.head()`` and
+    reuse it (``view.log(...)``, ``view.diff_stat(...)``) to load the repo once.
     """
 
     __slots__ = ("_handle",)
@@ -73,6 +87,14 @@ class Workspace:
         workspace's parents; that ``-r <revs>`` placement and ``--sparse-patterns`` inheritance are
         out-of-scope refinements.) ``name`` defaults to ``path``'s basename. One ``add workspace``
         operation is published.
+
+        .. note::
+            Commit-id parity with the ``jj`` CLI is guaranteed when authoring from the **default**
+            workspace. A *secondary* workspace's ``.jj/repo`` is a pointer file rather than a
+            directory, so loading it skips the repo ``config.toml`` settings layer; commits authored
+            from a secondary workspace may therefore use different settings (and thus differ in
+            commit id) from the CLI's. Author commits from the default workspace if byte-exact
+            parity matters.
         """
         return WorkspaceInfo.model_validate(self._handle.add_workspace(os.fspath(path), name))
 
@@ -440,7 +462,8 @@ class Workspace:
             proc = subprocess.run(
                 [binary, *argv],
                 cwd=self.root,
-                env=os.environ,
+                # Snapshot the environment at call time (so JJ_CONFIG and friends flow through).
+                env={**os.environ},
                 capture_output=True,
                 text=True,
                 input=input,

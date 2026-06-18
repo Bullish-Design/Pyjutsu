@@ -90,11 +90,15 @@ class DiffStat(BaseModel):
 
 class HunkLine(BaseModel):
     """One line within a :class:`Hunk`. ``added`` lines exist only on the new side, ``removed``
-    only on the old; ``content`` keeps its trailing newline (lossy-utf8 decoded)."""
+    only on the old; ``content`` keeps its trailing newline (lossy-utf8 decoded).
+
+    Pyjutsu emits hunks with no surrounding context (see :class:`Hunk`), so a line is only ever
+    ``added`` or ``removed`` — there is no ``context`` kind.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    kind: Literal["context", "added", "removed"]
+    kind: Literal["added", "removed"]
     content: str
 
 

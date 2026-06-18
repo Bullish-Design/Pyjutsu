@@ -38,7 +38,8 @@ use jj_lib::transaction::Transaction;
 
 use crate::convert::{BookmarkData, CommitData};
 use crate::errors::{
-    ImmutableCommitError, PyjutsuError, RevsetError, map_backend_err, map_edit_err,
+    ImmutableCommitError, PyjutsuError, RevsetError, StaleWorkingCopyError, map_backend_err,
+    map_edit_err,
 };
 use crate::revset;
 use crate::workspace::PyWorkspace;
@@ -594,14 +595,23 @@ impl PyTransaction {
     /// **after** the operation is published (off the GIL, on the `Send` `Workspace`), so a later
     /// `jj` command on the same repo sees a working copy in lockstep with the repo head. This is
     /// the shared piece every `@`-rewriting mutation (`new`, `describe` of `@`, edit, abandon, …)
-    /// relies on.
+    /// relies on. A failure in that post-publish checkout is surfaced as `StaleWorkingCopyError`
+    /// (the operation is already in the log; the caller reconciles with `update_stale`) rather than
+    /// a generic error.
     fn commit(&self, py: Python<'_>, description: String) -> PyResult<String> {
         let mut tx = self.take()?;
+        // The native transaction is now consumed (the cell is `None`). Release the workspace's
+        // single-tx slot *immediately*, before any fallible work below: once `take` has emptied the
+        // cell, `Drop` can no longer release the slot (it guards on `is_some()`), so a failure in
+        // `rebase_descendants`/`commit` would otherwise wedge the workspace permanently. Mirrors
+        // `rollback`, which releases right after `take`.
+        self.release_slot();
         // NOTE: on the GIL — `Transaction` is `!Send` (see module docs), so it cannot be moved
         // into `allow_threads`. The op-store write here is light; heavy I/O is off-GIL elsewhere.
         tx.repo_mut().rebase_descendants().map_err(map_backend_err)?;
         let new_repo = tx.commit(description).map_err(map_backend_err)?;
-        self.release_slot();
+        // From here the operation is PUBLISHED — it is in the op log regardless of what follows.
+        let op_hex = new_repo.operation().id().hex();
 
         let new_wc_commit = new_repo.view().get_wc_commit_id(&self.workspace_name).cloned();
         if new_wc_commit != self.starting_wc_commit
@@ -609,12 +619,21 @@ impl PyTransaction {
         {
             let new_commit = new_repo.store().get_commit(&new_id).map_err(map_backend_err)?;
             let op_id = new_repo.operation().id().clone();
+            // The op already landed; a checkout failure means the on-disk WC is now stale, not that
+            // the commit failed. Surface it as `StaleWorkingCopyError` carrying the published op id
+            // so the caller can `update_stale` rather than mistaking a landed op for a failed one.
             self.workspace
                 .bind(py)
                 .borrow()
-                .checkout_wc(py, op_id, &new_commit)?;
+                .checkout_wc(py, op_id, &new_commit)
+                .map_err(|e| {
+                    StaleWorkingCopyError::new_err(format!(
+                        "operation {op_hex} was published but the working copy could not be \
+                         checked out ({e}); run update_stale to reconcile"
+                    ))
+                })?;
         }
-        Ok(new_repo.operation().id().hex())
+        Ok(op_hex)
     }
 
     /// Roll back the transaction: drop it, discarding its in-memory changes without publishing
