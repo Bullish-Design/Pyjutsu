@@ -158,6 +158,79 @@ fn default_user_config_dir() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".config").join("jj"))
 }
 
+/// Adopt an existing colocated git repo into a freshly `init_external_git`'d workspace: import its
+/// HEAD + refs (so `refs/heads/*` become jj bookmarks and `@git`/HEAD is known), then place `@` as
+/// an empty child of the imported HEAD so existing working-tree edits land on top of the initial
+/// commit rather than on the root commit. A repo with no commits yet (no HEAD) leaves the fresh
+/// empty `@` on `root()` for a later first commit. Mirrors `jj git init --colocate` adopting an
+/// existing `.git`. Runs on the init worker thread (already off the GIL).
+fn adopt_existing_git(workspace: &mut Workspace, repo: Arc<ReadonlyRepo>) -> PyResult<()> {
+    let name = workspace.workspace_name().to_owned();
+    let mut tx = repo.start_transaction();
+    // Plain `jj git import` options (as in `git_import`): no auto-local-bookmark for remote
+    // branches (local `refs/heads/*` import as local bookmarks regardless), abandon unreachable
+    // commits, no per-remote auto-track.
+    let options = GitImportOptions {
+        auto_local_bookmark: false,
+        abandon_unreachable_commits: true,
+        remote_auto_track_bookmarks: HashMap::new(),
+    };
+    git::import_head(tx.repo_mut()).map_err(map_git_err)?;
+    git::import_refs(tx.repo_mut(), &options).map_err(map_git_err)?;
+
+    // If the imported repo has a HEAD, base a fresh empty `@` on it (else leave `@` on root).
+    let head_id = tx.repo_mut().view().git_head().as_normal().cloned();
+    let new_wc = if let Some(head_id) = head_id {
+        let head_commit = tx
+            .repo_mut()
+            .store()
+            .get_commit(&head_id)
+            .map_err(map_backend_err)?;
+        Some(
+            tx.repo_mut()
+                .check_out(name, &head_commit)
+                .map_err(map_workingcopy_err)?,
+        )
+    } else {
+        None
+    };
+
+    tx.repo_mut().rebase_descendants().map_err(map_backend_err)?;
+    if !tx.repo_mut().has_changes() {
+        return Ok(()); // empty repo: nothing imported, `@` stays empty on root
+    }
+    let new_repo = tx.commit("import git refs").map_err(map_backend_err)?;
+
+    // Point the on-disk working copy at the new `@` via a **reset** (not a checkout): reset updates
+    // the recorded tree-state without writing any files, so the adopted repo's checkout — including
+    // uncommitted edits — is left exactly as-is. The new `@`'s tree equals HEAD's, so the next
+    // `snapshot()` diffs disk against HEAD and captures the uncommitted edits into `@`. (A checkout
+    // here would either clobber those edits or trip `ConcurrentCheckout`.)
+    if let Some(new_wc) = new_wc {
+        let op_id = new_repo.operation().id().clone();
+        let mut locked_ws = workspace
+            .start_working_copy_mutation()
+            .map_err(map_workingcopy_err)?;
+        pollster::block_on(locked_ws.locked_wc().reset(&new_wc)).map_err(map_workingcopy_err)?;
+        locked_ws.finish(op_id).map_err(map_workingcopy_err)?;
+    }
+    Ok(())
+}
+
+/// Resolve a stored workspace root to an absolute path. jj 0.38 stores the default workspace's root
+/// as an absolute path, but a jj 0.42 binary writing the same store records it *relative to the repo
+/// dir* (`.jj/repo`) — e.g. `../../` — which would otherwise leak through the typed API and be
+/// mis-anchored by callers (the citegeist bootstrap bug). Resolve relatives against `repo_path` and
+/// canonicalize; fall back to the lexically-joined (still absolute) path if the dir no longer exists
+/// (e.g. a forgotten secondary workspace).
+fn absolutize_workspace_path(repo_path: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    let joined = repo_path.join(&path);
+    std::fs::canonicalize(&joined).unwrap_or(joined)
+}
+
 /// No-op `GitSubprocessCallback`: the binding doesn't surface fetch/push progress or sideband
 /// output yet (a future slice could route these to a Python callback). Mirrors jj-lib's own test
 /// `NullCallback` — `needs_progress` is `false`, every sink is a silent `Ok(())`.
@@ -678,10 +751,17 @@ impl PyWorkspace {
         self.finish_op(py, ws, &name, &repo, &new_repo)
     }
 
-    /// Create a brand-new jj repo + default workspace at `path`, returning a handle to it.
-    /// `colocate=false` uses an internal git store (`.jj/repo/store/git`); `colocate=true` colocates
-    /// a `.git` sharing the working copy. Matches `jj git init` / `jj git init --colocate`. The new
+    /// Create a jj repo + default workspace at `path`, returning a handle to it. `colocate=false`
+    /// uses an internal git store (`.jj/repo/store/git`); `colocate=true` colocates a `.git` sharing
+    /// the working copy. Matches `jj git init` / `jj git init --colocate`. For a fresh repo the new
     /// workspace's `@` is an empty commit on `root()`; one initialization operation is published.
+    ///
+    /// **Adopting an existing repo:** when `colocate=true` and `path` already holds a `.git`, that
+    /// git repo is *adopted* (not re-created): jj opens it (`init_external_git`, same colocated
+    /// `git_target` layout) and imports its HEAD + refs, so existing branches become jj bookmarks and
+    /// `@` lands as an empty child of the imported HEAD — matching `jj git init --colocate` on an
+    /// existing repo. Uncommitted working-tree edits are preserved (the next snapshot captures them
+    /// into `@`). A repo with no commits yet leaves the empty `@` on `root()`.
     ///
     /// I/O-heavy and `Send` → the constructor runs **off the GIL**. The returned `Workspace` is
     /// wrapped in a fresh `PyWorkspace` (same shape as `load`).
@@ -693,15 +773,26 @@ impl PyWorkspace {
         // authors with, so any commit this workspace later makes shares the CLI's commit ids.
         let settings = load_user_settings(&path)?;
         let user_email = settings.user_email().to_owned();
-        let (workspace, _repo) = py
-            .allow_threads(|| {
-                if colocate {
-                    Workspace::init_colocated_git(&settings, &path)
-                } else {
-                    Workspace::init_internal_git(&settings, &path)
-                }
-            })
-            .map_err(map_workspace_err)?;
+        // Colocating onto an existing `.git` adopts it; `init_colocated_git` would instead try to
+        // *create* a git repo and fail ("Failed to initialize git repository").
+        let adopt_existing = colocate && path.join(".git").exists();
+        let workspace = py.allow_threads(|| -> PyResult<Workspace> {
+            if adopt_existing {
+                let (mut workspace, repo) =
+                    Workspace::init_external_git(&settings, &path, &path.join(".git"))
+                        .map_err(map_workspace_err)?;
+                adopt_existing_git(&mut workspace, repo)?;
+                Ok(workspace)
+            } else if colocate {
+                let (workspace, _repo) =
+                    Workspace::init_colocated_git(&settings, &path).map_err(map_workspace_err)?;
+                Ok(workspace)
+            } else {
+                let (workspace, _repo) =
+                    Workspace::init_internal_git(&settings, &path).map_err(map_workspace_err)?;
+                Ok(workspace)
+            }
+        })?;
         Ok(Self {
             inner: Mutex::new(workspace),
             user_email,
@@ -807,7 +898,10 @@ impl PyWorkspace {
                 .wc_commit_ids()
                 .iter()
                 .map(|(name, id)| {
-                    let path = store.get_workspace_path(name).map_err(map_workspace_err)?;
+                    let path = store
+                        .get_workspace_path(name)
+                        .map_err(map_workspace_err)?
+                        .map(|p| absolutize_workspace_path(&repo_path, p));
                     Ok(WorkspaceInfoData::new(
                         name.as_str(),
                         path.as_deref(),
@@ -892,6 +986,19 @@ impl PyWorkspace {
                 return Err(map_git_err(format!(
                     "failed to export some bookmarks: {names}"
                 )));
+            }
+            // Keep colocated git's `HEAD` in sync with `@` (detached at `@`'s parent), matching
+            // jj-CLI colocation. Without this, `git_export` writes `refs/heads/*` correctly but
+            // leaves `HEAD` parked at `refs/jj/root`, so bare `git log`/`git status` break. Run it
+            // unconditionally (before `has_changes`) so a refs-only no-op still repairs a stale HEAD;
+            // `reset_head` itself is a no-op when HEAD already matches.
+            if let Some(wc_id) = tx.repo_mut().view().get_wc_commit_id(&name).cloned() {
+                let wc_commit = tx
+                    .repo_mut()
+                    .store()
+                    .get_commit(&wc_id)
+                    .map_err(map_backend_err)?;
+                git::reset_head(tx.repo_mut(), &wc_commit).map_err(map_git_err)?;
             }
             if !tx.repo_mut().has_changes() {
                 return Ok(None);

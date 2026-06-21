@@ -68,12 +68,16 @@ class Workspace:
 
     @classmethod
     def init(cls, path: str | os.PathLike[str], *, colocate: bool = False) -> Workspace:
-        """Create a new jj repo + default workspace at ``path`` → a :class:`Workspace`.
+        """Create or adopt a jj repo + default workspace at ``path`` → a :class:`Workspace`.
 
         Matches ``jj git init`` (``colocate=False``, an internal git store under
         ``.jj/repo/store/git``) / ``jj git init --colocate`` (``colocate=True``, a ``.git`` sharing
-        the working copy). The new ``@`` is an empty commit on the root commit. Raises
-        :class:`~pyjutsu.errors.WorkspaceError` if ``path`` already holds a repo.
+        the working copy). For a fresh repo the new ``@`` is an empty commit on the root commit.
+
+        When ``colocate=True`` and ``path`` already holds a ``.git``, that git repo is **adopted**:
+        its HEAD + refs are imported (existing branches become jj bookmarks) and ``@`` becomes an
+        empty child of the imported HEAD, with any uncommitted working-tree edits preserved. A repo
+        with no commits yet leaves the empty ``@`` on the root commit.
         """
         return cls(PyWorkspace.init(os.fspath(path), colocate))
 
