@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "pyjutsu"
 # Pyjutsu is versioned independently of jj; the bound jj-lib is pinned in Cargo.toml + devenv.nix.
-version = "0.7.0"
+version = "0.7.1"
 description = "Pythonic + Pydantic binding to jujutsu's jj-lib engine via PyO3."
 readme = "README.md"
 requires-python = ">=3.13"
