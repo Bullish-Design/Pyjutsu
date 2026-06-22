@@ -2,12 +2,12 @@
 inputs:
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/rolling
-  # jujutsu is pinned to 0.38.0 — the exact jj-lib version Pyjutsu binds (Cargo.toml
-  # pins `jj-lib = "=0.38.0"`). Differential tests must compare against the CLI of the
-  # bound library, so the `jj` binary comes from this dedicated nixpkgs rev (the same pin
-  # gitman uses), NOT rolling (which currently ships a newer jj).
+  # jujutsu is pinned to 0.42.0 — the exact jj-lib version Pyjutsu binds (Cargo.toml
+  # pins `jj-lib = "=0.42.0"`). Differential tests must compare against the CLI of the
+  # bound library, so the `jj` binary comes from this dedicated nixpkgs rev (the commit
+  # that bumped jujutsu to 0.42.0), NOT rolling (which may ship a different jj).
   nixpkgs-jj:
-    url: github:NixOS/nixpkgs/26eaeac4e409d7b5a6bf6f90a2a2dc223c78d915
+    url: github:NixOS/nixpkgs/bac94ee5925c889ce406cf085b33f51bb3e3dd6c
   # Provides the exact CPython for `languages.python.version = "3.13"`.
   nixpkgs-python:
     url: github:cachix/nixpkgs-python

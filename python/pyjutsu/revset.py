@@ -27,7 +27,7 @@ __all__ = ["Revset", "Pattern"]
 def _quote(s: str) -> str:
     """Quote ``s`` as a jj string literal, mirroring jj-lib's ``escape_string`` exactly.
 
-    Verified against ``dsl_util.rs::escape_string`` (jj-lib 0.38.0): ``"`` and ``\\`` are
+    Verified against ``dsl_util.rs::escape_string`` (jj-lib 0.42.0): ``"`` and ``\\`` are
     backslash-escaped; ``\\t \\r \\n \\0`` use their named forms; any other ASCII control char
     (``< 0x20`` or ``0x7f``) becomes ``\\xNN`` (Rust's ``ascii::escape_default``); everything else —
     printable ASCII and all non-ASCII — passes through verbatim. Rendering then re-parses to the

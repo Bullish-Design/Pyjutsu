@@ -11,14 +11,17 @@ use std::path::Path;
 
 use pyo3::PyErr;
 
+use futures::TryStreamExt as _;
+
 use jj_lib::backend::CommitId;
 use jj_lib::commit::Commit;
+use jj_lib::fileset::FilesetAliasesMap;
 use jj_lib::ref_name::WorkspaceName;
 use jj_lib::repo::Repo;
 use jj_lib::repo_path::RepoPathUiConverter;
 use jj_lib::revset::{
-    self, Revset, RevsetAliasesMap, RevsetDiagnostics, RevsetExtensions, RevsetIteratorExt as _,
-    RevsetParseContext, RevsetWorkspaceContext, SymbolResolver, SymbolResolverExtension,
+    self, Revset, RevsetAliasesMap, RevsetDiagnostics, RevsetExtensions, RevsetParseContext,
+    RevsetStreamExt as _, RevsetWorkspaceContext, SymbolResolver, SymbolResolverExtension,
 };
 
 use crate::errors::{map_backend_err, map_revset_err};
@@ -35,6 +38,7 @@ fn evaluate_revset<'a>(
     user_email: &str,
 ) -> Result<Box<dyn Revset + 'a>, PyErr> {
     let aliases = RevsetAliasesMap::new();
+    let fileset_aliases = FilesetAliasesMap::new();
     let extensions = RevsetExtensions::default();
     // `Fs { cwd, base }` lets `file(<relative>)` resolve against the workspace root, matching
     // how the CLI interprets path arguments from the workspace root.
@@ -52,6 +56,7 @@ fn evaluate_revset<'a>(
         user_email,
         date_pattern_context: chrono::Local::now().into(),
         default_ignored_remote: Some("git".as_ref()), // jj hides the implicit "git" remote
+        fileset_aliases_map: &fileset_aliases,
         use_glob_by_default: false,
         extensions: &extensions,
         workspace: Some(ws_ctx),
@@ -79,10 +84,12 @@ pub(crate) fn evaluate(
     user_email: &str,
 ) -> Result<Vec<Commit>, PyErr> {
     let revset = evaluate_revset(repo, revset_str, workspace_name, workspace_root, user_email)?;
-    let mut commits = Vec::new();
-    for commit in revset.iter().commits(repo.store()) {
-        commits.push(commit.map_err(map_backend_err)?);
-    }
+    // jj-lib 0.42 made revset evaluation stream-based: `stream()` yields commit ids and the
+    // `RevsetStreamExt::commits` adaptor resolves them to `Commit`s. Drive it synchronously off
+    // the GIL (the caller already wraps us in `allow_threads`).
+    let commits: Vec<Commit> =
+        pollster::block_on(revset.stream().commits(repo.store()).try_collect())
+            .map_err(map_backend_err)?;
     Ok(commits)
 }
 
@@ -98,12 +105,10 @@ pub(crate) fn evaluate_ids(
     user_email: &str,
 ) -> Result<Vec<CommitId>, PyErr> {
     let revset = evaluate_revset(repo, revset_str, workspace_name, workspace_root, user_email)?;
-    let mut ids = Vec::new();
-    for id in revset.iter() {
-        // Parse/resolve errors already surfaced in `evaluate_revset` (mapped to `RevsetError`); a
-        // failure *iterating* the evaluated set is a backend/store read, so classify it like
-        // `evaluate`'s per-commit error (`map_backend_err`) — the two paths must agree.
-        ids.push(id.map_err(map_backend_err)?);
-    }
+    // Parse/resolve errors already surfaced in `evaluate_revset` (mapped to `RevsetError`); a
+    // failure *streaming* the evaluated set is a backend/store read, so classify it like
+    // `evaluate`'s per-commit error (`map_backend_err`) — the two paths must agree.
+    let ids: Vec<CommitId> =
+        pollster::block_on(revset.stream().try_collect()).map_err(map_backend_err)?;
     Ok(ids)
 }

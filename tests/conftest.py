@@ -72,7 +72,7 @@ def bookmarked_repo(tmp_path: Path, jj: JjCli) -> Path:
     origin = tmp_path / "origin.git"
     subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
     jj(repo, "git", "remote", "add", "origin", str(origin))
-    jj(repo, "git", "push", "--bookmark", "feature", "--allow-new")
+    jj(repo, "git", "push", "--bookmark", "feature")
     return repo
 
 

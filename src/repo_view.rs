@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use futures::StreamExt as _;
 use pyo3::PyErr;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -143,14 +144,18 @@ impl PyRepoView {
     ) -> PyResult<Bound<'py, PyList>> {
         let data = py.allow_threads(|| -> PyResult<Vec<OperationData>> {
             let head = self.repo.operation().clone();
-            let mut out = Vec::new();
-            for op in op_walk::walk_ancestors(std::slice::from_ref(&head)) {
-                if limit.is_some_and(|n| out.len() >= n) {
-                    break;
+            // jj-lib 0.42 made `walk_ancestors` stream-based; drive it synchronously off the GIL.
+            pollster::block_on(async {
+                let mut out = Vec::new();
+                let mut ops = std::pin::pin!(op_walk::walk_ancestors(std::slice::from_ref(&head)));
+                while let Some(op) = ops.next().await {
+                    if limit.is_some_and(|n| out.len() >= n) {
+                        break;
+                    }
+                    out.push(OperationData::build(&op.map_err(map_backend_err)?));
                 }
-                out.push(OperationData::build(&op.map_err(map_backend_err)?));
-            }
-            Ok(out)
+                Ok(out)
+            })
         })?;
         let dicts: Vec<Bound<'py, PyDict>> =
             data.iter().map(|d| d.to_dict(py)).collect::<PyResult<_>>()?;

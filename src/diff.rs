@@ -8,6 +8,7 @@
 //! disagree about a file's diffability. No commit id moves — this is a pure read off the GIL.
 
 use futures::StreamExt as _;
+use futures::TryStreamExt as _;
 use pyo3::PyErr;
 
 use jj_lib::backend::TreeValue;
@@ -63,10 +64,8 @@ pub(crate) struct DiffData {
 pub(crate) fn compute(repo: &dyn Repo, commit: &Commit) -> Result<DiffData, PyErr> {
     pollster::block_on(async {
         let store = repo.store();
-        let parents: Vec<Commit> = commit
-            .parents()
-            .collect::<Result<_, _>>()
-            .map_err(map_backend_err)?;
+        // jj-lib 0.42 made `Commit::parents` an async fn returning all parents at once.
+        let parents: Vec<Commit> = commit.parents().await.map_err(map_backend_err)?;
         // merge_commit_trees over zero parents yields the empty tree (root commit's "before").
         let from_tree = merge_commit_trees(repo, &parents)
             .await
@@ -79,12 +78,15 @@ pub(crate) fn compute(repo: &dyn Repo, commit: &Commit) -> Result<DiffData, PyEr
         // ambiguous, so fall back to plain name-status there (matching jj's own behavior).
         if parents.len() == 1 {
             let mut copy_records = CopyRecords::default();
+            // `add_records` now takes resolved `CopyRecord`s (no longer `Result`s) and is
+            // infallible, so collect the stream into a `BackendResult<Vec<_>>` here.
             let records: Vec<_> = store
                 .get_copy_records(None, parents[0].id(), commit.id())
                 .map_err(map_backend_err)?
-                .collect()
-                .await;
-            copy_records.add_records(records).map_err(map_backend_err)?;
+                .try_collect()
+                .await
+                .map_err(map_backend_err)?;
+            copy_records.add_records(records);
 
             let mut stream =
                 from_tree.diff_stream_with_copies(&to_tree, &EverythingMatcher, &copy_records);

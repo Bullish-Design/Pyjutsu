@@ -18,20 +18,20 @@ use pyo3::types::PyDict;
 use jj_lib::commit::Commit;
 use jj_lib::config::{ConfigSource, StackedConfig};
 use jj_lib::git::{
-    self, GitBranchPushTargets, GitFetch, GitFetchRefExpression, GitImportOptions, GitProgress,
-    GitSidebandLineTerminator, GitSubprocessCallback, GitSubprocessOptions,
+    self, GitFetch, GitFetchRefExpression, GitImportOptions, GitProgress, GitPushOptions,
+    GitPushRefTargets, GitSidebandLineTerminator, GitSubprocessCallback, GitSubprocessOptions,
 };
-use jj_lib::fileset::{self, FilesetDiagnostics};
+use jj_lib::fileset::{self, FilesetAliasesMap, FilesetDiagnostics, FilesetParseContext};
 use jj_lib::git_backend::GitBackend;
 use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::matchers::NothingMatcher;
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_store::OperationId;
 use jj_lib::op_walk;
+use jj_lib::merge::Diff;
 use jj_lib::ref_name::{RefName, RefNameBuf, RemoteName, WorkspaceName, WorkspaceNameBuf};
-use jj_lib::refs::BookmarkPushUpdate;
 use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader, StoreFactories};
-use jj_lib::repo_path::RepoPathUiConverter;
+use jj_lib::repo_path::{RepoPath, RepoPathUiConverter};
 use jj_lib::settings::{HumanByteSize, UserSettings};
 use jj_lib::str_util::{StringExpression, StringPattern};
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
@@ -170,13 +170,16 @@ fn adopt_existing_git(workspace: &mut Workspace, repo: Arc<ReadonlyRepo>) -> PyR
     // Plain `jj git import` options (as in `git_import`): no auto-local-bookmark for remote
     // branches (local `refs/heads/*` import as local bookmarks regardless), abandon unreachable
     // commits, no per-remote auto-track.
+    // jj-lib 0.42 dropped `auto_local_bookmark` (an empty `remote_auto_track_bookmarks` map now
+    // means "track nothing automatically") and added `record_synthetic_predecessors`, which we
+    // set to jj's config default (`true`) so the import matches the `jj git import` CLI.
     let options = GitImportOptions {
-        auto_local_bookmark: false,
         abandon_unreachable_commits: true,
+        record_synthetic_predecessors: true,
         remote_auto_track_bookmarks: HashMap::new(),
     };
-    git::import_head(tx.repo_mut()).map_err(map_git_err)?;
-    git::import_refs(tx.repo_mut(), &options).map_err(map_git_err)?;
+    pollster::block_on(git::import_head(tx.repo_mut())).map_err(map_git_err)?;
+    pollster::block_on(git::import_refs(tx.repo_mut(), &options)).map_err(map_git_err)?;
 
     // If the imported repo has a HEAD, base a fresh empty `@` on it (else leave `@` on root).
     let head_id = tx.repo_mut().view().git_head().as_normal().cloned();
@@ -187,19 +190,18 @@ fn adopt_existing_git(workspace: &mut Workspace, repo: Arc<ReadonlyRepo>) -> PyR
             .get_commit(&head_id)
             .map_err(map_backend_err)?;
         Some(
-            tx.repo_mut()
-                .check_out(name, &head_commit)
+            pollster::block_on(tx.repo_mut().check_out(name, &head_commit))
                 .map_err(map_workingcopy_err)?,
         )
     } else {
         None
     };
 
-    tx.repo_mut().rebase_descendants().map_err(map_backend_err)?;
+    pollster::block_on(tx.repo_mut().rebase_descendants()).map_err(map_backend_err)?;
     if !tx.repo_mut().has_changes() {
         return Ok(()); // empty repo: nothing imported, `@` stays empty on root
     }
-    let new_repo = tx.commit("import git refs").map_err(map_backend_err)?;
+    let new_repo = pollster::block_on(tx.commit("import git refs")).map_err(map_backend_err)?;
 
     // Point the on-disk working copy at the new `@` via a **reset** (not a checkout): reset updates
     // the recorded tree-state without writing any files, so the adopted repo's checkout — including
@@ -208,11 +210,10 @@ fn adopt_existing_git(workspace: &mut Workspace, repo: Arc<ReadonlyRepo>) -> PyR
     // here would either clobber those edits or trip `ConcurrentCheckout`.)
     if let Some(new_wc) = new_wc {
         let op_id = new_repo.operation().id().clone();
-        let mut locked_ws = workspace
-            .start_working_copy_mutation()
+        let mut locked_ws = pollster::block_on(workspace.start_working_copy_mutation())
             .map_err(map_workingcopy_err)?;
         pollster::block_on(locked_ws.locked_wc().reset(&new_wc)).map_err(map_workingcopy_err)?;
-        locked_ws.finish(op_id).map_err(map_workingcopy_err)?;
+        pollster::block_on(locked_ws.finish(op_id)).map_err(map_workingcopy_err)?;
     }
     Ok(())
 }
@@ -298,7 +299,7 @@ impl PyWorkspace {
             .tree()
             .map_err(map_workingcopy_err)?
             .clone();
-        py.allow_threads(move || ws.check_out(op_id, Some(&old_tree), new_commit))
+        py.allow_threads(move || pollster::block_on(ws.check_out(op_id, Some(&old_tree), new_commit)))
             .map_err(map_workingcopy_err)?;
         Ok(())
     }
@@ -394,7 +395,7 @@ impl PyWorkspace {
         let root = ws.workspace_root().to_owned();
         let loader = ws.repo_loader();
         let repo = py
-            .allow_threads(|| loader.load_at_head())
+            .allow_threads(|| pollster::block_on(loader.load_at_head()))
             .map_err(map_backend_err)?;
         Ok(PyRepoView::new(repo, name, root, self.user_email.clone()))
     }
@@ -404,7 +405,7 @@ impl PyWorkspace {
         let ws = self.locked()?;
         let loader = ws.repo_loader();
         let repo = py
-            .allow_threads(|| loader.load_at_head())
+            .allow_threads(|| pollster::block_on(loader.load_at_head()))
             .map_err(map_backend_err)?;
         Ok(repo.operation().id().hex())
     }
@@ -419,8 +420,9 @@ impl PyWorkspace {
         let repo = py.allow_threads(|| -> PyResult<_> {
             // An invalid/ambiguous op spec is user-input error → PyjutsuError base; a load
             // failure of a valid op is a backend problem.
-            let op = op_walk::resolve_op_for_load(loader, op_str).map_err(to_py_err)?;
-            loader.load_at(&op).map_err(map_backend_err)
+            let op = pollster::block_on(op_walk::resolve_op_for_load(loader, op_str))
+                .map_err(to_py_err)?;
+            pollster::block_on(loader.load_at(&op)).map_err(map_backend_err)
         })?;
         Ok(PyRepoView::new(repo, name, root, self.user_email.clone()))
     }
@@ -441,7 +443,7 @@ impl PyWorkspace {
         // 1. Load the repo at head + the current `@` commit. No `@` ⇒ nothing to snapshot.
         let repo = {
             let loader = ws.repo_loader();
-            py.allow_threads(|| loader.load_at_head())
+            py.allow_threads(|| pollster::block_on(loader.load_at_head()))
                 .map_err(map_backend_err)?
         };
         let name = ws.workspace_name().to_owned();
@@ -471,8 +473,14 @@ impl PyWorkspace {
             base: ws.workspace_root().to_path_buf(),
         };
         let mut fileset_diagnostics = FilesetDiagnostics::new();
+        // jj-lib 0.42 wraps the path converter in a `FilesetParseContext` (with an aliases map).
+        let fileset_aliases = FilesetAliasesMap::new();
+        let fileset_ctx = FilesetParseContext {
+            aliases_map: &fileset_aliases,
+            path_converter: &path_converter,
+        };
         let auto_track_matcher =
-            fileset::parse(&mut fileset_diagnostics, &auto_track, &path_converter)
+            fileset::parse(&mut fileset_diagnostics, &auto_track, &fileset_ctx)
                 .map_err(map_fileset_err)?
                 .to_matcher();
 
@@ -487,7 +495,7 @@ impl PyWorkspace {
         if let Some(git_backend) = repo.store().backend_impl::<GitBackend>() {
             let info_exclude = git_backend.git_repo_path().join("info").join("exclude");
             base_ignores = base_ignores
-                .chain_with_file("", info_exclude)
+                .chain_with_file(RepoPath::root(), info_exclude)
                 .map_err(map_workingcopy_err)?;
         }
 
@@ -500,11 +508,14 @@ impl PyWorkspace {
             .map_err(map_backend_err)?;
 
         // 2. Lock the WC and check freshness (working_copy.rs:363).
-        let mut locked_ws = ws
-            .start_working_copy_mutation()
-            .map_err(map_workingcopy_err)?;
-        match WorkingCopyFreshness::check_stale(locked_ws.locked_wc(), &wc_commit, &repo)
-            .map_err(map_backend_err)?
+        let mut locked_ws =
+            pollster::block_on(ws.start_working_copy_mutation()).map_err(map_workingcopy_err)?;
+        match pollster::block_on(WorkingCopyFreshness::check_stale(
+            locked_ws.locked_wc(),
+            &wc_commit,
+            &repo,
+        ))
+        .map_err(map_backend_err)?
         {
             WorkingCopyFreshness::Fresh => {}
             // Slice 6 adds the full stale surface (`is_stale`/`update_stale`); here we refuse to
@@ -554,23 +565,19 @@ impl PyWorkspace {
         tx.set_is_snapshot(true);
         {
             let mrepo = tx.repo_mut();
-            mrepo
-                .rewrite_commit(&wc_commit)
-                .set_tree(new_tree)
-                .write()
+            pollster::block_on(mrepo.rewrite_commit(&wc_commit).set_tree(new_tree).write())
                 .map_err(map_backend_err)?;
             // Satisfies `commit`'s `!has_rewrites()` assert (landmine #1); fixes up any descendants.
-            mrepo.rebase_descendants().map_err(map_backend_err)?;
+            pollster::block_on(mrepo.rebase_descendants()).map_err(map_backend_err)?;
         }
-        let new_repo = tx
-            .commit("snapshot working copy")
-            .map_err(map_backend_err)?;
+        let new_repo =
+            pollster::block_on(tx.commit("snapshot working copy")).map_err(map_backend_err)?;
 
         // 6. Save the WC state at the new op (off the GIL). The tree is already on disk — `finish`
         //    records "this WC is at <new op> with <new tree>"; it does **not** check out, which is
         //    why snapshot never moves files.
         let op_id = new_repo.operation().id().clone();
-        py.allow_threads(|| locked_ws.finish(op_id))
+        py.allow_threads(|| pollster::block_on(locked_ws.finish(op_id)))
             .map_err(map_workingcopy_err)?;
 
         let data = OperationData::build(new_repo.operation());
@@ -587,7 +594,7 @@ impl PyWorkspace {
 
         let repo = {
             let loader = ws.repo_loader();
-            py.allow_threads(|| loader.load_at_head())
+            py.allow_threads(|| pollster::block_on(loader.load_at_head()))
                 .map_err(map_backend_err)?
         };
         let name = ws.workspace_name().to_owned();
@@ -600,11 +607,14 @@ impl PyWorkspace {
             .map_err(map_backend_err)?;
 
         // `check_stale` needs the WC lock (`old_operation_id` + `old_tree`); take it, check, drop it.
-        let mut locked_ws = ws
-            .start_working_copy_mutation()
-            .map_err(map_workingcopy_err)?;
-        let freshness = WorkingCopyFreshness::check_stale(locked_ws.locked_wc(), &wc_commit, &repo)
-            .map_err(map_backend_err)?;
+        let mut locked_ws =
+            pollster::block_on(ws.start_working_copy_mutation()).map_err(map_workingcopy_err)?;
+        let freshness = pollster::block_on(WorkingCopyFreshness::check_stale(
+            locked_ws.locked_wc(),
+            &wc_commit,
+            &repo,
+        ))
+        .map_err(map_backend_err)?;
         Ok(matches!(
             freshness,
             WorkingCopyFreshness::WorkingCopyStale | WorkingCopyFreshness::SiblingOperation
@@ -620,7 +630,7 @@ impl PyWorkspace {
 
         let repo = {
             let loader = ws.repo_loader();
-            py.allow_threads(|| loader.load_at_head())
+            py.allow_threads(|| pollster::block_on(loader.load_at_head()))
                 .map_err(map_backend_err)?
         };
         let name = ws.workspace_name().to_owned();
@@ -634,12 +644,14 @@ impl PyWorkspace {
 
         // 1. Staleness check (own lock scope; dropped before the forced checkout re-locks).
         let stale = {
-            let mut locked_ws = ws
-                .start_working_copy_mutation()
-                .map_err(map_workingcopy_err)?;
-            let freshness =
-                WorkingCopyFreshness::check_stale(locked_ws.locked_wc(), &wc_commit, &repo)
-                    .map_err(map_backend_err)?;
+            let mut locked_ws =
+                pollster::block_on(ws.start_working_copy_mutation()).map_err(map_workingcopy_err)?;
+            let freshness = pollster::block_on(WorkingCopyFreshness::check_stale(
+                locked_ws.locked_wc(),
+                &wc_commit,
+                &repo,
+            ))
+            .map_err(map_backend_err)?;
             matches!(
                 freshness,
                 WorkingCopyFreshness::WorkingCopyStale | WorkingCopyFreshness::SiblingOperation
@@ -653,7 +665,7 @@ impl PyWorkspace {
         //    guard — which would otherwise trip on exactly the stale on-disk tree we mean to
         //    overwrite (so the slice-2 `checkout_wc`, which passes `Some`, cannot be reused here).
         let op_id = repo.operation().id().clone();
-        py.allow_threads(|| ws.check_out(op_id, None, &wc_commit))
+        py.allow_threads(|| pollster::block_on(ws.check_out(op_id, None, &wc_commit)))
             .map_err(map_workingcopy_err)?;
 
         // 3. Return the reconciled `@` (build off the GIL — `is_empty` touches the backend).
@@ -681,21 +693,23 @@ impl PyWorkspace {
         let (repo, bad_repo, parent_repo, bad_op_hex) = {
             let loader = ws.repo_loader();
             py.allow_threads(|| -> PyResult<_> {
-                let repo = loader.load_at_head().map_err(map_backend_err)?;
+                let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
                 // A bad/ambiguous op spec is user input → PyjutsuError base (matches `at_operation`).
-                let bad_op = op_walk::resolve_op_for_load(loader, &op_spec).map_err(to_py_err)?;
-                let mut parents = bad_op.parents();
-                let Some(parent) = parents.next() else {
+                let bad_op = pollster::block_on(op_walk::resolve_op_for_load(loader, &op_spec))
+                    .map_err(to_py_err)?;
+                // jj-lib 0.42 made `Operation::parents` an async fn returning all parents at once.
+                let parents = pollster::block_on(bad_op.parents()).map_err(map_backend_err)?;
+                if parents.len() > 1 {
+                    return Err(PyjutsuError::new_err("cannot undo a merge operation"));
+                }
+                let Some(parent_op) = parents.into_iter().next() else {
                     return Err(PyjutsuError::new_err(
                         "cannot undo the repo-initialization operation (it has no parent)",
                     ));
                 };
-                let parent_op = parent.map_err(map_backend_err)?;
-                if parents.next().is_some() {
-                    return Err(PyjutsuError::new_err("cannot undo a merge operation"));
-                }
-                let bad_repo = loader.load_at(&bad_op).map_err(map_backend_err)?;
-                let parent_repo = loader.load_at(&parent_op).map_err(map_backend_err)?;
+                let bad_repo = pollster::block_on(loader.load_at(&bad_op)).map_err(map_backend_err)?;
+                let parent_repo =
+                    pollster::block_on(loader.load_at(&parent_op)).map_err(map_backend_err)?;
                 Ok((repo, bad_repo, parent_repo, bad_op.id().hex()))
             })?
         };
@@ -708,11 +722,10 @@ impl PyWorkspace {
         let mut tx = repo.start_transaction();
         {
             let mrepo = tx.repo_mut();
-            mrepo.merge(&bad_repo, &parent_repo).map_err(map_backend_err)?;
-            mrepo.rebase_descendants().map_err(map_backend_err)?;
+            pollster::block_on(mrepo.merge(&bad_repo, &parent_repo)).map_err(map_backend_err)?;
+            pollster::block_on(mrepo.rebase_descendants()).map_err(map_backend_err)?;
         }
-        let new_repo = tx
-            .commit(format!("undo operation {bad_op_hex}"))
+        let new_repo = pollster::block_on(tx.commit(format!("undo operation {bad_op_hex}")))
             .map_err(map_backend_err)?;
 
         self.finish_op(py, ws, &name, &repo, &new_repo)
@@ -734,18 +747,21 @@ impl PyWorkspace {
         let (repo, target_view) = {
             let loader = ws.repo_loader();
             py.allow_threads(|| -> PyResult<_> {
-                let repo = loader.load_at_head().map_err(map_backend_err)?;
-                let target_op = op_walk::resolve_op_for_load(loader, &op_spec).map_err(to_py_err)?;
+                let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
+                let target_op = pollster::block_on(op_walk::resolve_op_for_load(loader, &op_spec))
+                    .map_err(to_py_err)?;
                 // Operation::view() is the high-level View; set_view wants op_store::View.
-                let view = target_op.view().map_err(map_backend_err)?.store_view().clone();
+                let view = pollster::block_on(target_op.view())
+                    .map_err(map_backend_err)?
+                    .store_view()
+                    .clone();
                 Ok((repo, view))
             })?
         };
 
         let mut tx = repo.start_transaction();
         tx.repo_mut().set_view(target_view);
-        let new_repo = tx
-            .commit(format!("restore to operation {op_spec}"))
+        let new_repo = pollster::block_on(tx.commit(format!("restore to operation {op_spec}")))
             .map_err(map_backend_err)?;
 
         self.finish_op(py, ws, &name, &repo, &new_repo)
@@ -778,18 +794,23 @@ impl PyWorkspace {
         let adopt_existing = colocate && path.join(".git").exists();
         let workspace = py.allow_threads(|| -> PyResult<Workspace> {
             if adopt_existing {
-                let (mut workspace, repo) =
-                    Workspace::init_external_git(&settings, &path, &path.join(".git"))
-                        .map_err(map_workspace_err)?;
+                let (mut workspace, repo) = pollster::block_on(Workspace::init_external_git(
+                    &settings,
+                    &path,
+                    &path.join(".git"),
+                ))
+                .map_err(map_workspace_err)?;
                 adopt_existing_git(&mut workspace, repo)?;
                 Ok(workspace)
             } else if colocate {
                 let (workspace, _repo) =
-                    Workspace::init_colocated_git(&settings, &path).map_err(map_workspace_err)?;
+                    pollster::block_on(Workspace::init_colocated_git(&settings, &path))
+                        .map_err(map_workspace_err)?;
                 Ok(workspace)
             } else {
                 let (workspace, _repo) =
-                    Workspace::init_internal_git(&settings, &path).map_err(map_workspace_err)?;
+                    pollster::block_on(Workspace::init_internal_git(&settings, &path))
+                        .map_err(map_workspace_err)?;
                 Ok(workspace)
             }
         })?;
@@ -835,16 +856,17 @@ impl PyWorkspace {
             // `init_workspace_with_existing_repo` creates `<path>/.jj` but not `<path>` itself;
             // `jj workspace add` creates the destination dir, so do the same here.
             std::fs::create_dir_all(&path).map_err(map_workspace_err)?;
-            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
             let factory = default_working_copy_factory();
-            let (new_ws, new_repo) = Workspace::init_workspace_with_existing_repo(
-                &path,
-                &repo_path,
-                &repo,
-                &*factory,
-                name_buf.clone(),
-            )
-            .map_err(map_workspace_err)?;
+            let (new_ws, new_repo) =
+                pollster::block_on(Workspace::init_workspace_with_existing_repo(
+                    &path,
+                    &repo_path,
+                    &repo,
+                    &*factory,
+                    name_buf.clone(),
+                ))
+                .map_err(map_workspace_err)?;
             let wc_id = new_repo
                 .view()
                 .get_wc_commit_id(&name_buf)
@@ -868,16 +890,14 @@ impl PyWorkspace {
         let name_buf = WorkspaceNameBuf::from(name.to_owned());
         let loader = guard.repo_loader();
         py.allow_threads(|| -> PyResult<_> {
-            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
             if repo.view().get_wc_commit_id(&name_buf).is_none() {
                 return Err(PyjutsuError::new_err(format!("no such workspace '{name}'")));
             }
             let mut tx = repo.start_transaction();
-            tx.repo_mut()
-                .remove_wc_commit(&name_buf)
-                .map_err(map_edit_err)?;
-            tx.repo_mut().rebase_descendants().map_err(map_backend_err)?;
-            tx.commit(format!("forget workspace '{name}'"))
+            pollster::block_on(tx.repo_mut().remove_wc_commit(&name_buf)).map_err(map_edit_err)?;
+            pollster::block_on(tx.repo_mut().rebase_descendants()).map_err(map_backend_err)?;
+            pollster::block_on(tx.commit(format!("forget workspace '{name}'")))
                 .map_err(map_backend_err)?;
             Ok(())
         })
@@ -892,7 +912,7 @@ impl PyWorkspace {
         let repo_path = guard.repo_path().to_owned();
         let loader = guard.repo_loader();
         let rows = py.allow_threads(|| -> PyResult<Vec<WorkspaceInfoData>> {
-            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
             let store = SimpleWorkspaceStore::load(&repo_path).map_err(map_workspace_err)?;
             repo.view()
                 .wc_commit_ids()
@@ -929,29 +949,32 @@ impl PyWorkspace {
         let name = ws.workspace_name().to_owned();
         let repo = {
             let loader = ws.repo_loader();
-            py.allow_threads(|| loader.load_at_head())
+            py.allow_threads(|| pollster::block_on(loader.load_at_head()))
                 .map_err(map_backend_err)?
         };
 
         let new_repo = py.allow_threads(|| -> PyResult<Option<Arc<ReadonlyRepo>>> {
-            // Plain `jj git import` options (jj-lib's `default_import_options`): no
-            // auto-local-bookmark, abandon unreachable git commits, no per-remote auto-track (the
-            // `--remote`/track refinements are out of scope). `GitImportOptions` has no `Default`,
-            // so build it explicitly — and inside this closure, since it is `!Sync` (its
-            // `StringMatcher` map) and would otherwise break the `allow_threads` `Ungil` bound.
+            // Plain `jj git import` options: abandon unreachable git commits, record synthetic
+            // predecessors (jj's config default — keeps parity with the `jj git import` CLI), no
+            // per-remote auto-track (an empty map; the `--remote`/track refinements are out of
+            // scope). `GitImportOptions` has no `Default`, so build it explicitly — and inside this
+            // closure, since it is `!Sync` (its `StringMatcher` map) and would otherwise break the
+            // `allow_threads` `Ungil` bound.
             let options = GitImportOptions {
-                auto_local_bookmark: false,
                 abandon_unreachable_commits: true,
+                record_synthetic_predecessors: true,
                 remote_auto_track_bookmarks: HashMap::new(),
             };
             let mut tx = repo.start_transaction();
-            git::import_head(tx.repo_mut()).map_err(map_git_err)?;
-            git::import_refs(tx.repo_mut(), &options).map_err(map_git_err)?;
-            tx.repo_mut().rebase_descendants().map_err(map_backend_err)?;
+            pollster::block_on(git::import_head(tx.repo_mut())).map_err(map_git_err)?;
+            pollster::block_on(git::import_refs(tx.repo_mut(), &options)).map_err(map_git_err)?;
+            pollster::block_on(tx.repo_mut().rebase_descendants()).map_err(map_backend_err)?;
             if !tx.repo_mut().has_changes() {
                 return Ok(None);
             }
-            Ok(Some(tx.commit("import git refs").map_err(map_backend_err)?))
+            Ok(Some(
+                pollster::block_on(tx.commit("import git refs")).map_err(map_backend_err)?,
+            ))
         })?;
         let Some(new_repo) = new_repo else {
             return Ok(None);
@@ -969,7 +992,7 @@ impl PyWorkspace {
         let name = ws.workspace_name().to_owned();
         let repo = {
             let loader = ws.repo_loader();
-            py.allow_threads(|| loader.load_at_head())
+            py.allow_threads(|| pollster::block_on(loader.load_at_head()))
                 .map_err(map_backend_err)?
         };
 
@@ -998,12 +1021,14 @@ impl PyWorkspace {
                     .store()
                     .get_commit(&wc_id)
                     .map_err(map_backend_err)?;
-                git::reset_head(tx.repo_mut(), &wc_commit).map_err(map_git_err)?;
+                pollster::block_on(git::reset_head(tx.repo_mut(), &wc_commit)).map_err(map_git_err)?;
             }
             if !tx.repo_mut().has_changes() {
                 return Ok(None);
             }
-            Ok(Some(tx.commit("export git refs").map_err(map_backend_err)?))
+            Ok(Some(
+                pollster::block_on(tx.commit("export git refs")).map_err(map_backend_err)?,
+            ))
         })?;
         let Some(new_repo) = new_repo else {
             return Ok(None);
@@ -1046,12 +1071,13 @@ impl PyWorkspace {
         let remote = remote.to_owned();
 
         let new_repo = py.allow_threads(move || -> PyResult<Option<Arc<ReadonlyRepo>>> {
-            let repo = loader.load_at_head().map_err(map_backend_err)?;
-            // Plain `jj git fetch` import options (as `git_import`): no auto-local-bookmark, abandon
-            // unreachable git commits, no per-remote auto-track. `!Sync`, so build it in-closure.
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
+            // Plain `jj git fetch` import options (as `git_import`): abandon unreachable git commits,
+            // record synthetic predecessors (jj's config default), no per-remote auto-track (empty
+            // map). `!Sync`, so build it in-closure.
             let options = GitImportOptions {
-                auto_local_bookmark: false,
                 abandon_unreachable_commits: true,
+                record_synthetic_predecessors: true,
                 remote_auto_track_bookmarks: HashMap::new(),
             };
             let subprocess = GitSubprocessOptions::from_settings(&settings).map_err(map_git_err)?;
@@ -1075,14 +1101,14 @@ impl PyWorkspace {
                 fetcher
                     .fetch(remote_name, refspecs, &mut NullGitCallback, None, None)
                     .map_err(map_git_err)?;
-                fetcher.import_refs().map_err(map_git_err)?;
+                pollster::block_on(fetcher.import_refs()).map_err(map_git_err)?;
             } // drop the fetcher → release its &mut MutableRepo borrow before rebase/commit
-            tx.repo_mut().rebase_descendants().map_err(map_backend_err)?;
+            pollster::block_on(tx.repo_mut().rebase_descendants()).map_err(map_backend_err)?;
             if !tx.repo_mut().has_changes() {
                 return Ok(None);
             }
             Ok(Some(
-                tx.commit(format!("fetch from git remote '{remote}'"))
+                pollster::block_on(tx.commit(format!("fetch from git remote '{remote}'")))
                     .map_err(map_backend_err)?,
             ))
         })?;
@@ -1092,7 +1118,7 @@ impl PyWorkspace {
         };
         let repo = {
             let loader = ws.repo_loader();
-            py.allow_threads(|| loader.load_at_head())
+            py.allow_threads(|| pollster::block_on(loader.load_at_head()))
                 .map_err(map_backend_err)?
         };
         Ok(Some(self.finish_op(py, ws, &name, &repo, &new_repo)?))
@@ -1161,7 +1187,7 @@ impl PyWorkspace {
         let remote = remote.to_owned();
 
         let new_repo = py.allow_threads(move || -> PyResult<Option<Arc<ReadonlyRepo>>> {
-            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
             let subprocess = GitSubprocessOptions::from_settings(&settings).map_err(map_git_err)?;
             let remote_name: &RemoteName = remote.as_str().as_ref();
 
@@ -1196,9 +1222,9 @@ impl PyWorkspace {
                     }
                     branch_updates.push((
                         bookmark.to_owned(),
-                        BookmarkPushUpdate {
-                            old_target,
-                            new_target: Some(new_target.clone()),
+                        Diff {
+                            before: old_target,
+                            after: Some(new_target.clone()),
                         },
                     ));
                 }
@@ -1243,9 +1269,9 @@ impl PyWorkspace {
                 };
                 branch_updates.push((
                     RefNameBuf::from(bookmark.as_str()),
-                    BookmarkPushUpdate {
-                        old_target,
-                        new_target,
+                    Diff {
+                        before: old_target,
+                        after: new_target,
                     },
                 ));
             }
@@ -1253,12 +1279,24 @@ impl PyWorkspace {
             if branch_updates.is_empty() {
                 return Ok(None); // nothing selected changed ⇒ no operation
             }
-            let targets = GitBranchPushTargets { branch_updates };
+            // jj-lib 0.42 replaced `GitBranchPushTargets`/`push_branches` with `GitPushRefTargets`
+            // (bookmark/tag `(name, Diff<before, after>)` pairs) and `push_refs`, which also takes a
+            // `GitPushOptions` (`--push-option` args — none here).
+            let targets = GitPushRefTargets {
+                bookmarks: branch_updates,
+                tags: vec![],
+            };
 
             let mut tx = repo.start_transaction();
-            let stats =
-                git::push_branches(tx.repo_mut(), subprocess, remote_name, &targets, &mut NullGitCallback)
-                    .map_err(map_git_err)?;
+            let stats = git::push_refs(
+                tx.repo_mut(),
+                subprocess,
+                remote_name,
+                &targets,
+                &mut NullGitCallback,
+                &GitPushOptions::default(),
+            )
+            .map_err(map_git_err)?;
             if !stats.all_ok() {
                 let mut reasons = Vec::new();
                 for (ref_name, why) in stats.rejected.iter().chain(stats.remote_rejected.iter()) {
@@ -1277,7 +1315,7 @@ impl PyWorkspace {
                 return Ok(None);
             }
             Ok(Some(
-                tx.commit(format!("push to git remote '{remote}'"))
+                pollster::block_on(tx.commit(format!("push to git remote '{remote}'")))
                     .map_err(map_backend_err)?,
             ))
         })?;
@@ -1287,7 +1325,7 @@ impl PyWorkspace {
         };
         let repo = {
             let loader = ws.repo_loader();
-            py.allow_threads(|| loader.load_at_head())
+            py.allow_threads(|| pollster::block_on(loader.load_at_head()))
                 .map_err(map_backend_err)?
         };
         Ok(Some(self.finish_op(py, ws, &name, &repo, &new_repo)?))
@@ -1304,10 +1342,12 @@ impl PyWorkspace {
         let settings = guard.repo_loader().settings().clone();
         let remote = remote.to_owned();
         py.allow_threads(move || -> PyResult<Option<String>> {
-            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
+            // Throwaway fetcher just to read the remote's default branch — import options are
+            // irrelevant here, but `GitImportOptions` still must be built (no `Default`).
             let options = GitImportOptions {
-                auto_local_bookmark: false,
                 abandon_unreachable_commits: true,
+                record_synthetic_predecessors: true,
                 remote_auto_track_bookmarks: HashMap::new(),
             };
             let subprocess = GitSubprocessOptions::from_settings(&settings).map_err(map_git_err)?;
@@ -1328,7 +1368,7 @@ impl PyWorkspace {
         let guard = self.locked()?;
         let loader = Self::fresh_loader(&guard)?;
         let rows = py.allow_threads(move || -> PyResult<Vec<RemoteData>> {
-            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
             let store = repo.store();
             let names = git::get_all_remote_names(store).map_err(map_git_err)?;
             let git_repo = git::get_git_repo(store).map_err(map_git_err)?;
@@ -1357,18 +1397,13 @@ impl PyWorkspace {
         let guard = self.locked()?;
         let loader = Self::fresh_loader(&guard)?;
         py.allow_threads(move || -> PyResult<()> {
-            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
             let mut tx = repo.start_transaction();
-            git::add_remote(
-                tx.repo_mut(),
-                name.as_ref(),
-                url,
-                None,
-                Tags::None,
-                &StringExpression::all(),
-            )
-            .map_err(map_git_err)?;
-            tx.commit(format!("add git remote '{name}'"))
+            // jj-lib 0.42 dropped `add_remote`'s trailing auto-track expression argument; the
+            // 4th arg is the optional push URL (`None` = same as fetch).
+            git::add_remote(tx.repo_mut(), name.as_ref(), url, None, Tags::None)
+                .map_err(map_git_err)?;
+            pollster::block_on(tx.commit(format!("add git remote '{name}'")))
                 .map_err(map_backend_err)?;
             Ok(())
         })
@@ -1380,10 +1415,10 @@ impl PyWorkspace {
         let guard = self.locked()?;
         let loader = Self::fresh_loader(&guard)?;
         py.allow_threads(move || -> PyResult<()> {
-            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
             let mut tx = repo.start_transaction();
             git::remove_remote(tx.repo_mut(), name.as_ref()).map_err(map_git_err)?;
-            tx.commit(format!("remove git remote '{name}'"))
+            pollster::block_on(tx.commit(format!("remove git remote '{name}'")))
                 .map_err(map_backend_err)?;
             Ok(())
         })
@@ -1395,10 +1430,10 @@ impl PyWorkspace {
         let guard = self.locked()?;
         let loader = Self::fresh_loader(&guard)?;
         py.allow_threads(move || -> PyResult<()> {
-            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
             let mut tx = repo.start_transaction();
             git::rename_remote(tx.repo_mut(), old.as_ref(), new.as_ref()).map_err(map_git_err)?;
-            tx.commit(format!("rename git remote '{old}' to '{new}'"))
+            pollster::block_on(tx.commit(format!("rename git remote '{old}' to '{new}'")))
                 .map_err(map_backend_err)?;
             Ok(())
         })
@@ -1411,7 +1446,7 @@ impl PyWorkspace {
         let guard = self.locked()?;
         let loader = Self::fresh_loader(&guard)?;
         py.allow_threads(move || -> PyResult<()> {
-            let repo = loader.load_at_head().map_err(map_backend_err)?;
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
             git::set_remote_urls(repo.store(), name.as_ref(), Some(url), None)
                 .map_err(map_git_err)
         })
@@ -1442,7 +1477,7 @@ impl PyWorkspace {
             let root = ws.workspace_root().to_owned();
             let loader = ws.repo_loader();
             let repo = py
-                .allow_threads(|| loader.load_at_head())
+                .allow_threads(|| pollster::block_on(loader.load_at_head()))
                 .map_err(map_backend_err)?;
             let starting_wc = repo.view().get_wc_commit_id(&name).cloned();
             Ok((repo.start_transaction(), name, root, starting_wc))

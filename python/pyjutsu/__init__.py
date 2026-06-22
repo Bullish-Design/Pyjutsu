@@ -46,11 +46,11 @@ from .workspace import Workspace
 #: This package's version. Pyjutsu is versioned on its own cadence, **independent** of the jj
 #: version it binds — the bound jj-lib is pinned in ``Cargo.toml`` and the matching CLI in
 #: ``devenv.nix`` (exposed at runtime as :data:`JJ_VERSION`).
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 #: The jj-lib release this build targets. Bump alongside the ``Cargo.toml`` ``jj-lib`` pin and
 #: the matching jj CLI in ``devenv.nix``; kept separate from :data:`__version__`.
-JJ_LIB_TARGET = "0.38.0"
+JJ_LIB_TARGET = "0.42.0"
 
 #: The jj / jj-lib version the compiled extension is actually linked against.
 JJ_VERSION: str = _ext.version()

@@ -97,7 +97,9 @@ def test_undo_specific_operation(scratch_repo: Path, tmp_path: Path, jj: JjCli) 
     jj(other, "describe", "-m", "v2")
     describe_op_cli = jj.op_head_id(other)  # the CLI's own id for the same logical op
     jj(other, "new")
-    jj(other, "undo", describe_op_cli)
+    # jj 0.42's `jj undo` no longer takes an operation argument; reverting a *specific* op is now
+    # `jj op revert <op>` (the inverse-of-an-operation the binding's `undo(op)` mirrors).
+    jj(other, "op", "revert", describe_op_cli)
 
     assert op.description.startswith("undo operation ")
     # `@` stays the `new` child (a fresh, random change id — uncomparable across the two repos), but

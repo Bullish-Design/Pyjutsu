@@ -6,9 +6,9 @@
 //! submodules, conflicts, and binary (NUL-containing) files are listed with zero line counts,
 //! matching how `jj diff --stat` leaves them out of the +/- totals.
 
+use futures::AsyncReadExt as _;
 use futures::StreamExt as _;
 use pyo3::PyErr;
-use tokio::io::AsyncReadExt as _;
 
 use jj_lib::backend::TreeValue;
 use jj_lib::commit::Commit;
@@ -41,10 +41,8 @@ pub(crate) struct DiffStatData {
 pub(crate) fn compute(repo: &dyn Repo, commit: &Commit) -> Result<DiffStatData, PyErr> {
     pollster::block_on(async {
         let store = repo.store();
-        let parents: Vec<Commit> = commit
-            .parents()
-            .collect::<Result<_, _>>()
-            .map_err(map_backend_err)?;
+        // jj-lib 0.42 made `Commit::parents` an async fn returning all parents at once.
+        let parents: Vec<Commit> = commit.parents().await.map_err(map_backend_err)?;
         // merge_commit_trees over zero parents yields the empty tree (root commit's "before").
         let from_tree = merge_commit_trees(repo, &parents)
             .await

@@ -91,7 +91,7 @@ impl CommitData {
             author: SignatureData::from_jj(commit.author()),
             committer: SignatureData::from_jj(commit.committer()),
             parent_ids: commit.parent_ids().iter().map(ObjectId::hex).collect(),
-            is_empty: commit.is_empty(repo).map_err(map_backend_err)?,
+            is_empty: pollster::block_on(commit.is_empty(repo)).map_err(map_backend_err)?,
             has_conflict: commit.has_conflict(),
             bookmarks,
         })
@@ -138,8 +138,10 @@ impl OperationData {
             hostname: meta.hostname.clone(),
             username: meta.username.clone(),
             is_snapshot: meta.is_snapshot,
+            // jj-lib 0.42 renamed `OperationMetadata::tags` to `attributes` (same string→string
+            // map); we still surface it to Python under the `tags` key.
             tags: meta
-                .tags
+                .attributes
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),

@@ -1,6 +1,6 @@
 [package]
 name = "pyjutsu"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.89"
 publish = false
@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 # Hard pin: this exact version is the real API contract. Cargo.lock is committed. Bumping
 # jj-lib is a deliberate Rust-side port; pyjutsu's own version (above) moves independently.
-jj-lib = "=0.38.0"
+jj-lib = "=0.42.0"
 
 # `extension-module` is NOT enabled here so that `cargo test` can link libpython; maturin
 # turns it on via [tool.maturin] features in pyproject.toml when building the wheel/develop.
@@ -23,15 +23,15 @@ pyo3 = { version = "0.24", features = ["abi3-py313"] }
 # jj-lib's own chrono (resolves to the same locked 0.4.x); only `now()` is used.
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
-# diff_stat drives jj-lib's async tree-diff stream synchronously. pollster runs the future to
-# completion; futures supplies StreamExt for the diff stream; tokio's AsyncReadExt reads file
-# blobs (jj-lib's `Store::read_file` yields a tokio `AsyncRead`). All track jj-lib's locked versions.
+# pollster drives jj-lib's many async APIs (tree-diff streams, revset streams, commit/working-copy
+# writes) to completion synchronously off the GIL; futures supplies StreamExt/TryStreamExt for the
+# streams and AsyncReadExt for reading file blobs (jj-lib 0.42's `Store::read_file` yields a
+# `futures::io::AsyncRead`). Both track jj-lib's locked versions.
 pollster = "0.4"
 futures = "0.3"
-tokio = { version = "1", default-features = false, features = ["io-util"] }
 
 # Git interop (M2 slice 10): `jj_lib::git::add_remote` takes `gix::remote::fetch::Tags`, and there
 # is no public jj-lib remote-URL reader, so we read it back via `gix::Remote::url(Direction::Fetch)`.
-# Pinned to jj-lib 0.38.0's own locked gix so the types unify (Cargo reuses the single 0.78.0 build;
+# Pinned to jj-lib 0.42.0's own locked gix so the types unify (Cargo reuses the single 0.84.0 build;
 # `cargo tree -i gix` must show one version). default-features = false keeps the direct edge lean.
-gix = { version = "=0.78.0", default-features = false }
+gix = { version = "=0.84.0", default-features = false }

@@ -1,6 +1,6 @@
 """Driver for the devenv-pinned `jj` CLI — the other half of every differential test.
 
-Each operation Pyjutsu performs is checked against the exact `jj` 0.38.0 binary the devenv
+Each operation Pyjutsu performs is checked against the exact `jj` 0.42.0 binary the devenv
 pins (concept §7). This module just runs that binary against a repo with an isolated config
 so results are reproducible and independent of the developer's `~/.jjconfig`.
 """
@@ -259,11 +259,13 @@ class JjCli:
         self(repo, "git", "fetch", "--remote", remote)
 
     def git_push(self, repo: Path, bookmark: str, *, allow_new: bool = False) -> None:
-        """``jj git push --bookmark <bookmark> [--allow-new]`` in ``repo``."""
-        args = ["git", "push", "--bookmark", bookmark]
-        if allow_new:
-            args.append("--allow-new")
-        self(repo, *args)
+        """``jj git push --bookmark <bookmark>`` in ``repo``.
+
+        jj 0.42 dropped the ``--allow-new`` flag: ``--bookmark`` pushes new bookmarks by
+        default, so ``allow_new`` is accepted (to mirror the binding's API) but no longer maps
+        to a CLI flag.
+        """
+        self(repo, "git", "push", "--bookmark", bookmark)
 
     def git_push_all(self, repo: Path) -> None:
         """``jj git push --all`` in ``repo`` (push every local bookmark)."""

@@ -173,12 +173,13 @@ impl PyTransaction {
         // `allow_threads`; this is in-memory graph work plus a small object write.
         let repo = tx.repo_mut();
         let commit = self.resolve_single(&*repo, revset_str)?;
-        let new_commit = repo
-            .rewrite_commit(&commit)
-            .set_description(message)
-            .write()
-            .map_err(map_backend_err)?;
-        repo.rebase_descendants().map_err(map_backend_err)?;
+        let new_commit = pollster::block_on(
+            repo.rewrite_commit(&commit)
+                .set_description(message)
+                .write(),
+        )
+        .map_err(map_backend_err)?;
+        pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
         let data = CommitData::build(&*repo, &new_commit)?;
         data.to_dict(py)
     }
@@ -213,19 +214,17 @@ impl PyTransaction {
 
         let new_commit = if let [parent] = parent_commits.as_slice() {
             // Single parent: `check_out` is exactly `new_commit(vec![p], p.tree()).write()` + edit.
-            repo.check_out(name, parent).map_err(map_backend_err)?
+            pollster::block_on(repo.check_out(name, parent)).map_err(map_backend_err)?
         } else {
             let tree = pollster::block_on(merge_commit_trees(&*repo, &parent_commits))
                 .map_err(map_backend_err)?;
             let parent_ids = parent_commits.iter().map(|c| c.id().clone()).collect();
-            let new = repo
-                .new_commit(parent_ids, tree)
-                .write()
+            let new = pollster::block_on(repo.new_commit(parent_ids, tree).write())
                 .map_err(map_backend_err)?;
-            repo.edit(name, &new).map_err(map_backend_err)?;
+            pollster::block_on(repo.edit(name, &new)).map_err(map_backend_err)?;
             new
         };
-        repo.rebase_descendants().map_err(map_backend_err)?;
+        pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
         let data = CommitData::build(&*repo, &new_commit)?;
         data.to_dict(py)
     }
@@ -244,9 +243,9 @@ impl PyTransaction {
         // On the GIL — `MutableRepo` is `!Send` (see module docs).
         let repo = tx.repo_mut();
         let target = self.resolve_single(&*repo, revset_str)?;
-        repo.edit(self.workspace_name.clone(), &target)
+        pollster::block_on(repo.edit(self.workspace_name.clone(), &target))
             .map_err(map_edit_err)?;
-        repo.rebase_descendants().map_err(map_backend_err)?;
+        pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
         let target = self.resolve_single(&*repo, revset_str)?; // re-read post-rebase
         let data = CommitData::build(&*repo, &target)?;
         data.to_dict(py)
@@ -272,7 +271,7 @@ impl PyTransaction {
             return Err(ImmutableCommitError::new_err("cannot abandon the root commit"));
         }
         repo.record_abandoned_commit(&target);
-        repo.rebase_descendants().map_err(map_backend_err)?;
+        pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
         Ok(())
     }
 
@@ -329,8 +328,9 @@ impl PyTransaction {
             new_child_ids: vec![],
             target,
         };
-        move_commits(repo, &loc, &RebaseOptions::default()).map_err(map_backend_err)?;
-        repo.rebase_descendants().map_err(map_backend_err)?;
+        pollster::block_on(move_commits(repo, &loc, &RebaseOptions::default()))
+            .map_err(map_backend_err)?;
+        pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
         let rebased = self.resolve_single(&*repo, commit)?; // re-read post-rebase (id changed)
         let data = CommitData::build(&*repo, &rebased)?;
         data.to_dict(py)
@@ -375,18 +375,23 @@ impl PyTransaction {
         // the out-of-scope refinement). `parent_tree` is computed before `src` is moved in.
         let sel = CommitWithSelection {
             selected_tree: src.tree(),
-            parent_tree: src.parent_tree(&*repo).map_err(map_backend_err)?,
+            parent_tree: pollster::block_on(src.parent_tree(&*repo)).map_err(map_backend_err)?,
             commit: src,
         };
-        let squashed = squash_commits(repo, &[sel], &dst, /* keep_emptied = */ false)
-            .map_err(map_backend_err)?
-            .ok_or_else(|| PyjutsuError::new_err("nothing to squash"))?;
+        let squashed = pollster::block_on(squash_commits(
+            repo,
+            &[sel],
+            &dst,
+            /* keep_emptied = */ false,
+        ))
+        .map_err(map_backend_err)?
+        .ok_or_else(|| PyjutsuError::new_err("nothing to squash"))?;
         let mut builder = squashed.commit_builder; // holds &mut repo until write()
         if let Some(msg) = message {
             builder = builder.set_description(msg);
         }
-        builder.write().map_err(map_backend_err)?; // consumes builder → releases the borrow
-        repo.rebase_descendants().map_err(map_backend_err)?;
+        pollster::block_on(builder.write()).map_err(map_backend_err)?; // releases the borrow
+        pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
         let result = self.resolve_single(&*repo, into)?; // re-read the squashed `into`
         let data = CommitData::build(&*repo, &result)?;
         data.to_dict(py)
@@ -452,11 +457,9 @@ impl PyTransaction {
             }
         }
         .map_err(map_backend_err)?;
-        repo.rewrite_commit(&target)
-            .set_tree(new_tree)
-            .write()
+        pollster::block_on(repo.rewrite_commit(&target).set_tree(new_tree).write())
             .map_err(map_backend_err)?;
-        repo.rebase_descendants().map_err(map_backend_err)?;
+        pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
         let restored = self.resolve_single(&*repo, commit)?; // re-read post-rewrite (id changed)
         let data = CommitData::build(&*repo, &restored)?;
         data.to_dict(py)
@@ -608,8 +611,8 @@ impl PyTransaction {
         self.release_slot();
         // NOTE: on the GIL — `Transaction` is `!Send` (see module docs), so it cannot be moved
         // into `allow_threads`. The op-store write here is light; heavy I/O is off-GIL elsewhere.
-        tx.repo_mut().rebase_descendants().map_err(map_backend_err)?;
-        let new_repo = tx.commit(description).map_err(map_backend_err)?;
+        pollster::block_on(tx.repo_mut().rebase_descendants()).map_err(map_backend_err)?;
+        let new_repo = pollster::block_on(tx.commit(description)).map_err(map_backend_err)?;
         // From here the operation is PUBLISHED — it is in the op log regardless of what follows.
         let op_hex = new_repo.operation().id().hex();
 

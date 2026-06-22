@@ -3,7 +3,7 @@
 Within one colocated workspace the binding keeps `@` and the on-disk working copy in lockstep
 (every `@`-rewrite checks out), so staleness must be induced by an *external* actor. The pinned
 CLI's `--ignore-working-copy edit <A>` advances the repo `@` without snapshotting or checking out,
-leaving the on-disk tree behind — the clean trigger (verified against the pinned 0.38.0 CLI). The
+leaving the on-disk tree behind — the clean trigger (verified against the pinned 0.42.0 CLI). The
 binding then reports `is_stale()`, refuses to mutate/snapshot, and `update_stale()` reconciles by
 checking out the recorded `@`, matching `jj workspace update-stale`.
 """

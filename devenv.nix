@@ -1,7 +1,7 @@
 { pkgs, lib, config, inputs, ... }:
 
 let
-  # jujutsu pinned to 0.38.0 from a dedicated nixpkgs input (see devenv.yaml). This is the
+  # jujutsu pinned to 0.42.0 from a dedicated nixpkgs input (see devenv.yaml). This is the
   # CLI of the exact jj-lib Pyjutsu binds; differential tests run it side-by-side with the
   # binding. A future jj bump is a deliberate Rust-side port + a Pyjutsu minor bump.
   jjPkgs = import inputs.nixpkgs-jj { system = pkgs.stdenv.system; };
@@ -22,7 +22,7 @@ in
   ];
 
   # https://devenv.sh/languages/
-  # Rust toolchain for the _pyjutsu native extension. jj-lib 0.38.0 requires Rust >= 1.89
+  # Rust toolchain for the _pyjutsu native extension. jj-lib 0.42.0 requires Rust >= 1.89
   # (edition 2024); rolling nixpkgs' stable rustc satisfies this. (A specific `channel` would
   # pull in the rust-overlay input; the nixpkgs toolchain is enough here.)
   languages.rust.enable = true;

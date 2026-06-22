@@ -10,11 +10,12 @@ no subprocess and no text parsing.
   reports the linked jj-lib at runtime.
 - **Spec:** see [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md).
 
-**Status: 0.7.0 — power-user surface.** The reads, transactions/mutations, op-log time travel,
+**Status: 0.8.0 — tracks jj-lib 0.42.0.** The reads, transactions/mutations, op-log time travel,
 workspaces, and git interop are all implemented and differential-tested against the pinned `jj`
-CLI. 0.7.0 adds a revset builder, a streaming log, and a `run_jj` escape hatch. Still flagged out
-of scope: a native async facade, two-revset `diff(from, to)`, word/inline diff, and assorted
-git/rewrite refinements (see `docs/PYJUTSU_CONCEPT.md` §12).
+CLI. 0.8.0 ports the binding to jj-lib 0.42.0 (the 0.7.0 power-user surface — a revset builder, a
+streaming log, and a `run_jj` escape hatch — is unchanged). Still flagged out of scope: a native
+async facade, two-revset `diff(from, to)`, word/inline diff, and assorted git/rewrite refinements
+(see `docs/PYJUTSU_CONCEPT.md` §12).
 
 ## Reads
 
@@ -100,7 +101,7 @@ costly for little gain over `to_thread`.
 ## Development
 
 Everything runs inside the [devenv](https://devenv.sh) shell, which pins the Rust toolchain,
-`maturin`, and the matching `jj` 0.38.0 CLI used for differential tests:
+`maturin`, and the matching `jj` 0.42.0 CLI used for differential tests:
 
 ```sh
 devenv shell -- devenv tasks run pyjutsu:build   # maturin develop
