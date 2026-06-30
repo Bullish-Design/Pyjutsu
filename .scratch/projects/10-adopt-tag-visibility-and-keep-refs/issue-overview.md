@@ -24,6 +24,26 @@ adopt use case**, not a correctness bug in 0.42.
 
 ---
 
+## Status (updated 2026-06-30)
+
+Where each item stands across **both** repos as of this update:
+
+| # | pyjutsu side | gitman (consumer) side |
+|---|--------------|------------------------|
+| **P1** — orphaned `refs/jj/keep/*` re-imported on adopt | **Open — not built.** No prune-on-adopt / `prune_jj_refs` exists yet; the keep-refs still need a hand-purge (or are re-imported) when a `.jj` is recreated. Recent pyjutsu work (0.7.1→**0.8.0**, jj-lib 0.42 port, commit `7c2dc54`) did **not** touch this. | **Defensively covered (shipped).** gitman `reconcile`/`adopt` no longer *dead-end* on the divergent change P1 manufactures: they target & name stray/range rows by `commit_id`, so a divergent stray adopts into two distinct lanes or abandons cleanly (issue 06 §G2, **PR #28, merged**). gitman does **not** prune the keep-refs themselves — P1 remains the upstream *cure*; G2 is the consumer's *floor*. |
+| **P2** — adopt imports tags → off-main tagged commit is a visible head | **Decision shipped as (A): keep jj-standard.** `adopt_existing_git` still imports tags via `git::import_refs` (unchanged, faithful to `jj git import`). Option (B) (`import_tags=False`) not added — revisit only if more consumers hit it. | **Fixed (shipped).** `state._stray_revset` now excludes `tags()`, so a tagged off-main commit is no longer flagged as stray (issue 06 §G1, **PR #28, merged**). This is the agreed consumer-side home for "tags aren't work." |
+| **P3** — version guard trips mid-bump | **Incident resolved by the port; structural footgun remains.** The 0.42 port landed (`__version__ = "0.8.0"`, `JJ_LIB_TARGET = "0.42.0"`), and a built tree now reports a consistent `jj-lib 0.42.0` (gitman `doctor` green). The hand-maintained `__version__`/`JJ_LIB_TARGET` can still drift from the compiled artifact during a future bump — sourcing `JJ_LIB_TARGET` from the build stays an optional hardening. | n/a (build-time only). |
+
+**Net:** the *consumer-facing* symptom that triggered this report (a release tag's orphaned, divergent
+commit reading as un-clearable "stray work") is **fully addressed in gitman** — both the false-stray
+(G1) and the un-recoverable-divergence (G2) halves shipped in PR #28. **P1 is the only substantive
+item still open here**, and it is the upstream *root cause*: until adopt prunes orphaned `refs/jj/keep/*`,
+a `.jj` recreate keeps re-manufacturing the divergence (gitman now survives it, but doesn't prevent it).
+See gitman issue 06 §"Open questions" — extending gitman's `_heal_colocated_refs` to also drop orphaned
+`refs/jj/*` was floated as an alternative self-heal but **was not built**; the clean fix lives here (P1).
+
+---
+
 ## Background — how it surfaced
 
 The gitman repo is a colocated jj repo. During an unrelated recovery its `.jj` was removed and
@@ -147,6 +167,10 @@ conservative. Options:
 **Recommendation:** ship **(A)** + the gitman-side fix; consider **(B)** if more consumers hit this.
 Do **not** do (C).
 
+> **Done (2026-06-30):** (A) stands (adopt still imports tags, unchanged) and the gitman-side fix
+> **shipped** — `state._stray_revset` excludes `tags()` (issue 06 §G1, PR #28, merged). (B) was not
+> taken. See the Status table above.
+
 ### Test plan
 
 - Adopt a repo carrying an off-main tag → assert the tagged commit is imported and visible (documents
@@ -199,7 +223,8 @@ priority; flagged for completeness since it briefly blocked the recovery.
 
 - pyjutsu: `src/workspace.rs:161-204` (`adopt_existing_git`), `:181-182` (`import_head`/`import_refs`),
   `:940-985` (`git_import`/`export_refs`), `python/pyjutsu/__init__.py` (version guard).
-- gitman counterpart: `.scratch/projects/06-stray-tags-and-divergent-reconcile/` (consumer-side fixes:
-  exclude tagged commits from the stray revset; make `reconcile` operate by commit-id for divergent
-  strays).
+- gitman counterpart: `.scratch/projects/06-stray-tags-and-divergent-reconcile/` (consumer-side fixes,
+  **shipped in PR #28**: exclude tagged commits from the stray revset (G1); make `reconcile`/`adopt`/
+  `abandon` operate by commit-id for divergent strays via a `_target` helper (G2)). The doc's
+  `ISSUE_ANALYSIS.md` is the design-review that carried these to merge.
 - Full recovery narrative: repoman `.scratch/projects/06-bootstrapping issues/…` (Follow-up C).
