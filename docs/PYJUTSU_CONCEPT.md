@@ -132,7 +132,11 @@ ws.git_export(); ws.git_import()                   # colocated sync
 - **Revsets:** evaluate any jj revset string → `list[Commit]`; a `Revset` builder is a
   later nicety. The revset string *is* jj's, so power users transfer knowledge directly.
 - **Mutations (in a `Transaction`):** `new`, `describe`, `edit`, `abandon`, `rebase`,
-  `squash`, `restore`, `set_bookmark`/`create_bookmark`/`delete_bookmark`, `snapshot`.
+  `squash`, `restore`, `split`/`select_tree`, `set_bookmark`/`create_bookmark`/`delete_bookmark`,
+  `snapshot`. The power surface now reaches **sub-file** rewrites: `split` divides one commit's
+  diff by a hunk-level selection (referencing the very hunks `diff()` emits) into two commits —
+  the primitive `restore`'s whole-file matcher can't express; `select_tree` exposes the underlying
+  "hunk selection → tree" step.
 - **Operations:** `undo`, `restore_operation`, `at_operation`, `head_operation`.
 - **Git:** `git_fetch`, `git_push`, `git_import`, `git_export`, `remotes`.
 

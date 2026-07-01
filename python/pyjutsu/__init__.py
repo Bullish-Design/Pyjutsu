@@ -45,22 +45,29 @@ from .workspace import Workspace
 
 #: This package's version. Pyjutsu is versioned on its own cadence, **independent** of the jj
 #: version it binds — the bound jj-lib is pinned in ``Cargo.toml`` and the matching CLI in
-#: ``devenv.nix`` (exposed at runtime as :data:`JJ_VERSION`).
-__version__ = "0.8.0"
+#: ``devenv.nix`` (exposed at runtime as :data:`JJ_VERSION`). This is the one hand-maintained
+#: version string; the guard below checks it against the compiled extension so a bump here without
+#: a rebuild fails loudly instead of silently mismatching.
+__version__ = "0.9.0"
 
-#: The jj-lib release this build targets. Bump alongside the ``Cargo.toml`` ``jj-lib`` pin and
-#: the matching jj CLI in ``devenv.nix``; kept separate from :data:`__version__`.
-JJ_LIB_TARGET = "0.42.0"
-
-#: The jj / jj-lib version the compiled extension is actually linked against.
+#: The jj / jj-lib version the compiled extension is actually linked against. **Build-derived**
+#: (``build.rs`` reads the resolved ``Cargo.lock``), so it cannot drift from the linked dependency.
 JJ_VERSION: str = _ext.version()
 
-# Sanity tripwire for a broken/mixed build: the linked jj-lib must be the release this build
-# targets. This is independent of pyjutsu's own version.
-if JJ_VERSION != JJ_LIB_TARGET:
+#: The jj-lib release this build targets. No longer a separate hand-maintained constant — it is an
+#: alias of the build-derived :data:`JJ_VERSION` (project 10 §P3: no two hand-maintained copies of
+#: the same number). Kept for back-compat with consumers that read it.
+JJ_LIB_TARGET: str = JJ_VERSION
+
+# Stale-build tripwire: the installed Python package must match the compiled `.so`. During an
+# editable-install workflow the Python metadata can be bumped before `maturin develop` rebuilds the
+# extension; that mismatch is a genuinely stale build, and this catches it with a clear "rebuild"
+# message instead of shipping a Python/native version skew. A correctly rebuilt tree imports clean.
+_EXT_PYJUTSU_VERSION: str = _ext.pyjutsu_version()
+if __version__ != _EXT_PYJUTSU_VERSION:
     raise PyjutsuError(
-        f"broken build: pyjutsu {__version__} targets jj-lib {JJ_LIB_TARGET} "
-        f"but the extension links jj-lib {JJ_VERSION}"
+        f"stale build: pyjutsu {__version__} (Python package) does not match the compiled "
+        f"extension {_EXT_PYJUTSU_VERSION}; rebuild the extension (`maturin develop`)"
     )
 
 __all__ = [
