@@ -32,7 +32,7 @@ Where each item stands across **both** repos as of this update:
 |---|--------------|------------------------|
 | **P1** — orphaned `refs/jj/keep/*` survive `.jj` deletion | **Fixed (shipped) — option (1).** `adopt_existing_git` now calls `prune_orphaned_keep_refs` **before** importing: it deletes every `refs/jj/keep/*` from the colocated `.git` (the fresh `init_external_git` store has authored none of its own yet, so all present are orphaned). Re-adopting a recovered repo no longer carries the dead workspace's ~50 GC-anchors forward; no hand-purge needed. Test: `test_init_adopt.py::test_readopt_prunes_orphaned_keep_refs`. **Mechanism correction (verified vs jj-lib 0.42):** keep-refs are *not* re-imported — `import_refs`/`import_head` only scan `refs/heads/**`, `refs/remotes/**`, `refs/tags/**`, `HEAD` (`diff_refs_to_import`), never `refs/jj/keep/**`. So this prune is **hygiene** (stops orphaned-ref accumulation + lets `git gc` reclaim the dead objects), *not* the cure for the visible divergence — that commit was anchored by the **tag** (P2), fixed consumer-side. | **Defensively covered (shipped).** gitman `reconcile`/`adopt` no longer *dead-end* on the divergent change P1 manufactures: they target & name stray/range rows by `commit_id`, so a divergent stray adopts into two distinct lanes or abandons cleanly (issue 06 §G2, **PR #28, merged**). gitman does **not** prune the keep-refs themselves — P1 remains the upstream *cure*; G2 is the consumer's *floor*. |
 | **P2** — adopt imports tags → off-main tagged commit is a visible head | **Decision shipped as (A): keep jj-standard.** `adopt_existing_git` still imports tags via `git::import_refs` (unchanged, faithful to `jj git import`). Option (B) (`import_tags=False`) not added — revisit only if more consumers hit it. | **Fixed (shipped).** `state._stray_revset` now excludes `tags()`, so a tagged off-main commit is no longer flagged as stray (issue 06 §G1, **PR #28, merged**). This is the agreed consumer-side home for "tags aren't work." |
-| **P3** — version guard trips mid-bump | **Incident resolved by the port; structural footgun remains.** The 0.42 port landed (`__version__ = "0.8.0"`, `JJ_LIB_TARGET = "0.42.0"`), and a built tree now reports a consistent `jj-lib 0.42.0` (gitman `doctor` green). The hand-maintained `__version__`/`JJ_LIB_TARGET` can still drift from the compiled artifact during a future bump — sourcing `JJ_LIB_TARGET` from the build stays an optional hardening. | n/a (build-time only). |
+| **P3** — version guard trips mid-bump | **Fixed (shipped) — pyjutsu 0.9.0, `feat/11-tx-split`.** Two changes remove the footgun: (1) a **`build.rs`** parses the resolved `Cargo.lock` and emits `PYJUTSU_JJ_LIB_VERSION`, so `_ext.version()` is now **build-derived** — `JJ_LIB_TARGET` is just an alias of it (no second hand-maintained jj-lib copy that can drift). (2) A new `_ext.pyjutsu_version()` (`CARGO_PKG_VERSION`) lets the Python guard check `__version__ == pyjutsu_version()` instead of comparing two version numbers — that fires **only** on a genuinely stale compiled extension (a bump not followed by `maturin develop`), with a clear "stale build — rebuild" message, and imports clean once rebuilt. No more false trip on editable installs. `test_build.py` covers the invariant. | n/a (build-time only). |
 
 **Net:** the *consumer-facing* symptom that triggered this report (a release tag's orphaned, divergent
 commit reading as un-clearable "stray work") is **fully addressed in gitman** — both the false-stray
@@ -223,6 +223,22 @@ The guard itself is good (it catches a genuinely broken build). The footgun is h
 `JJ_LIB_TARGET` from the build (e.g. emit it from Cargo at compile time so it can't drift), and/or note
 in the contributor docs that bumping the version requires a rebuild before the package imports. Low
 priority; flagged for completeness since it briefly blocked the recovery.
+
+> **SHIPPED (2026-06-30, pyjutsu 0.9.0):** both halves, plus a re-aim of the guard.
+> - **jj-lib version is now build-derived.** A `build.rs` parses the resolved `Cargo.lock` and emits
+>   `cargo:rustc-env=PYJUTSU_JJ_LIB_VERSION`; `src/lib.rs`'s `JJ_LIB_VERSION` is `env!(…)` of that, so
+>   `_ext.version()` reflects the *actually linked* dependency and cannot drift. `JJ_LIB_TARGET` is now
+>   just `= _ext.version()` in Python — the second hand-maintained copy is gone. (Parsing `Cargo.lock`
+>   rather than shelling `cargo metadata` keeps `build.rs` robust in the nix/devenv sandbox; it panics
+>   loudly if the lock has no `jj-lib` entry, so it can never fall back to a stale hardcoded number.)
+> - **The guard now protects something real.** A new `_ext.pyjutsu_version()` returns
+>   `CARGO_PKG_VERSION`; the Python tripwire is `__version__ == _ext.pyjutsu_version()`. That is the
+>   genuine "did you forget to rebuild after a bump" signal — it fires on a stale `.so`, not on two
+>   hand-maintained numbers, and does **not** false-fire once you actually `maturin develop`. The old
+>   `JJ_VERSION != JJ_LIB_TARGET` comparison (two hand-maintained numbers) is dropped.
+> - **Outcome:** bumping only `__version__` without rebuilding raises a clear "stale build — rebuild"
+>   error; a correctly built tree imports clean; no duplicated hand-maintained jj-lib string.
+>   Covered by `test_build.py::test_pyjutsu_version_matches_extension` + the two build-derived asserts.
 
 ---
 

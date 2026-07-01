@@ -14,11 +14,26 @@ from typing import TYPE_CHECKING
 from .models import Bookmark, Commit
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
     from types import TracebackType
 
     from ._pyjutsu import PyTransaction, PyWorkspace
 
 __all__ = ["Transaction"]
+
+
+def _selection_dict(
+    selection: Mapping[str, Sequence[int] | None],
+) -> dict[str, list[int] | None]:
+    """Normalize a hunk selection to the plain ``{path: [indices] | None}`` the native layer wants.
+
+    ``None`` means the whole file; a sequence of ints is coerced to a list of 0-based hunk indices
+    (referencing the file's ``diff()`` output for the same commit). Used by :meth:`Transaction.split`
+    and :meth:`Transaction.select_tree`.
+    """
+    return {
+        path: (None if hunks is None else list(hunks)) for path, hunks in selection.items()
+    }
 
 
 def _complete_newline(message: str) -> str:
@@ -201,6 +216,62 @@ class Transaction:
         :class:`~pyjutsu.errors.ImmutableCommitError`. Must be called inside the ``with`` block.
         """
         return Commit.model_validate(self._require_open().restore(commit, from_, paths))
+
+    def select_tree(
+        self, commit: str, selection: Mapping[str, Sequence[int] | None]
+    ) -> str:
+        """Build the partial tree for a hunk-level ``selection`` of ``commit``'s diff → its tree id.
+
+        The lower-level primitive :meth:`split` composes on (S2). ``selection`` maps each changed
+        path to either ``None`` (the whole file) or a list of 0-based hunk indices into that file's
+        :meth:`~pyjutsu.RepoView.diff` output for the **same** ``commit`` — the same structured hunks
+        the read surface emits (:class:`~pyjutsu.Hunk`), so no patch-header parsing is needed. The
+        returned tree is ``commit``'s parent tree with the selected changes applied (parent + selected
+        hunks), and the id is the hex of its (resolved) jj tree.
+
+        Unlike :meth:`split`, this does **not** validate the selection is a proper subset — an empty
+        selection yields the parent tree's id and a full one the commit tree's id. Must be called
+        inside the transaction's ``with`` block.
+        """
+        return self._require_open().select_tree(commit, _selection_dict(selection))
+
+    def split(
+        self,
+        commit: str,
+        selection: Mapping[str, Sequence[int] | None],
+        *,
+        mode: str = "siblings",
+    ) -> tuple[Commit, Commit]:
+        """Split ``commit`` into two commits by a partial (hunk-level) ``selection`` of its diff.
+
+        Returns ``(first, second)``: ``first`` holds only the **selected** change, ``second`` the
+        **remainder**; together they reproduce ``commit``'s tree. This is the sub-file mutation
+        primitive that :meth:`restore`'s whole-file paths cannot express; a whole-file selection
+        reproduces the path-scoped ``restore`` carve, so ``split`` subsumes it.
+
+        ``selection`` maps each changed path to ``None`` (the whole file) or a list of 0-based hunk
+        indices into that file's :meth:`~pyjutsu.RepoView.diff` output for the **same** ``commit``
+        (so the indices are stable). ``mode`` picks the topology:
+
+        - ``"siblings"`` (default): ``first`` is a **new** commit (fresh change id, no descendants)
+          holding the selected change; ``second`` is ``commit`` **rewritten in place** to the
+          remainder — it keeps its change id, bookmarks, descendants, and (if it was ``@``) the
+          working copy. Both are children of ``commit``'s original parent(s). This is the "carve one
+          lane into two siblings" shape.
+        - ``"stacked"`` (jj's own ``jj split`` default): ``first`` (selected) is a new child of the
+          original parent(s); ``second`` is ``commit`` reparented onto ``first`` with its tree
+          unchanged, so its diff vs ``first`` is exactly the remainder.
+
+        An empty selection (nothing carved) and a full selection (the whole change — the second
+        commit would be empty) both raise :class:`~pyjutsu.errors.PyjutsuError`; splitting the root
+        raises :class:`~pyjutsu.errors.ImmutableCommitError`. Hunk-level selection is supported for
+        plain modified/added text files; binary, symlink, conflicted, and removed files must be
+        selected whole-file (``None``), as must a path :meth:`~pyjutsu.RepoView.diff` reports as
+        ``renamed``/``copied`` (its indices only align with a plain same-path diff). An unknown
+        ``mode`` raises :class:`~pyjutsu.errors.PyjutsuError`. Must be called inside the ``with`` block.
+        """
+        first, second = self._require_open().split(commit, _selection_dict(selection), mode)
+        return Commit.model_validate(first), Commit.model_validate(second)
 
     def create_bookmark(self, name: str, commit: str) -> Bookmark:
         """Create a new local bookmark ``name`` at ``commit`` → the new :class:`Bookmark`.
