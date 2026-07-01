@@ -24,6 +24,49 @@ selection API that a consumer drives. See §"Scope boundary".
 
 ---
 
+## Status — SHIPPED (2026-06-30, pyjutsu 0.9.0, branch `feat/11-tx-split`)
+
+All three items landed in `src/transaction.rs` (`select_tree` + `split` + the S3-A vocabulary),
+`python/pyjutsu/transaction.py`, `_pyjutsu.pyi`, `docs/PYJUTSU_CONCEPT.md`, and `tests/test_split.py`
+(17 tests; full suite 224 green). gitman's `08-split-lane-capability` S3 tier is **unblocked**.
+
+| # | What shipped |
+|---|--------------|
+| **S1** `tx.split(commit, selection, mode=…)` | Two-commit split. **`mode="siblings"` (default):** `first` = a **new** sibling (fresh change id, no descendants) holding the selected change; `second` = the original commit **rewritten in place** to the remainder — keeps its change id, bookmarks, descendants, and `@`. Both children of the original parent(s). This is gitman's carve-into-two-lanes topology (`first` = carved, `second` = kept, mirroring `do_split`'s `A`/`C`). **`mode="stacked"` (jj's own `jj split`):** `first` (selected) on the original parent(s), `second` reparented onto `first` with its tree unchanged. Root split → `ImmutableCommitError`; unknown mode → `PyjutsuError`. |
+| **S2** `tx.select_tree(commit, selection) -> tree_id` | The primitive `split` composes on: builds the partial `selected_tree` (parent + selected hunks) via `MergedTreeBuilder` and returns its resolved tree-id hex. Permissive (no empty/full guard) — `split` layers those on. |
+| **S3** selection vocabulary | **(A) as recommended.** `selection: dict[str, list[int] \| None]` — `None` = whole file, a list = 0-based hunk indices into that file's `diff(commit)` output. No patch-header grammar. Pinned contract: indices come from a `diff()` of the *same* commit. |
+
+### What was confirmed / corrected against jj-lib 0.42 while building
+
+- **CONFIRMED (the doc flagged this as *inferred*):** an arbitrary **partial `selected_tree` can be
+  assembled non-interactively** — no diff editor needed. The build reconstructs each selected file's
+  bytes from `jj_lib::diff::ContentDiff::by_line([parent_bytes, commit_bytes])` (the *same*
+  decomposition `RepoView.diff()` uses, so hunk indices line up exactly), taking the *after* side for
+  selected hunks and the *before* side for the rest, then writes the blob via `Store::write_file` and
+  sets it in a `MergedTreeBuilder` over the parent tree. `CommitWithSelection::is_empty_selection` /
+  `is_full_selection` (comparing `tree_ids()`) supply the empty/full guards for free.
+- **DECISION — did *not* route the two-commit write through `squash_commits`.** `squash_commits` moves
+  selections *between* existing commits; a split is cleaner as `new_commit(selected)` +
+  `rewrite_commit(original).set_tree(remainder)` (siblings) or `+ set_parents([first])` (stacked),
+  which gives exact control over the sibling topology gitman wants and preserves the original change
+  id on `second`. `CommitWithSelection` is still constructed — but only to call the two
+  `is_*_selection` validators. The remainder tree is assembled symmetrically (base = commit tree,
+  override each listed path with parent + *unselected* hunks), so `first ⊕ second` reassembles the
+  original commit (verified by disjoint-hunk tests).
+- **API notes:** `Merge::normal(value)` (not `resolved(Some(..))`) builds a resolved present
+  `MergedTreeValue`; `Store::write_file(path, &mut &content[..])` returns a `FileId`;
+  `DiffHunkContentVec = SmallVec<[&BStr; 2]>` (deref-coerces to `&[u8]`); `MergedTree::path_value` is
+  async and yields the `MergedTreeValue` at a path.
+- **Edge cases (decided + tested):** hunk-level selection requires a **resolved text file present in
+  the commit** — binary, symlink, conflicted, and removed files raise a typed error and must be
+  selected whole-file (`None`); an out-of-range hunk index is a typed error (not a silent no-op); an
+  unchanged path in the selection is rejected. A **renamed/copied** path (its `diff()` `source` is
+  set) must be selected whole-file — its hunk indices are computed against the *source* path, so they
+  don't align with `split`'s same-path reconstruction (documented in the `split` docstring, not
+  auto-detected inside `split`).
+
+---
+
 ## Background — why this surfaced, and exactly where the wall is
 
 `gitman split --paths <sel> --into <lane>` (gitman `src/gitman/core.py:do_split`) partitions a lane's
@@ -221,6 +264,11 @@ in pyjutsu, policy/UX in the consumer.
   verify the same tree can be built from a programmatic hunk list without the editor). Also confirm the
   cleanest commit-writing path for the *two-commit* result (jj's CLI `split` rewrites in place + adds a
   child; decide sibling vs stacked for the binding).
+  > **CONFIRMED + DECIDED (2026-06-30, shipped):** yes — `MergedTreeBuilder` over the parent tree,
+  > with each selected file's bytes reconstructed from `ContentDiff::by_line` (same decomposition
+  > `diff()` uses), assembles the partial tree with no diff editor. The two-commit write is
+  > `new_commit(selected)` + `rewrite_commit(original)` (**not** `squash_commits`); **both** sibling
+  > (default) and stacked modes are exposed. See the Status section above.
 - **Decision, not bug:** none of this is a defect in pyjutsu or jj-lib 0.42 — it is an unbuilt power-
   surface refinement that pyjutsu intentionally deferred (the `squash` comment is the paper trail).
 
