@@ -78,6 +78,10 @@ class Workspace:
         its HEAD + refs are imported (existing branches become jj bookmarks) and ``@`` becomes an
         empty child of the imported HEAD, with any uncommitted working-tree edits preserved. A repo
         with no commits yet leaves the empty ``@`` on the root commit.
+
+        Adopt first prunes any orphaned ``refs/jj/keep/*`` from the ``.git`` — the GC-anchor refs a
+        ``.jj`` deleted out of band leaves behind — so re-adopting a recovered repo starts from its
+        real git refs (branches + tags) instead of carrying the dead workspace's bookkeeping forward.
         """
         return cls(PyWorkspace.init(os.fspath(path), colocate))
 

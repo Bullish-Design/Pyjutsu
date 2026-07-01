@@ -178,6 +178,12 @@ fn adopt_existing_git(workspace: &mut Workspace, repo: Arc<ReadonlyRepo>) -> PyR
         record_synthetic_predecessors: true,
         remote_auto_track_bookmarks: HashMap::new(),
     };
+    // Drop any orphaned `refs/jj/keep/*` left in `.git` by a *previous* `.jj` that was deleted out
+    // of band (the re-adopt recovery path; project 10 §P1). This fresh `init_external_git` store has
+    // authored none of its own keep-refs yet, so every keep-ref present is stale bookkeeping from the
+    // dead workspace — see `prune_orphaned_keep_refs`. Run it **before** import so the import starts
+    // from the real git refs (branches + tags) only.
+    prune_orphaned_keep_refs(&repo)?;
     pollster::block_on(git::import_head(tx.repo_mut())).map_err(map_git_err)?;
     pollster::block_on(git::import_refs(tx.repo_mut(), &options)).map_err(map_git_err)?;
 
@@ -214,6 +220,50 @@ fn adopt_existing_git(workspace: &mut Workspace, repo: Arc<ReadonlyRepo>) -> PyR
             .map_err(map_workingcopy_err)?;
         pollster::block_on(locked_ws.locked_wc().reset(&new_wc)).map_err(map_workingcopy_err)?;
         pollster::block_on(locked_ws.finish(op_id)).map_err(map_workingcopy_err)?;
+    }
+    Ok(())
+}
+
+/// Delete every `refs/jj/keep/*` ref from the colocated `.git`. jj-lib writes these "no-GC" refs
+/// to keep its commits alive against `git gc`; they live in **`.git`**, not `.jj`, and jj's own
+/// lifecycle (`recreate_no_gc_refs`, run only during `jj util gc`) is what refreshes/prunes the
+/// stale ones. A `.jj` removed out of band (the re-adopt recovery in project 10 §P1) never runs that
+/// pruning, so the dead workspace's keep-refs — observed at ~50 in the gitman recovery — survive in
+/// `.git`, anchoring otherwise-unreachable commit *objects* against GC indefinitely.
+///
+/// Pruning them on adopt is safe because this runs against a **freshly** `init_external_git`'d store
+/// that has authored none of its own keep-refs yet (jj writes them lazily, via `import_head_commits`
+/// /`write_commit`, for the heads it is about to import) — so at this point every `refs/jj/keep/*`
+/// present is necessarily orphaned bookkeeping from the prior `.jj`. jj re-creates exactly the
+/// keep-refs it needs as it imports HEAD + refs immediately after.
+///
+/// Note this is **hygiene**, not the cure for the off-canonical "stray" divergence that motivated
+/// project 10: `git::import_refs`/`import_head` only scan `refs/heads/**`, `refs/remotes/**`,
+/// `refs/tags/**` and `HEAD` (`diff_refs_to_import`) — never `refs/jj/keep/**` — so a keep-ref does
+/// not itself resurrect a commit *as a visible head*. The visible off-main commit in that incident
+/// was anchored by a **tag** (project 10 §P2, fixed consumer-side in gitman). What this prune fixes
+/// is the orphaned-ref accumulation that forced the hand-purge (`git update-ref -d`) during recovery.
+fn prune_orphaned_keep_refs(repo: &ReadonlyRepo) -> PyResult<()> {
+    const NO_GC_REF_NAMESPACE: &str = "refs/jj/keep/";
+    let git_repo = git::get_git_repo(repo.store()).map_err(map_git_err)?;
+    let refs = git_repo.references().map_err(map_git_err)?;
+    let mut edits = Vec::new();
+    for git_ref in refs.prefixed(NO_GC_REF_NAMESPACE).map_err(map_git_err)? {
+        // A detached, owned `gix::refs::Reference` so its `name`/`target` can move into the edit.
+        let git_ref = git_ref.map_err(map_git_err)?.detach();
+        edits.push(gix::refs::transaction::RefEdit {
+            change: gix::refs::transaction::Change::Delete {
+                // Guard against a concurrent mutation: only delete if the ref still points where we
+                // read it (mirrors jj-lib's own `to_ref_deletion`).
+                expected: gix::refs::transaction::PreviousValue::ExistingMustMatch(git_ref.target),
+                log: gix::refs::transaction::RefLog::AndReference,
+            },
+            name: git_ref.name,
+            deref: false,
+        });
+    }
+    if !edits.is_empty() {
+        git_repo.edit_references(edits).map_err(map_git_err)?;
     }
     Ok(())
 }
@@ -778,6 +828,10 @@ impl PyWorkspace {
     /// `@` lands as an empty child of the imported HEAD — matching `jj git init --colocate` on an
     /// existing repo. Uncommitted working-tree edits are preserved (the next snapshot captures them
     /// into `@`). A repo with no commits yet leaves the empty `@` on `root()`.
+    ///
+    /// Adopt also **prunes orphaned `refs/jj/keep/*`** from the `.git` before importing: a `.jj`
+    /// removed out of band leaves its GC-anchor refs behind, and carrying them into the new
+    /// workspace just accumulates dead bookkeeping (project 10 §P1; see `prune_orphaned_keep_refs`).
     ///
     /// I/O-heavy and `Send` → the constructor runs **off the GIL**. The returned `Workspace` is
     /// wrapped in a fresh `PyWorkspace` (same shape as `load`).

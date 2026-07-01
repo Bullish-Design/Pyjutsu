@@ -30,17 +30,21 @@ Where each item stands across **both** repos as of this update:
 
 | # | pyjutsu side | gitman (consumer) side |
 |---|--------------|------------------------|
-| **P1** — orphaned `refs/jj/keep/*` re-imported on adopt | **Open — not built.** No prune-on-adopt / `prune_jj_refs` exists yet; the keep-refs still need a hand-purge (or are re-imported) when a `.jj` is recreated. Recent pyjutsu work (0.7.1→**0.8.0**, jj-lib 0.42 port, commit `7c2dc54`) did **not** touch this. | **Defensively covered (shipped).** gitman `reconcile`/`adopt` no longer *dead-end* on the divergent change P1 manufactures: they target & name stray/range rows by `commit_id`, so a divergent stray adopts into two distinct lanes or abandons cleanly (issue 06 §G2, **PR #28, merged**). gitman does **not** prune the keep-refs themselves — P1 remains the upstream *cure*; G2 is the consumer's *floor*. |
+| **P1** — orphaned `refs/jj/keep/*` survive `.jj` deletion | **Fixed (shipped) — option (1).** `adopt_existing_git` now calls `prune_orphaned_keep_refs` **before** importing: it deletes every `refs/jj/keep/*` from the colocated `.git` (the fresh `init_external_git` store has authored none of its own yet, so all present are orphaned). Re-adopting a recovered repo no longer carries the dead workspace's ~50 GC-anchors forward; no hand-purge needed. Test: `test_init_adopt.py::test_readopt_prunes_orphaned_keep_refs`. **Mechanism correction (verified vs jj-lib 0.42):** keep-refs are *not* re-imported — `import_refs`/`import_head` only scan `refs/heads/**`, `refs/remotes/**`, `refs/tags/**`, `HEAD` (`diff_refs_to_import`), never `refs/jj/keep/**`. So this prune is **hygiene** (stops orphaned-ref accumulation + lets `git gc` reclaim the dead objects), *not* the cure for the visible divergence — that commit was anchored by the **tag** (P2), fixed consumer-side. | **Defensively covered (shipped).** gitman `reconcile`/`adopt` no longer *dead-end* on the divergent change P1 manufactures: they target & name stray/range rows by `commit_id`, so a divergent stray adopts into two distinct lanes or abandons cleanly (issue 06 §G2, **PR #28, merged**). gitman does **not** prune the keep-refs themselves — P1 remains the upstream *cure*; G2 is the consumer's *floor*. |
 | **P2** — adopt imports tags → off-main tagged commit is a visible head | **Decision shipped as (A): keep jj-standard.** `adopt_existing_git` still imports tags via `git::import_refs` (unchanged, faithful to `jj git import`). Option (B) (`import_tags=False`) not added — revisit only if more consumers hit it. | **Fixed (shipped).** `state._stray_revset` now excludes `tags()`, so a tagged off-main commit is no longer flagged as stray (issue 06 §G1, **PR #28, merged**). This is the agreed consumer-side home for "tags aren't work." |
 | **P3** — version guard trips mid-bump | **Incident resolved by the port; structural footgun remains.** The 0.42 port landed (`__version__ = "0.8.0"`, `JJ_LIB_TARGET = "0.42.0"`), and a built tree now reports a consistent `jj-lib 0.42.0` (gitman `doctor` green). The hand-maintained `__version__`/`JJ_LIB_TARGET` can still drift from the compiled artifact during a future bump — sourcing `JJ_LIB_TARGET` from the build stays an optional hardening. | n/a (build-time only). |
 
 **Net:** the *consumer-facing* symptom that triggered this report (a release tag's orphaned, divergent
 commit reading as un-clearable "stray work") is **fully addressed in gitman** — both the false-stray
-(G1) and the un-recoverable-divergence (G2) halves shipped in PR #28. **P1 is the only substantive
-item still open here**, and it is the upstream *root cause*: until adopt prunes orphaned `refs/jj/keep/*`,
-a `.jj` recreate keeps re-manufacturing the divergence (gitman now survives it, but doesn't prevent it).
-See gitman issue 06 §"Open questions" — extending gitman's `_heal_colocated_refs` to also drop orphaned
-`refs/jj/*` was floated as an alternative self-heal but **was not built**; the clean fix lives here (P1).
+(G1) and the un-recoverable-divergence (G2) halves shipped in PR #28. **P1 is now also shipped on the
+pyjutsu side** (adopt prunes orphaned `refs/jj/keep/*`), so a `.jj` recreate no longer drags the dead
+workspace's GC-anchors forward. **Correction to the earlier framing:** P1 is *not* the root cause of the
+divergence — reading jj-lib 0.42 confirms `import_refs` never scans `refs/jj/keep/**`, so a keep-ref
+cannot resurrect a commit *as a visible head*. The visible off-main commit was anchored by the **tag**
+(P2), and that "tags aren't work" call lives in the consumer (gitman G1). P1's prune is **hygiene**:
+it removes the orphaned-ref pile-up that forced the hand-purge and lets `git gc` reclaim the dead
+objects. (gitman issue 06 §"Open questions" floated extending `_heal_colocated_refs` to drop orphaned
+`refs/jj/*` as an alternative self-heal — **not built**; the upstream hygiene fix lives here.)
 
 ---
 
@@ -93,17 +97,33 @@ workspace that was deleted without pruning them. jj-lib's normal lifecycle prune
 as part of operating a live `.jj`; a `.jj` that is `rm`'d out of band leaves them orphaned, and the
 next adopt treats them as authoritative refs to import.
 
-### Suggested fix (pyjutsu)
+### Fix shipped (2026-06-30) — option (1)
 
-Pick one (in rough order of preference):
+Option (1) below was implemented: `adopt_existing_git` calls a new `prune_orphaned_keep_refs(repo)`
+**before** `import_head`/`import_refs`. It enumerates `git_repo.references().prefixed("refs/jj/keep/")`
+and deletes them via one `edit_references` batch (each guarded `ExistingMustMatch`, mirroring jj-lib's
+own `to_ref_deletion`). Scope is deliberately just `refs/jj/keep/**` (the P1 namespace); `refs/jj/root`
+and `refs/jj/remote-tags/` are left untouched. Safety: the adopt path always runs against a *freshly*
+`init_external_git`'d store that has authored no keep-refs of its own yet, so every `refs/jj/keep/*`
+present is necessarily a leftover from the deleted `.jj`. jj re-creates the keep-refs it needs for the
+heads it imports immediately after (`import_head_commits`). Covered by
+`test_init_adopt.py::test_readopt_prunes_orphaned_keep_refs` (verified failing without the prune).
 
-1. **On `Workspace.init` adopt, prune orphaned `refs/jj/*` that don't correspond to live workspace
-   state** before/while importing — so re-adopting a repo whose `.jj` was deleted starts from the real
-   git refs (branches + tags) only, not jj's internal bookkeeping.
+> **Verified vs jj-lib 0.42:** the original "re-imported" wording overstated the mechanism.
+> `import_refs`/`import_head` walk only `refs/heads/**`, `refs/remotes/**`, `refs/tags/**`, `HEAD`
+> (`diff_refs_to_import`, `git.rs`) — **never** `refs/jj/keep/**`. Keep-refs are GC anchors recreated
+> only by `gc()` (`recreate_no_gc_refs`, `git_backend.rs`). So a stale keep-ref keeps the orphaned
+> commit *object* alive but does not, by itself, import it as a visible head. The prune is therefore
+> **hygiene** (ref pile-up + GC reclamation), not the divergence cure — that's the tag (P2 → gitman G1).
+
+The options as originally framed (kept for the record):
+
+1. **On `Workspace.init` adopt, prune orphaned `refs/jj/*`** before/while importing — **← shipped (keep/ only).**
 2. Provide an explicit `Workspace.prune_jj_refs(path)` (or a `clean=True` flag on `init`) so a consumer
-   recovering a workspace can opt in.
-3. At minimum, **document** that deleting `.jj` by hand must be paired with pruning `refs/jj/*`, and
-   surface a warning from adopt when stray `refs/jj/keep/*` are present.
+   recovering a workspace can opt in. *(Not taken — the auto-prune on adopt covers the recovery path
+   with zero new API surface; revisit if a consumer needs to prune without re-adopting.)*
+3. At minimum, **document** that deleting `.jj` by hand must be paired with pruning `refs/jj/*`.
+   *(Superseded by the auto-prune, but the `init` docstrings now state the prune behaviour.)*
 
 ### Test plan
 

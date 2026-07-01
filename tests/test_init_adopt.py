@@ -8,6 +8,7 @@ These cover the gitman bootstrap gaps: `init_colocated_git` could only *create* 
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -88,6 +89,51 @@ def test_init_fresh_colocate_unchanged(tmp_path: Path, jj) -> None:
     assert view.working_copy().is_empty is True
     assert [b for b in view.bookmarks() if b.remote is None] == []
     assert (repo / ".jj").is_dir() and (repo / ".git").is_dir()
+
+
+# --- prune orphaned `refs/jj/keep/*` on re-adopt (P1) -----------------------------------------
+
+
+def _keep_refs(repo: Path) -> set[str]:
+    out = _git(repo, "for-each-ref", "--format=%(refname)", "refs/jj/keep/")
+    return {line for line in out.splitlines() if line}
+
+
+def test_readopt_prunes_orphaned_keep_refs(tmp_path: Path, jj) -> None:
+    """A `.jj` deleted out of band leaves its `refs/jj/keep/*` orphaned in `.git`; the next adopt
+    must prune them (project 10 §P1) instead of carrying the dead workspace's GC anchors forward.
+    """
+    repo = tmp_path / "readopt"
+    _make_git_repo(repo, with_commit=True)
+    head = _git_rev(repo, "HEAD")
+
+    # First adopt: jj writes a keep-ref for the imported head.
+    pyjutsu.Workspace.init(repo, colocate=True)
+    assert any(r.endswith(head) for r in _keep_refs(repo))
+
+    # Simulate the leftover of a *previous* workspace: an off-main commit reachable from no
+    # branch/tag, anchored against GC solely by a stale keep-ref (as the three "Bump version" copies
+    # were in the gitman recovery).
+    tree = _git(repo, "rev-parse", "HEAD^{tree}").strip()
+    orphan = _git(repo, "commit-tree", tree, "-p", head, "-m", "Bump version (orphan)").strip()
+    _git(repo, "update-ref", f"refs/jj/keep/{orphan}", orphan)
+
+    # Delete `.jj` out of band — the keep-refs (live + orphaned) persist in `.git`.
+    shutil.rmtree(repo / ".jj")
+    surviving = _keep_refs(repo)
+    assert f"refs/jj/keep/{orphan}" in surviving
+    assert any(r.endswith(head) for r in surviving)
+
+    # Re-adopt: the orphaned keep-refs are pruned; jj re-creates only the ones it needs (the head).
+    ws = pyjutsu.Workspace.init(repo, colocate=True)
+    after = _keep_refs(repo)
+    assert f"refs/jj/keep/{orphan}" not in after
+    assert any(r.endswith(head) for r in after)
+
+    # Re-adopt is still correct: `main` at the head and `@` an empty child of it (no divergence).
+    view = ws.head()
+    assert view.resolve("main").commit_id == head
+    assert view.working_copy().parent_ids == [head]
 
 
 # --- absolute workspace paths (A2) ------------------------------------------------------------
