@@ -15,6 +15,7 @@
 //! handle never wedges the workspace.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,27 +23,39 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use jj_lib::backend::CommitId;
+use jj_lib::backend::{CommitId, TreeValue};
 use jj_lib::commit::Commit;
+use jj_lib::diff::{ContentDiff, DiffHunkKind};
 use jj_lib::matchers::{EverythingMatcher, FilesMatcher};
+use jj_lib::merge::{Merge, MergedTreeValue};
+use jj_lib::merged_tree::MergedTree;
+use jj_lib::merged_tree_builder::MergedTreeBuilder;
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_store::RefTarget;
 use jj_lib::ref_name::{RefName, RemoteName, WorkspaceNameBuf};
 use jj_lib::repo::Repo;
-use jj_lib::repo_path::RepoPathBuf;
+use jj_lib::repo_path::{RepoPath, RepoPathBuf};
 use jj_lib::rewrite::{
     CommitWithSelection, MoveCommitsLocation, MoveCommitsTarget, RebaseOptions, merge_commit_trees,
     move_commits, restore_tree, squash_commits,
 };
+use jj_lib::store::Store;
 use jj_lib::transaction::Transaction;
 
 use crate::convert::{BookmarkData, CommitData};
+use crate::diff_stat::read_text;
 use crate::errors::{
     ImmutableCommitError, PyjutsuError, RevsetError, StaleWorkingCopyError, map_backend_err,
     map_edit_err,
 };
 use crate::revset;
 use crate::workspace::PyWorkspace;
+
+/// One file's split selection: whole-file (`None`) or a set of 0-based hunk indices into that
+/// file's `RepoView.diff()` output (`Some`). This is the S3-A selection vocabulary — the indices
+/// reference the very hunks `diff()` emitted for the *same* commit, so they are stable and need no
+/// patch-header parsing. Crosses the FFI as a `dict[str, list[int] | None]`.
+type FileSelection = Option<Vec<usize>>;
 
 #[pyclass(unsendable, module = "pyjutsu._pyjutsu")]
 pub(crate) struct PyTransaction {
@@ -465,6 +478,185 @@ impl PyTransaction {
         data.to_dict(py)
     }
 
+    /// Build the **partial tree** for a hunk-level selection of `commit`'s diff and return its
+    /// (resolved) tree id as hex — the S2 primitive that `split` composes on. `selection` maps each
+    /// changed path to either `None` (the whole file) or a list of 0-based hunk indices into that
+    /// file's `diff(commit)` output. The returned tree is `commit`'s parent tree with the selected
+    /// changes applied (parent + selected hunks), assembled off jj-lib's `MergedTreeBuilder` exactly
+    /// like `split`'s selected side — but here just materialized as a tree, not written into a commit.
+    ///
+    /// Unlike `split`, this does **not** validate the selection is a proper subset (an empty
+    /// selection yields the parent tree id, a full one the commit tree id) — it is the low-level
+    /// "selection → tree" building block; `split` layers the empty/full guards on top. Runs on the
+    /// GIL (`MutableRepo` is `!Send`, see module docs); the tree build itself is in-memory + object
+    /// writes.
+    fn select_tree(
+        &self,
+        commit: &str,
+        selection: HashMap<String, FileSelection>,
+    ) -> PyResult<String> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs).
+        let repo = tx.repo_mut();
+        let target = self.resolve_single(&*repo, commit)?;
+        let parent_tree =
+            pollster::block_on(target.parent_tree(&*repo)).map_err(map_backend_err)?;
+        let commit_tree = target.tree();
+        let selected_tree = pollster::block_on(build_split_side(
+            &*repo,
+            &parent_tree,
+            &commit_tree,
+            &selection,
+            /* for_remainder = */ false,
+        ))?;
+        match selected_tree.tree_ids().as_resolved() {
+            Some(id) => Ok(id.hex()),
+            None => Err(PyjutsuError::new_err(
+                "selected tree is conflicted; a hunk selection over resolved paths should not \
+                 produce a conflict — report this",
+            )),
+        }
+    }
+
+    /// Split `commit` into **two commits** by a partial (hunk-level) selection of its diff, returning
+    /// `(first, second)` as plain dicts. `first` holds only the **selected** change; `second` holds
+    /// the **remainder**; together they reproduce `commit`'s tree. `selection` maps each changed path
+    /// to `None` (whole file) or a list of 0-based hunk indices into that file's `diff(commit)` output
+    /// (S3-A). This is the sub-file mutation primitive that `restore`'s whole-file `FilesMatcher`
+    /// cannot express; a whole-file selection reproduces the path-scoped `restore` carve, so `split`
+    /// subsumes it.
+    ///
+    /// `mode` picks the topology:
+    /// - `"siblings"` (default): `first` is a **new** commit (fresh change id, no descendants) holding
+    ///   the selected change; `second` is `commit` **rewritten in place** to the remainder — it keeps
+    ///   its change id, bookmarks, descendants, and (if it was `@`) the working-copy pointer. Both are
+    ///   children of `commit`'s original parent(s). This is what a "carve one lane into two siblings"
+    ///   consumer (gitman) wants.
+    /// - `"stacked"` (jj's own `jj split` default): `first` (selected) is a new child of the original
+    ///   parent(s); `second` is `commit` reparented onto `first` with its tree unchanged, so its diff
+    ///   vs `first` is exactly the remainder. `second` keeps its change id + descendants + `@`.
+    ///
+    /// The empty/full guards lean on jj-lib's `CommitWithSelection::is_empty_selection`/
+    /// `is_full_selection`: an empty carve (nothing selected) and a full carve (everything selected —
+    /// the second commit would be empty) are both refused with typed errors. Splitting the **root**
+    /// raises `ImmutableCommitError`. Partial (hunk) selection is supported for plain modified/added
+    /// text files; binary, symlink, conflicted, and removed files must be selected whole-file (`None`)
+    /// — a hunk list on such a path raises a typed error. For a path `diff()` reports as
+    /// `renamed`/`copied` (its `source` is set), pass whole-file `None`: the indices are only aligned
+    /// with a plain same-path diff. Runs on the GIL (`MutableRepo` is `!Send`).
+    #[pyo3(signature = (commit, selection, mode="siblings"))]
+    fn split<'py>(
+        &self,
+        py: Python<'py>,
+        commit: &str,
+        selection: HashMap<String, FileSelection>,
+        mode: &str,
+    ) -> PyResult<(Bound<'py, PyDict>, Bound<'py, PyDict>)> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs); in-memory graph work + object
+        // writes (the partial-file blobs and the two commit trees).
+        let repo = tx.repo_mut();
+        let target = self.resolve_single(&*repo, commit)?;
+        if target.id() == repo.store().root_commit_id() {
+            return Err(ImmutableCommitError::new_err(
+                "cannot split the root commit",
+            ));
+        }
+        if selection.is_empty() {
+            return Err(PyjutsuError::new_err(
+                "split selection is empty; select at least one path (or hunk) to carve off",
+            ));
+        }
+        let parent_ids: Vec<CommitId> = target.parent_ids().to_vec();
+        let parent_tree =
+            pollster::block_on(target.parent_tree(&*repo)).map_err(map_backend_err)?;
+        let commit_tree = target.tree();
+
+        // Build the selected side first and validate it is a *proper* subset (non-empty, non-full)
+        // via jj-lib's own helpers on `CommitWithSelection`.
+        let selected_tree = pollster::block_on(build_split_side(
+            &*repo,
+            &parent_tree,
+            &commit_tree,
+            &selection,
+            /* for_remainder = */ false,
+        ))?;
+        let sel = CommitWithSelection {
+            commit: target.clone(),
+            selected_tree: selected_tree.clone(),
+            parent_tree: parent_tree.clone(),
+        };
+        if sel.is_empty_selection() {
+            return Err(PyjutsuError::new_err(
+                "empty selection: the chosen hunks carve off no change; nothing would move to the \
+                 first commit",
+            ));
+        }
+        if sel.is_full_selection() {
+            return Err(PyjutsuError::new_err(
+                "full selection: the chosen hunks are the commit's entire change, so the second \
+                 commit would be empty; that is a no-op, not a split",
+            ));
+        }
+
+        let (first, second) = match mode {
+            "siblings" => {
+                let remainder_tree = pollster::block_on(build_split_side(
+                    &*repo,
+                    &parent_tree,
+                    &commit_tree,
+                    &selection,
+                    /* for_remainder = */ true,
+                ))?;
+                // `first`: new sibling holding only the selected change (fresh change id).
+                let first =
+                    pollster::block_on(repo.new_commit(parent_ids.clone(), selected_tree).write())
+                        .map_err(map_backend_err)?;
+                // `second`: the original commit rewritten to the remainder — keeps its change id,
+                // bookmarks, descendants, and `@`. Root of this rewrite, so `rebase_descendants`
+                // below fixes up its descendants but not `second` itself.
+                let second = pollster::block_on(
+                    repo.rewrite_commit(&target)
+                        .set_tree(remainder_tree)
+                        .write(),
+                )
+                .map_err(map_backend_err)?;
+                (first, second)
+            }
+            "stacked" => {
+                // `first`: new commit holding the selected change, child of the original parent(s).
+                let first =
+                    pollster::block_on(repo.new_commit(parent_ids.clone(), selected_tree).write())
+                        .map_err(map_backend_err)?;
+                // `second`: the original commit reparented onto `first`, tree unchanged — its diff vs
+                // `first` is exactly the remainder. Keeps its change id + descendants + `@`.
+                let second = pollster::block_on(
+                    repo.rewrite_commit(&target)
+                        .set_parents(vec![first.id().clone()])
+                        .write(),
+                )
+                .map_err(map_backend_err)?;
+                (first, second)
+            }
+            other => {
+                return Err(PyjutsuError::new_err(format!(
+                    "split mode must be 'siblings' or 'stacked', got '{other}'"
+                )));
+            }
+        };
+
+        pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
+        let first_data = CommitData::build(&*repo, &first)?;
+        let second_data = CommitData::build(&*repo, &second)?;
+        Ok((first_data.to_dict(py)?, second_data.to_dict(py)?))
+    }
+
     /// Create a **new** local bookmark `name` at the single revision named by `commit`, returning
     /// the new bookmark as a plain dict. Errors with `PyjutsuError` if a local bookmark of that
     /// name already exists (matches `jj bookmark create`, which refuses to clobber).
@@ -656,4 +848,175 @@ impl Drop for PyTransaction {
             self.release_slot();
         }
     }
+}
+
+/// Assemble one side of a `split` (or the `select_tree` result) as a `MergedTree`.
+///
+/// With `for_remainder = false` this builds the **selected** side: base = `parent_tree`, and each
+/// listed path is overridden with *(parent content + the selected hunks)*. With `for_remainder =
+/// true` it builds the **remainder** side: base = `commit_tree`, and each listed path is overridden
+/// with *(parent content + the **un**selected hunks)* — the commit's content with the selected hunks
+/// reverted. A path **not** listed keeps the base's value, so a wholly-unselected changed path lands
+/// on the parent value in the selected tree and the commit value in the remainder — i.e. entirely on
+/// the remainder side. The two sides therefore reassemble the original commit.
+///
+/// Only resolved changed paths may be listed. A whole-file selection (`None`) copies the merged tree
+/// value verbatim (so binary/symlink/etc. whole-file moves need no hunk assembly); a hunk list is
+/// materialized by `partial_file_value`.
+async fn build_split_side(
+    repo: &dyn Repo,
+    parent_tree: &MergedTree,
+    commit_tree: &MergedTree,
+    selection: &HashMap<String, FileSelection>,
+    for_remainder: bool,
+) -> PyResult<MergedTree> {
+    let store = repo.store();
+    let base = if for_remainder {
+        commit_tree.clone()
+    } else {
+        parent_tree.clone()
+    };
+    let mut builder = MergedTreeBuilder::new(base);
+    for (path_str, sel) in selection {
+        let path = RepoPathBuf::from_relative_path(path_str)
+            .map_err(|e| PyjutsuError::new_err(format!("invalid path '{path_str}': {e}")))?;
+        let before_value = parent_tree
+            .path_value(&path)
+            .await
+            .map_err(map_backend_err)?;
+        let after_value = commit_tree
+            .path_value(&path)
+            .await
+            .map_err(map_backend_err)?;
+        if before_value == after_value {
+            return Err(PyjutsuError::new_err(format!(
+                "path '{path_str}' is not changed in the commit; a split selection may only list \
+                 changed paths"
+            )));
+        }
+        match sel {
+            // Whole-file: the file's entire change goes to the selected side. The selected tree takes
+            // the commit's value, the remainder reverts to the parent's (an absent value removes the
+            // path — e.g. a wholly-selected added file is not in the remainder).
+            None => {
+                let value = if for_remainder {
+                    before_value
+                } else {
+                    after_value
+                };
+                builder.set_or_remove(path, value);
+            }
+            Some(indices) => {
+                let file = partial_file_value(
+                    store,
+                    &path,
+                    path_str,
+                    &before_value,
+                    &after_value,
+                    indices,
+                    for_remainder,
+                )
+                .await?;
+                builder.set_or_remove(path, Merge::normal(file));
+            }
+        }
+    }
+    builder.write_tree().await.map_err(map_backend_err)
+}
+
+/// Materialize the partial content of one file for a hunk-level split side, returning its
+/// `TreeValue::File`. Requires a resolved **text file present in the commit** (an "after" side to
+/// carve and a file identity — executable bit + copy id — to preserve); binary, symlink, conflicted,
+/// and removed files raise a typed error so the caller must select them whole-file instead.
+async fn partial_file_value(
+    store: &Store,
+    path: &RepoPath,
+    path_str: &str,
+    before_value: &MergedTreeValue,
+    after_value: &MergedTreeValue,
+    indices: &[usize],
+    for_remainder: bool,
+) -> PyResult<TreeValue> {
+    let (executable, copy_id) = match after_value.as_resolved() {
+        Some(Some(TreeValue::File {
+            executable,
+            copy_id,
+            ..
+        })) => (*executable, copy_id.clone()),
+        _ => {
+            return Err(PyjutsuError::new_err(format!(
+                "path '{path_str}': hunk-level selection requires a regular file present in the \
+                 commit; select binary, symlink, conflicted, or removed files whole-file (None)"
+            )));
+        }
+    };
+    let before_bytes = read_text(store, path, before_value).await?.ok_or_else(|| {
+        PyjutsuError::new_err(format!(
+            "path '{path_str}': hunk-level selection requires text on the parent side (it is binary \
+             or not a regular file); select it whole-file (None)"
+        ))
+    })?;
+    let after_bytes = read_text(store, path, after_value).await?.ok_or_else(|| {
+        PyjutsuError::new_err(format!(
+            "path '{path_str}': hunk-level selection requires text content (the file is binary); \
+             select it whole-file (None)"
+        ))
+    })?;
+    let content = assemble_selected_content(
+        &before_bytes,
+        &after_bytes,
+        indices,
+        for_remainder,
+        path_str,
+    )?;
+    let id = store
+        .write_file(path, &mut content.as_slice())
+        .await
+        .map_err(map_backend_err)?;
+    Ok(TreeValue::File {
+        id,
+        executable,
+        copy_id,
+    })
+}
+
+/// Reconstruct a file's content for one split side from a line-level diff of its parent/commit bytes.
+///
+/// Walks `ContentDiff::by_line`'s hunks in order (the same decomposition `diff()` emits): a matching
+/// span is copied through; the k-th *changed* span (0-based — the same index a consumer sees in
+/// `diff(commit)`'s hunk list) contributes its **after** side when it is selected for this side, else
+/// its **before** side. For the selected tree that means "after for selected hunks"; for the
+/// remainder it is the complement ("after for *un*selected hunks"), so the two sides partition the
+/// change. An index that names no changed span is a typed error rather than a silent no-op.
+fn assemble_selected_content(
+    before: &[u8],
+    after: &[u8],
+    indices: &[usize],
+    for_remainder: bool,
+    path_str: &str,
+) -> PyResult<Vec<u8>> {
+    let selected: HashSet<usize> = indices.iter().copied().collect();
+    let inputs = [before, after];
+    let diff = ContentDiff::by_line(inputs);
+    let mut out = Vec::new();
+    let mut k = 0usize; // index over changed spans, matching `diff()`'s hunk order
+    for hunk in diff.hunks() {
+        match hunk.kind {
+            DiffHunkKind::Matching => out.extend_from_slice(hunk.contents[0]),
+            DiffHunkKind::Different => {
+                // Selected side keeps the after content for selected hunks; the remainder is the
+                // complement. `!=` is XOR over the two bools.
+                let take_after = selected.contains(&k) != for_remainder;
+                out.extend_from_slice(hunk.contents[usize::from(take_after)]);
+                k += 1;
+            }
+        }
+    }
+    if let Some(&bad) = indices.iter().find(|&&i| i >= k) {
+        return Err(PyjutsuError::new_err(format!(
+            "path '{path_str}': hunk index {bad} out of range (the file has {k} hunk(s) in this \
+             commit's diff)"
+        )));
+    }
+    Ok(out)
 }
