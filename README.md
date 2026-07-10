@@ -5,17 +5,20 @@ PyO3/maturin — native graph, op-log, working-copy, and conflict access **in-pr
 no subprocess and no text parsing.
 
 - **Import:** `import pyjutsu`
-- **Binds:** jujutsu / `jj-lib` **0.38** (pinned in `Cargo.toml` + `devenv.nix`). Pyjutsu is
+- **Binds:** jujutsu / `jj-lib` **0.42.0** (pinned in `Cargo.toml` + `devenv.nix`). Pyjutsu is
   versioned on its own cadence, independent of the jj version it binds; `pyjutsu.JJ_VERSION`
   reports the linked jj-lib at runtime.
 - **Spec:** see [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md).
 
-**Status: 0.8.0 — tracks jj-lib 0.42.0.** The reads, transactions/mutations, op-log time travel,
+**Status: 0.10.0 — tracks jj-lib 0.42.0.** The reads, transactions/mutations, op-log time travel,
 workspaces, and git interop are all implemented and differential-tested against the pinned `jj`
-CLI. 0.8.0 ports the binding to jj-lib 0.42.0 (the 0.7.0 power-user surface — a revset builder, a
-streaming log, and a `run_jj` escape hatch — is unchanged). Still flagged out of scope: a native
-async facade, two-revset `diff(from, to)`, word/inline diff, and assorted git/rewrite refinements
-(see `docs/PYJUTSU_CONCEPT.md` §12).
+CLI. 0.8.0 ported the binding to jj-lib 0.42.0; 0.9.0 added native sub-file `tx.split`/`select_tree`;
+0.10.0 adds `untrack_paths` (stop tracking a path, leave it on disk), an idempotent
+`sync_colocated` (repair colocated git `HEAD` + index), and documents that `git_push` is
+force-with-lease by contract — a non-fast-forward bookmark move succeeds only while the
+remote-tracking lease holds, and is rejected (never blindly forced) otherwise. Still flagged out of
+scope: a native async facade, two-revset `diff(from, to)`, word/inline diff, and assorted
+git/rewrite refinements (see `docs/PYJUTSU_CONCEPT.md` §12).
 
 ## Reads
 

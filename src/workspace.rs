@@ -24,14 +24,15 @@ use jj_lib::git::{
 use jj_lib::fileset::{self, FilesetAliasesMap, FilesetDiagnostics, FilesetParseContext};
 use jj_lib::git_backend::GitBackend;
 use jj_lib::gitignore::GitIgnoreFile;
-use jj_lib::matchers::NothingMatcher;
+use jj_lib::matchers::{NothingMatcher, PrefixMatcher};
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_store::OperationId;
 use jj_lib::op_walk;
-use jj_lib::merge::Diff;
+use jj_lib::merge::{Diff, Merge};
+use jj_lib::merged_tree_builder::MergedTreeBuilder;
 use jj_lib::ref_name::{RefName, RefNameBuf, RemoteName, WorkspaceName, WorkspaceNameBuf};
 use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader, StoreFactories};
-use jj_lib::repo_path::{RepoPath, RepoPathUiConverter};
+use jj_lib::repo_path::{RepoPath, RepoPathBuf, RepoPathUiConverter};
 use jj_lib::settings::{HumanByteSize, UserSettings};
 use jj_lib::str_util::{StringExpression, StringPattern};
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
@@ -634,6 +635,135 @@ impl PyWorkspace {
         Ok(Some(data.to_dict(py)?))
     }
 
+    /// Stop tracking each path in `paths` (and anything under it) — matches `jj file untrack`:
+    /// remove the path from `@`'s tree and drop its working-copy file-state, but **leave the file
+    /// on disk**. Returns the published `untrack paths` operation as a plain dict, or `None` if
+    /// none of the paths were tracked (no operation published).
+    ///
+    /// Untracking alone is not durable: the *next* `snapshot()` re-adds the path unless it is
+    /// excluded from tracking. Exclude it first — the intended path is to `.gitignore` it, since
+    /// jj-lib evaluates gitignore *before* the `snapshot.auto-track` fileset
+    /// (`local_working_copy.rs`), so an ignored, now-untracked path stays out. An un-ignored,
+    /// un-excluded path will be re-tracked by the following snapshot.
+    ///
+    /// Locks like `snapshot`: hold the workspace `Mutex`, lock the working copy, refuse a stale
+    /// `@`, then rewrite `@`'s tree on the GIL (`Transaction` is `!Send`). Unlike a checkout,
+    /// `reset` only updates the recorded tree + file-states from a tree diff; it never writes the
+    /// working-copy files, which is why the untracked file remains on disk.
+    fn untrack_paths<'py>(
+        &self,
+        py: Python<'py>,
+        paths: Vec<String>,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let mut guard = self.locked()?;
+        let ws: &mut Workspace = &mut guard;
+
+        // Repo-relative paths from the caller (user input) → map parse errors to `PyjutsuError`
+        // (same idiom as `restore`/`split`). Empty input ⇒ nothing to do.
+        let repo_paths = paths
+            .iter()
+            .map(|p| {
+                RepoPathBuf::from_relative_path(p)
+                    .map_err(|e| PyjutsuError::new_err(format!("invalid path '{p}': {e}")))
+            })
+            .collect::<PyResult<Vec<RepoPathBuf>>>()?;
+        if repo_paths.is_empty() {
+            return Ok(None);
+        }
+
+        let repo = {
+            let loader = ws.repo_loader();
+            py.allow_threads(|| pollster::block_on(loader.load_at_head()))
+                .map_err(map_backend_err)?
+        };
+        let name = ws.workspace_name().to_owned();
+        let Some(wc_commit_id) = repo.view().get_wc_commit_id(&name).cloned() else {
+            return Ok(None); // no `@` in this workspace ⇒ nothing to untrack
+        };
+        let wc_commit = repo
+            .store()
+            .get_commit(&wc_commit_id)
+            .map_err(map_backend_err)?;
+
+        // Lock the WC and refuse a stale/sibling `@` (same guard as `snapshot`).
+        let mut locked_ws =
+            pollster::block_on(ws.start_working_copy_mutation()).map_err(map_workingcopy_err)?;
+        match pollster::block_on(WorkingCopyFreshness::check_stale(
+            locked_ws.locked_wc(),
+            &wc_commit,
+            &repo,
+        ))
+        .map_err(map_backend_err)?
+        {
+            WorkingCopyFreshness::Fresh => {}
+            WorkingCopyFreshness::WorkingCopyStale | WorkingCopyFreshness::SiblingOperation => {
+                return Err(StaleWorkingCopyError::new_err(
+                    "working copy is stale; another operation moved `@`",
+                ));
+            }
+            WorkingCopyFreshness::Updated(_) => {
+                return Err(StaleWorkingCopyError::new_err(
+                    "working copy was updated concurrently; reload and retry",
+                ));
+            }
+        }
+
+        // Collect the tracked entries at or under each path. A `PrefixMatcher` untracks a whole
+        // subtree for a directory arg (matching `jj file untrack`) and just the file for a file
+        // arg. `entries_matching` only yields paths actually present in `@`'s tree, so an empty
+        // result means nothing was tracked ⇒ no operation.
+        let wc_tree = wc_commit.tree();
+        let matcher = PrefixMatcher::new(&repo_paths);
+        let tracked: Vec<RepoPathBuf> = wc_tree
+            .entries_matching(&matcher)
+            .map(|(path, _value)| path)
+            .collect();
+        if tracked.is_empty() {
+            return Ok(None);
+        }
+
+        // Drop each tracked path from `@`'s tree (`Merge::absent()` == "no entry here").
+        let mut builder = MergedTreeBuilder::new(wc_tree);
+        for path in &tracked {
+            builder.set_or_remove(path.clone(), Merge::absent());
+        }
+        let new_tree = pollster::block_on(builder.write_tree()).map_err(map_backend_err)?;
+
+        // Record the tree rewrite of `@` as one operation (on the GIL — `Transaction` is `!Send`).
+        let mut tx = repo.start_transaction();
+        {
+            let mrepo = tx.repo_mut();
+            pollster::block_on(mrepo.rewrite_commit(&wc_commit).set_tree(new_tree).write())
+                .map_err(map_backend_err)?;
+            // Satisfies `commit`'s `!has_rewrites()` assert and fixes up any descendants.
+            pollster::block_on(mrepo.rebase_descendants()).map_err(map_backend_err)?;
+        }
+        let new_repo = pollster::block_on(tx.commit("untrack paths")).map_err(map_backend_err)?;
+
+        // Point the working copy at the rewritten `@` and persist (off the GIL). `reset` diffs the
+        // old tree → new tree and strips the removed paths from `file_states` **without** touching
+        // disk, so the files stay on disk; `finish` records the WC at the new operation.
+        let new_wc_id = new_repo
+            .view()
+            .get_wc_commit_id(&name)
+            .cloned()
+            .expect("rewritten `@` must exist after untrack");
+        let new_wc_commit = new_repo
+            .store()
+            .get_commit(&new_wc_id)
+            .map_err(map_backend_err)?;
+        let op_id = new_repo.operation().id().clone();
+        py.allow_threads(|| -> PyResult<()> {
+            pollster::block_on(locked_ws.locked_wc().reset(&new_wc_commit))
+                .map_err(map_workingcopy_err)?;
+            pollster::block_on(locked_ws.finish(op_id)).map_err(map_workingcopy_err)?;
+            Ok(())
+        })?;
+
+        let data = OperationData::build(new_repo.operation());
+        Ok(Some(data.to_dict(py)?))
+    }
+
     /// Whether the on-disk working copy is **stale** relative to the repo's current `@` — i.e. the
     /// repo advanced past (or diverged from) the operation the working copy was last written at, and
     /// the on-disk tree no longer matches `@`. A read-only probe (matches what `jj` checks before
@@ -1036,6 +1166,56 @@ impl PyWorkspace {
         Ok(Some(self.finish_op(py, ws, &name, &repo, &new_repo)?))
     }
 
+    /// Repair the colocated git checkout: reset git `HEAD` (detached at `@`'s parent) **and** the
+    /// git index to `@`'s parent tree, via jj-lib's `reset_head`. Publishes one operation if the
+    /// view changed (HEAD moved), else `None`. The on-disk git index is rebuilt
+    /// **unconditionally** (`reset_head` always rewrites it), so a stale index that lied to raw-git
+    /// tooling — e.g. `git status` / `git check-ignore` reporting a just-removed file — is repaired
+    /// even when `None` is returned. Idempotent and `@`-neutral: safe to call after any mutation
+    /// and a no-op ref-wise when already in sync.
+    ///
+    /// This is the standalone form of the HEAD/index sync that `git_export` also performs, exposed
+    /// so callers can repair defensively without needing a refs change to trigger `git_export`.
+    /// Requires a colocated git backend (raises `GitError` otherwise).
+    fn sync_colocated<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let mut guard = self.locked()?;
+        let ws: &mut Workspace = &mut guard;
+        let name = ws.workspace_name().to_owned();
+        let repo = {
+            let loader = ws.repo_loader();
+            py.allow_threads(|| pollster::block_on(loader.load_at_head()))
+                .map_err(map_backend_err)?
+        };
+
+        let new_repo = py.allow_threads(|| -> PyResult<Option<Arc<ReadonlyRepo>>> {
+            let mut tx = repo.start_transaction();
+            // No `@` in this workspace ⇒ nothing to sync.
+            let Some(wc_id) = tx.repo_mut().view().get_wc_commit_id(&name).cloned() else {
+                return Ok(None);
+            };
+            let wc_commit = tx
+                .repo_mut()
+                .store()
+                .get_commit(&wc_id)
+                .map_err(map_backend_err)?;
+            // `reset_head` rewrites the git index (on disk) unconditionally and moves the view's
+            // git-HEAD target only when HEAD actually changed — so `has_changes()` gates only the
+            // published operation, not the index repair.
+            pollster::block_on(git::reset_head(tx.repo_mut(), &wc_commit)).map_err(map_git_err)?;
+            if !tx.repo_mut().has_changes() {
+                return Ok(None);
+            }
+            Ok(Some(
+                pollster::block_on(tx.commit("sync colocated git")).map_err(map_backend_err)?,
+            ))
+        })?;
+        let Some(new_repo) = new_repo else {
+            return Ok(None);
+        };
+        // `reset_head` never moves `@` itself, so `finish_op`'s checkout branch is inert here.
+        Ok(Some(self.finish_op(py, ws, &name, &repo, &new_repo)?))
+    }
+
     /// Export jj's bookmarks/tags to the backing git repo's refs (`jj git export`), publishing one
     /// operation — or `None` if nothing changed. Raises `GitError` listing any bookmark that failed
     /// to export (a partial export is a real failure the caller must see). Export is `@`-neutral in
@@ -1191,7 +1371,17 @@ impl PyWorkspace {
     /// bookmarks already **tracking** this remote. These are bulk *selection* modes: they ignore the
     /// `bookmarks` list (which must be empty) and are mutually exclusive. Neither deletes: a
     /// locally-absent bookmark is skipped, matching jj 0.38 (deletions need `delete=True`; the CLI's
-    /// `--deleted` / `--change` / force-push remain out of scope).
+    /// `--deleted` / `--change` remain out of scope).
+    ///
+    /// **Force-with-lease is the contract, not an option.** jj-lib has no fast-forward guard: every
+    /// push is a `--force-with-lease` test-and-set (`git.rs::push_updates` always force-pushes),
+    /// where the lease is each bookmark's remote-tracking target (the `before` of the `Diff` built
+    /// below). So a **non-fast-forward** bookmark move — e.g. pushing a content-equal but
+    /// hash-divergent trunk over `origin/<trunk>` — **succeeds** as long as the remote-tracking ref
+    /// is current (fetch first). If the remote moved out-of-band since the last fetch, the lease
+    /// fails and the push is **rejected** → `GitError` (never a blind clobber). There is therefore
+    /// no `force=`/`force_with_lease=` flag: the safe force *is* the default, and jj-lib 0.42 offers
+    /// no lease-less force to gate.
     ///
     /// Raises `GitError` if: `bookmarks` is empty without a bulk mode (or non-empty with one); both
     /// `all` and `tracked` are set; `delete` is combined with a bulk mode; a non-delete named

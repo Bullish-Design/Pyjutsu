@@ -1,11 +1,12 @@
 # Pyjutsu — Concept (PyO3 / jj-lib binding)
 
-**Status:** M1 (read layer) implemented (`pyjutsu 0.2.0`) and M2 (write layer — mutations,
-transactions, op-log, workspaces, git interop incl. network fetch/push/clone) implemented
-(`pyjutsu 0.3.0`), both binding jj-lib 0.38. Pyjutsu is versioned on its own semver cadence
-(M0 = 0.1.0, M1 = 0.2.0, M2 = 0.3.0), **independent** of the jj-lib version it binds. This document
-remains the canonical design spec — the v1 surface (§5) and scope (§12) below describe the full
-intended API, not just what ships today.
+**Status:** Shipping at `pyjutsu 0.10.0`, binding jj-lib 0.42.0. M1 (read layer) and M2 (write
+layer — mutations, transactions, op-log, workspaces, git interop incl. network fetch/push/clone)
+are complete; the power surface has since grown a revset builder, streaming log, `run_jj` escape
+hatch, native sub-file `tx.split`/`select_tree`, and — in 0.10.0 — `untrack_paths` plus an
+idempotent colocated-git `sync_colocated`. Pyjutsu is versioned on its own semver cadence,
+**independent** of the jj-lib version it binds. This document remains the canonical design spec —
+the v1 surface (§5) and scope (§12) below describe the full intended API, not just what ships today.
 **Name:** Pyjutsu · **Import:** `import pyjutsu`
 **What:** A general-purpose, Pythonic + Pydantic binding to **jujutsu's Rust engine
 (`jj-lib`)** via **PyO3**, distributed as a compiled wheel (maturin).

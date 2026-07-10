@@ -143,6 +143,20 @@ class Workspace:
         row = self._handle.git_export()
         return Operation.model_validate(row) if row is not None else None
 
+    def sync_colocated(self) -> Operation | None:
+        """Repair the colocated git checkout — reset git ``HEAD`` (detached at ``@``'s parent) and
+        the git index to match ``@``'s parent tree → the published :class:`Operation`, or ``None``
+        if the view was already in sync (HEAD unchanged).
+
+        The on-disk git index is rebuilt **unconditionally**, so a stale index that misled raw-git
+        tooling (``git status`` / ``git check-ignore`` reporting a just-removed file) is repaired
+        even when ``None`` is returned. Idempotent and ``@``-neutral: safe to call after any
+        mutation. Requires a colocated git backend; raises :class:`~pyjutsu.errors.GitError`
+        otherwise. This is the standalone form of the HEAD/index sync :meth:`git_export` also does.
+        """
+        row = self._handle.sync_colocated()
+        return Operation.model_validate(row) if row is not None else None
+
     def git_fetch(
         self, remote: str, *, bookmarks: list[str] | None = None
     ) -> Operation | None:
@@ -326,6 +340,20 @@ class Workspace:
         :class:`~pyjutsu.errors.StaleWorkingCopyError` if ``@`` is stale.
         """
         row = self._handle.snapshot()
+        return Operation.model_validate(row) if row is not None else None
+
+    def untrack_paths(self, paths: list[str]) -> Operation | None:
+        """Stop tracking each path in ``paths`` (and anything under it) → the published
+        :class:`Operation`, or ``None`` if none of the paths were tracked (no operation published).
+
+        Matches ``jj file untrack``: the path is removed from ``@``'s tree and its working-copy
+        file-state is dropped, but **the file stays on disk**. Untracking is not durable on its own
+        — the next :meth:`snapshot` re-adds the path unless it is excluded from tracking first. The
+        intended path is to ``.gitignore`` it: jj evaluates gitignore before the
+        ``snapshot.auto-track`` fileset, so an ignored, now-untracked path stays out. Raises
+        :class:`~pyjutsu.errors.StaleWorkingCopyError` if ``@`` is stale.
+        """
+        row = self._handle.untrack_paths(paths)
         return Operation.model_validate(row) if row is not None else None
 
     def is_stale(self) -> bool:
