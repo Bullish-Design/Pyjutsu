@@ -2,7 +2,7 @@
 //!
 //! Unlike every other handle, this one is **`unsendable`**: `jj_lib::Transaction` owns a
 //! `MutableRepo`, which holds a `Box<dyn MutableIndex>`, and `MutableIndex: Any` carries **no**
-//! `Send` bound (verified in jj-lib 0.38, `index.rs:175`). So the transaction is pinned to the
+//! `Send` bound (verified in jj-lib 0.42, `index.rs:178`). So the transaction is pinned to the
 //! thread that started it — it cannot live in the `Send` `PyWorkspace`, nor cross
 //! `Python::allow_threads`. We isolate that constraint here and keep `PyWorkspace` `Send`
 //! (concept §8.4). As a consequence the in-transaction graph work + commit run **on the GIL**;
