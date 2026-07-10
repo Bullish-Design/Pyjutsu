@@ -7,6 +7,8 @@ hatch, native sub-file `tx.split`/`select_tree`, and — in 0.10.0 — `untrack_
 idempotent colocated-git `sync_colocated`. Pyjutsu is versioned on its own semver cadence,
 **independent** of the jj-lib version it binds. This document remains the canonical design spec —
 the v1 surface (§5) and scope (§12) below describe the full intended API, not just what ships today.
+For task-oriented docs see [`USER_GUIDE.md`](USER_GUIDE.md) (using the library) and
+[`DEV_GUIDE.md`](DEV_GUIDE.md) (working on it).
 **Name:** Pyjutsu · **Import:** `import pyjutsu`
 **What:** A general-purpose, Pythonic + Pydantic binding to **jujutsu's Rust engine
 (`jj-lib`)** via **PyO3**, distributed as a compiled wheel (maturin).
@@ -97,14 +99,14 @@ from pyjutsu import Workspace, Commit, Bookmark, Operation
 
 ws = Workspace.load(Path("my-repo"))            # or Workspace.init(path, colocate=True)
 
-# --- reads (Pydantic models; no mutation with ignore_working_copy=True) ---
+# --- reads (frozen Pydantic models; a RepoView never snapshots @) ---
 at = ws.working_copy()                           # Commit for @
 trunk = ws.resolve("trunk()")                    # single-revision resolve → Commit
 hist: list[Commit] = ws.log("trunk()..@", limit=50)
 bms: list[Bookmark] = ws.bookmarks()             # local + remote tracking
 ops: list[Operation] = ws.operations(limit=20)   # op log (id, time, description, tags)
 stat = ws.diff_stat(at.commit_id)                # files / insertions / deletions
-conflicts = at.conflicts                          # first-class, N-sided
+conflicts = ws.conflicts("@")                    # list[Conflict]; first-class, N-sided
 
 # --- mutations: one transaction == one jj operation (native, atomic) ---
 with ws.transaction("start feature") as tx:
@@ -126,29 +128,38 @@ ws.git_export(); ws.git_import()                   # colocated sync
 
 ### Surface (v1)
 
-- **Workspace lifecycle:** `init`, `load`, `clone`, `workspaces()`, `add_workspace`,
+- **Workspace lifecycle:** `init`, `load`, `git_clone`, `workspaces()`, `add_workspace`,
   `forget_workspace`.
-- **Reads:** `working_copy`, `resolve`, `log` (revset + limit), `commit(id)`,
-  `bookmarks`, `operations`, `diff_stat`, `diff` (later), conflicts on a `Commit`.
-- **Revsets:** evaluate any jj revset string → `list[Commit]`; a `Revset` builder is a
-  later nicety. The revset string *is* jj's, so power users transfer knowledge directly.
+- **Reads:** `working_copy`, `resolve`, `log`/`iter_log` (revset + limit), `bookmarks`,
+  `operations`, `diff_stat`, `diff`, `conflicts` — all on a `Workspace` shortcut or a reusable
+  `RepoView` (`ws.head()` / `ws.at_operation(op)`).
+- **Revsets:** pass any jj revset **string** (it *is* jj's, so knowledge transfers directly), or
+  build one with the typed `revset` / `Pattern` builder that renders to the same string; `R.raw(...)`
+  covers anything unbound.
 - **Mutations (in a `Transaction`):** `new`, `describe`, `edit`, `abandon`, `rebase`,
-  `squash`, `restore`, `split`/`select_tree`, `set_bookmark`/`create_bookmark`/`delete_bookmark`,
-  `snapshot`, `untrack_paths`. The power surface now reaches **sub-file** rewrites: `split` divides one commit's
-  diff by a hunk-level selection (referencing the very hunks `diff()` emits) into two commits —
-  the primitive `restore`'s whole-file matcher can't express; `select_tree` exposes the underlying
-  "hunk selection → tree" step.
-- **Operations:** `undo`, `restore_operation`, `at_operation`, `head_operation`.
+  `squash`, `restore`, `split`/`select_tree`, `create_bookmark`/`set_bookmark`/`delete_bookmark`,
+  `track_bookmark`/`untrack_bookmark`; plus `snapshot`/`untrack_paths` on the `Workspace`. The power
+  surface reaches **sub-file** rewrites: `split` divides one commit's diff by a hunk-level selection
+  (referencing the very hunks `diff()` emits) into two commits — which the primitive `restore`'s
+  whole-file matcher can't express; `select_tree` exposes the underlying "hunk selection → tree" step.
+- **Operations:** `undo`, `restore_operation`, `at_operation`, `head_operation`, `operations`.
 - **Git:** `git_fetch`, `git_push` (force-with-lease by contract), `git_import`, `git_export`,
-  `sync_colocated`, `remotes`.
+  `sync_colocated`, and remotes CRUD (`remotes`/`add_remote`/`remove_remote`/`rename_remote`/
+  `set_remote_url`).
+- **Escape hatch:** `run_jj` runs the external `jj` binary against the workspace (raw
+  stdout/stderr/exit, no model parsing) for anything not yet bound.
 
 ### Models (Pydantic v2)
 
-`Commit` (change_id, commit_id, description, author/committer `Signature`, parents,
-empty, conflict, bookmarks), `ChangeId`/`CommitId` (validated str newtypes), `Bookmark`
-(name, remote, target, tracked), `Operation` (id, parents, time, description, tags),
-`Conflict` (path, sides/`Merge`), `DiffStat`, `Signature`, `RepoState` (optional
-convenience aggregate). Mirror the existing CLI-wrapper Pyjutsu's shapes where sensible.
+All frozen with `extra="forbid"`, so a jj-lib shape drift fails loudly at the FFI boundary:
+`Commit` (change_id, commit_id, description, author/committer `Signature`, parent_ids, is_empty,
+has_conflict, bookmarks), `ChangeId`/`CommitId` (validated str newtypes), `Signature` (name, email,
+tz-aware timestamp), `Bookmark` (name, remote, target_ids, tracked; `.conflicted`), `Operation`
+(id, parent_ids, description, host/user, is_snapshot, tags, start/end time), `Conflict` (path,
+num_sides, num_bases). The diff surface adds `DiffStat`/`FileStat` and
+`Diff`/`FileChange`/`Hunk`/`HunkLine`; workspace + git reads add `WorkspaceInfo` (name, path,
+wc_commit_id) and `Remote` (name, url); the `run_jj` escape hatch returns `JjResult` (args,
+returncode, stdout, stderr).
 
 ## 6. Build, toolchain & pinning
 

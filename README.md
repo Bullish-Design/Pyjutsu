@@ -8,7 +8,9 @@ no subprocess and no text parsing.
 - **Binds:** jujutsu / `jj-lib` **0.42.0** (pinned in `Cargo.toml` + `devenv.nix`). Pyjutsu is
   versioned on its own cadence, independent of the jj version it binds; `pyjutsu.JJ_VERSION`
   reports the linked jj-lib at runtime.
-- **Spec:** see [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md).
+- **Docs:** [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) (using the library) ·
+  [`docs/DEV_GUIDE.md`](docs/DEV_GUIDE.md) (working on it) ·
+  [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md) (design spec).
 
 **Status: 0.10.0 — tracks jj-lib 0.42.0.** The reads, transactions/mutations, op-log time travel,
 workspaces, and git interop are all implemented and differential-tested against the pinned `jj`
