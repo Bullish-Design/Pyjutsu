@@ -1284,7 +1284,7 @@ impl PyWorkspace {
     /// scope. Raises `GitError` on a malformed pattern or a git failure (unknown remote, rejected
     /// update, subprocess error).
     ///
-    /// jj 0.38 fetches via a `git` subprocess, so the whole spawn + network I/O runs **off the GIL**.
+    /// jj 0.42 fetches via a `git` subprocess, so the whole spawn + network I/O runs **off the GIL**.
     /// The `!Send` `GitFetch`/`Transaction` are created **and dropped inside one synchronous closure
     /// on one thread**; the fetcher (which borrows `&mut MutableRepo`) is dropped in an inner scope
     /// before `rebase_descendants()`/`commit` re-borrow the repo. A fresh loader is used so a remote
@@ -1370,7 +1370,7 @@ impl PyWorkspace {
     /// fast-forwarding existing ones; `tracked=True` (`jj git push --tracked`) pushes only the
     /// bookmarks already **tracking** this remote. These are bulk *selection* modes: they ignore the
     /// `bookmarks` list (which must be empty) and are mutually exclusive. Neither deletes: a
-    /// locally-absent bookmark is skipped, matching jj 0.38 (deletions need `delete=True`; the CLI's
+    /// locally-absent bookmark is skipped, matching jj 0.42 (deletions need `delete=True`; the CLI's
     /// `--deleted` / `--change` remain out of scope).
     ///
     /// **Force-with-lease is the contract, not an option.** jj-lib has no fast-forward guard: every
@@ -1406,7 +1406,7 @@ impl PyWorkspace {
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
         // `all`/`tracked` are mutually-exclusive *bulk* selection modes that ignore the named
         // `bookmarks` list; the named list and the bulk modes can't be combined. `delete` is a
-        // named-only verb (bulk push never deletes — jj 0.38's `--all`/`--tracked` skip deletions,
+        // named-only verb (bulk push never deletes — jj 0.42's `--all`/`--tracked` skip deletions,
         // which require the separate `--deleted`, left flagged).
         if all && tracked {
             return Err(map_git_err("pass at most one of all/tracked".to_owned()));

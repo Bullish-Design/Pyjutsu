@@ -207,7 +207,7 @@ class Workspace:
         fast-forwarding existing ones; ``tracked=True`` (``--tracked``) pushes only bookmarks already
         **tracking** this remote. These bulk modes ignore ``bookmark`` (which must be ``None``/empty)
         and are mutually exclusive. Neither deletes: a locally-absent bookmark is skipped, matching
-        jj 0.38 (deletions need ``delete=True``).
+        jj 0.42 (deletions need ``delete=True``).
 
         Raises :class:`~pyjutsu.errors.GitError` if no bookmark is given without a bulk mode (or one
         is given with a bulk mode), both ``all`` and ``tracked`` are set, ``delete`` is combined with
