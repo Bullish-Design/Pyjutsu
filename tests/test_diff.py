@@ -134,3 +134,51 @@ def test_diff_rename_matches_cli(tmp_path: Path, jj: JjCli) -> None:
     # The binding agrees with the CLI's (kind, source).
     binding = {f.path: (f.kind, f.source) for f in diff.files}
     assert binding == cli
+
+
+# --- two-revset diff (`diff(from_, to)`, concept §12) -------------------------------------------
+
+
+def test_two_revset_diff_parent_to_child_equals_single(linear_repo: Path) -> None:
+    """`diff(A, B)` (A→B range) must equal `diff(B)` when B's only parent is A: both diff A's tree
+    against B's. In `linear_repo`, `@--` is B and `@---` is A (A→B→C→@)."""
+    ws = pyjutsu.Workspace.load(linear_repo)
+    single = ws.diff("@--")  # B vs its parent A
+    between = ws.diff("@---", "@--")  # A -> B
+    assert isinstance(between, Diff)
+    assert [(f.path, f.kind, f.source) for f in between.files] == [
+        (f.path, f.kind, f.source) for f in single.files
+    ]
+    assert [_file_lines(f) for f in between.files] == [_file_lines(f) for f in single.files]
+
+
+def test_two_revset_diff_spans_commits_matches_cli(linear_repo: Path, jj: JjCli) -> None:
+    """A range across multiple commits (A→C: adds b.txt then c.txt) matches
+    `jj diff --from A --to C --summary`."""
+    ws = pyjutsu.Workspace.load(linear_repo)
+    between = ws.diff("@---", "@-")  # A -> C
+    binding = {f.path: f.kind for f in between.files}
+    assert binding == jj.diff_summary_between(linear_repo, "@---", "@-")
+    assert binding == {"b.txt": "added", "c.txt": "added"}
+
+
+def test_two_revset_diff_is_directional(linear_repo: Path) -> None:
+    """Reversing the endpoints inverts each change: A→C adds b/c.txt, C→A removes them."""
+    ws = pyjutsu.Workspace.load(linear_repo)
+    forward = {f.path: f.kind for f in ws.diff("@---", "@-").files}
+    backward = {f.path: f.kind for f in ws.diff("@-", "@---").files}
+    assert forward == {"b.txt": "added", "c.txt": "added"}
+    assert backward == {"b.txt": "removed", "c.txt": "removed"}
+
+
+def test_two_revset_diff_same_revision_is_empty(linear_repo: Path) -> None:
+    ws = pyjutsu.Workspace.load(linear_repo)
+    assert ws.diff("@-", "@-").files == []
+
+
+def test_two_revset_diff_rejects_multi_revision_endpoint(linear_repo: Path) -> None:
+    ws = pyjutsu.Workspace.load(linear_repo)
+    with pytest.raises(RevsetError):
+        ws.diff("@---", "@-|@--")  # `to` names two revisions
+    with pytest.raises(RevsetError):
+        ws.diff("@-|@--", "@-")  # `from_` names two revisions

@@ -81,19 +81,34 @@ class RepoView:
             Conflict.model_validate(row) for row in self._handle.conflicts(_revset_str(revset))
         ]
 
-    def diff_stat(self, revset: str | Revset) -> DiffStat:
-        """The diff stat of the single commit named by ``revset`` against its parent(s).
+    def diff_stat(self, revset: str | Revset, to: str | Revset | None = None) -> DiffStat:
+        """The diff stat (per-file + total line counts) of a commit or a range.
 
-        Accepts a revset string or a :class:`~pyjutsu.Revset` builder. Raises
-        :class:`~pyjutsu.errors.RevsetError` unless ``revset`` names exactly one revision.
+        With one argument, ``revset`` names a single commit and the stat is against its parent(s)
+        (``jj diff --stat -r <rev>``). With ``to`` also given, the stat is the tree-to-tree diff
+        **from** ``revset`` **to** ``to`` (``jj diff --stat --from <a> --to <b>``) — each side must
+        name exactly one revision. Accepts revset strings or :class:`~pyjutsu.Revset` builders.
+        Raises :class:`~pyjutsu.errors.RevsetError` unless each side names exactly one revision.
         """
-        return DiffStat.model_validate(self._handle.diff_stat(_revset_str(revset)))
+        if to is None:
+            return DiffStat.model_validate(self._handle.diff_stat(_revset_str(revset)))
+        return DiffStat.model_validate(
+            self._handle.diff_stat_between(_revset_str(revset), _revset_str(to))
+        )
 
-    def diff(self, revset: str | Revset) -> Diff:
-        """The name-status diff of the single commit named by ``revset`` against its parent(s).
+    def diff(self, revset: str | Revset, to: str | Revset | None = None) -> Diff:
+        """The name-status diff (changed paths + content hunks) of a commit or a range.
 
-        Accepts a revset string or a :class:`~pyjutsu.Revset` builder. Returns each changed path and
-        how it changed (added/modified/removed/type_changed). Raises
-        :class:`~pyjutsu.errors.RevsetError` unless ``revset`` names exactly one revision.
+        With one argument, ``revset`` names a single commit and the diff is against its parent(s)
+        (``jj diff -r <rev>``). With ``to`` also given, the diff is the tree-to-tree diff **from**
+        ``revset`` **to** ``to`` (``jj diff --from <a> --to <b>``) — each side must name exactly one
+        revision. Returns each changed path and how it changed
+        (added/modified/removed/type_changed/renamed/copied). Accepts revset strings or
+        :class:`~pyjutsu.Revset` builders. Raises :class:`~pyjutsu.errors.RevsetError` unless each
+        side names exactly one revision.
         """
-        return Diff.model_validate(self._handle.diff(_revset_str(revset)))
+        if to is None:
+            return Diff.model_validate(self._handle.diff(_revset_str(revset)))
+        return Diff.model_validate(
+            self._handle.diff_between(_revset_str(revset), _revset_str(to))
+        )

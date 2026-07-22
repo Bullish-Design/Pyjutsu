@@ -222,3 +222,7 @@ devenv.local.yaml
 
 # pre-commit
 .pre-commit-config.yaml
+
+# Nix build output
+/result
+/result-*

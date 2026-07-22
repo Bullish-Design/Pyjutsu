@@ -17,6 +17,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use jj_lib::backend::CommitId;
+use jj_lib::commit::Commit;
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_walk;
 use jj_lib::ref_name::WorkspaceNameBuf;
@@ -52,6 +53,26 @@ impl PyRepoView {
             workspace_root,
             user_email,
         }
+    }
+
+    /// Resolve `revset_str` to **exactly one** commit, or raise `RevsetError`. Shared by the
+    /// single-commit reads (`diff`/`diff_stat`, and the two ends of their `*_between` overloads).
+    /// Call inside `allow_threads` — it touches the backend.
+    fn resolve_single(&self, revset_str: &str) -> PyResult<Commit> {
+        let commits = revset::evaluate(
+            self.repo.as_ref(),
+            revset_str,
+            &self.workspace_name,
+            &self.workspace_root,
+            &self.user_email,
+        )?;
+        if commits.len() != 1 {
+            return Err(RevsetError::new_err(format!(
+                "revset '{revset_str}' resolved to {} revisions, expected exactly 1",
+                commits.len()
+            )));
+        }
+        Ok(commits.into_iter().next().expect("len checked == 1"))
     }
 
     /// Evaluate a revset and build a `CommitData` per match — all off the GIL. `limit` caps the
@@ -224,39 +245,26 @@ impl PyRepoView {
     /// against its parent(s). `RevsetError` if the revset isn't exactly one commit.
     fn diff_stat<'py>(&self, py: Python<'py>, revset_str: &str) -> PyResult<Bound<'py, PyDict>> {
         let data = py.allow_threads(|| -> PyResult<DiffStatData> {
-            let repo = self.repo.as_ref();
-            let commits = revset::evaluate(
-                repo,
-                revset_str,
-                &self.workspace_name,
-                &self.workspace_root,
-                &self.user_email,
-            )?;
-            if commits.len() != 1 {
-                return Err(RevsetError::new_err(format!(
-                    "revset '{revset_str}' resolved to {} revisions, expected exactly 1",
-                    commits.len()
-                )));
-            }
-            diff_stat::compute(repo, &commits[0])
+            let commit = self.resolve_single(revset_str)?;
+            diff_stat::compute(self.repo.as_ref(), &commit)
         })?;
+        diff_stat_to_dict(py, &data)
+    }
 
-        let dict = PyDict::new(py);
-        let files: Vec<Bound<'py, PyDict>> = data
-            .files
-            .iter()
-            .map(|f| {
-                let file = PyDict::new(py);
-                file.set_item("path", &f.path)?;
-                file.set_item("insertions", f.insertions)?;
-                file.set_item("deletions", f.deletions)?;
-                Ok(file)
-            })
-            .collect::<PyResult<_>>()?;
-        dict.set_item("files", files)?;
-        dict.set_item("total_insertions", data.total_insertions)?;
-        dict.set_item("total_deletions", data.total_deletions)?;
-        Ok(dict)
+    /// Diff stat **between two revisions** — `from_str`'s whole tree against `to_str`'s (concept
+    /// §12), not a commit vs its parents. `RevsetError` unless each side names exactly one commit.
+    fn diff_stat_between<'py>(
+        &self,
+        py: Python<'py>,
+        from_str: &str,
+        to_str: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let data = py.allow_threads(|| -> PyResult<DiffStatData> {
+            let from_ = self.resolve_single(from_str)?;
+            let to = self.resolve_single(to_str)?;
+            diff_stat::compute_between(self.repo.as_ref(), &from_, &to)
+        })?;
+        diff_stat_to_dict(py, &data)
     }
 
     /// A lazy iterator over a revset's commits: evaluate to ids eagerly (cheap, off the GIL),
@@ -293,63 +301,93 @@ impl PyRepoView {
     /// `revset_str` against its parent(s). `RevsetError` if the revset isn't exactly one commit.
     fn diff<'py>(&self, py: Python<'py>, revset_str: &str) -> PyResult<Bound<'py, PyDict>> {
         let data = py.allow_threads(|| -> PyResult<DiffData> {
-            let repo = self.repo.as_ref();
-            let commits = revset::evaluate(
-                repo,
-                revset_str,
-                &self.workspace_name,
-                &self.workspace_root,
-                &self.user_email,
-            )?;
-            if commits.len() != 1 {
-                return Err(RevsetError::new_err(format!(
-                    "revset '{revset_str}' resolved to {} revisions, expected exactly 1",
-                    commits.len()
-                )));
-            }
-            diff::compute(repo, &commits[0])
+            let commit = self.resolve_single(revset_str)?;
+            diff::compute(self.repo.as_ref(), &commit)
         })?;
-
-        let dict = PyDict::new(py);
-        let files: Vec<Bound<'py, PyDict>> = data
-            .files
-            .iter()
-            .map(|f| {
-                let file = PyDict::new(py);
-                file.set_item("path", &f.path)?;
-                file.set_item("kind", f.kind)?;
-                file.set_item("binary", f.binary)?;
-                file.set_item("source", f.source.as_deref())?;
-                let hunks: Vec<Bound<'py, PyDict>> = f
-                    .hunks
-                    .iter()
-                    .map(|h| {
-                        let hunk = PyDict::new(py);
-                        hunk.set_item("old_start", h.old_start)?;
-                        hunk.set_item("old_lines", h.old_lines)?;
-                        hunk.set_item("new_start", h.new_start)?;
-                        hunk.set_item("new_lines", h.new_lines)?;
-                        let lines: Vec<Bound<'py, PyDict>> = h
-                            .lines
-                            .iter()
-                            .map(|l| {
-                                let line = PyDict::new(py);
-                                line.set_item("kind", l.kind)?;
-                                line.set_item("content", &l.content)?;
-                                Ok(line)
-                            })
-                            .collect::<PyResult<_>>()?;
-                        hunk.set_item("lines", lines)?;
-                        Ok(hunk)
-                    })
-                    .collect::<PyResult<_>>()?;
-                file.set_item("hunks", hunks)?;
-                Ok(file)
-            })
-            .collect::<PyResult<_>>()?;
-        dict.set_item("files", files)?;
-        Ok(dict)
+        diff_to_dict(py, &data)
     }
+
+    /// Name-status diff **between two revisions** — `from_str`'s whole tree against `to_str`'s
+    /// (concept §12), not a commit vs its parents. `RevsetError` unless each side names exactly
+    /// one commit.
+    fn diff_between<'py>(
+        &self,
+        py: Python<'py>,
+        from_str: &str,
+        to_str: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let data = py.allow_threads(|| -> PyResult<DiffData> {
+            let from_ = self.resolve_single(from_str)?;
+            let to = self.resolve_single(to_str)?;
+            diff::compute_between(self.repo.as_ref(), &from_, &to)
+        })?;
+        diff_to_dict(py, &data)
+    }
+}
+
+/// Build the `diff_stat` result dict (`files: [{path, insertions, deletions}], total_*`) from
+/// computed data. Shared by `diff_stat` and `diff_stat_between`.
+fn diff_stat_to_dict<'py>(py: Python<'py>, data: &DiffStatData) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    let files: Vec<Bound<'py, PyDict>> = data
+        .files
+        .iter()
+        .map(|f| {
+            let file = PyDict::new(py);
+            file.set_item("path", &f.path)?;
+            file.set_item("insertions", f.insertions)?;
+            file.set_item("deletions", f.deletions)?;
+            Ok(file)
+        })
+        .collect::<PyResult<_>>()?;
+    dict.set_item("files", files)?;
+    dict.set_item("total_insertions", data.total_insertions)?;
+    dict.set_item("total_deletions", data.total_deletions)?;
+    Ok(dict)
+}
+
+/// Build the `diff` result dict (`files: [{path, kind, binary, source, hunks: [...]}]`) from
+/// computed data. Shared by `diff` and `diff_between`.
+fn diff_to_dict<'py>(py: Python<'py>, data: &DiffData) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    let files: Vec<Bound<'py, PyDict>> = data
+        .files
+        .iter()
+        .map(|f| {
+            let file = PyDict::new(py);
+            file.set_item("path", &f.path)?;
+            file.set_item("kind", f.kind)?;
+            file.set_item("binary", f.binary)?;
+            file.set_item("source", f.source.as_deref())?;
+            let hunks: Vec<Bound<'py, PyDict>> = f
+                .hunks
+                .iter()
+                .map(|h| {
+                    let hunk = PyDict::new(py);
+                    hunk.set_item("old_start", h.old_start)?;
+                    hunk.set_item("old_lines", h.old_lines)?;
+                    hunk.set_item("new_start", h.new_start)?;
+                    hunk.set_item("new_lines", h.new_lines)?;
+                    let lines: Vec<Bound<'py, PyDict>> = h
+                        .lines
+                        .iter()
+                        .map(|l| {
+                            let line = PyDict::new(py);
+                            line.set_item("kind", l.kind)?;
+                            line.set_item("content", &l.content)?;
+                            Ok(line)
+                        })
+                        .collect::<PyResult<_>>()?;
+                    hunk.set_item("lines", lines)?;
+                    Ok(hunk)
+                })
+                .collect::<PyResult<_>>()?;
+            file.set_item("hunks", hunks)?;
+            Ok(file)
+        })
+        .collect::<PyResult<_>>()?;
+    dict.set_item("files", files)?;
+    Ok(dict)
 }
 
 /// A one-shot iterator yielding a revset's commits as plain dicts, one per `__next__`. Holds the
