@@ -20,6 +20,9 @@ dependencies = [
 [dependency-groups]
 dev = [
   "pytest>=8.0",
+  # The suite is subprocess-bound (every test shells out to the real `jj`/`git` oracle), so it
+  # parallelizes almost linearly across cores — tests are isolated per `tmp_path`. `-n auto` below.
+  "pytest-xdist>=3.6",
   "ruff>=0.5.0",
 ]
 
@@ -37,7 +40,9 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# `-n auto` fans the subprocess-bound suite across all cores (xdist). Run one worker with
+# `-n0` for readable serial output when debugging a single test.
+addopts = "-q -n auto"
 
 [tool.ruff]
 target-version = "py313"

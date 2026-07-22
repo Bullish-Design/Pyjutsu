@@ -58,3 +58,43 @@ def test_binary_file_listed_with_zero_counts(tmp_path: Path, jj: JjCli) -> None:
 def test_diff_stat_requires_single_revision(diffstat_repo: Path) -> None:
     with pytest.raises(RevsetError):
         pyjutsu.Workspace.load(diffstat_repo).diff_stat("all()")
+
+
+# --- two-revset diff_stat (`diff_stat(from_, to)`, concept §12) ---------------------------------
+
+
+def test_two_revset_diff_stat_parent_to_child_equals_single(linear_repo: Path) -> None:
+    """`diff_stat(A, B)` must equal `diff_stat(B)` when B's only parent is A. In `linear_repo`,
+    `@--` is B and `@---` is A."""
+    ws = pyjutsu.Workspace.load(linear_repo)
+    single = ws.diff_stat("@--")  # B vs parent A
+    between = ws.diff_stat("@---", "@--")  # A -> B
+    assert isinstance(between, DiffStat)
+    assert (between.total_insertions, between.total_deletions) == (
+        single.total_insertions,
+        single.total_deletions,
+    )
+    assert {(f.path, f.insertions, f.deletions) for f in between.files} == {
+        (f.path, f.insertions, f.deletions) for f in single.files
+    }
+
+
+def test_two_revset_diff_stat_spans_commits_matches_cli(linear_repo: Path, jj: JjCli) -> None:
+    ws = pyjutsu.Workspace.load(linear_repo)
+    between = ws.diff_stat("@---", "@-")  # A -> C
+    assert (between.total_insertions, between.total_deletions) == jj.diff_stat_totals_between(
+        linear_repo, "@---", "@-"
+    )
+
+
+def test_two_revset_diff_stat_same_revision_is_empty(linear_repo: Path) -> None:
+    ws = pyjutsu.Workspace.load(linear_repo)
+    stat = ws.diff_stat("@-", "@-")
+    assert stat.files == []
+    assert (stat.total_insertions, stat.total_deletions) == (0, 0)
+
+
+def test_two_revset_diff_stat_rejects_multi_revision_endpoint(linear_repo: Path) -> None:
+    ws = pyjutsu.Workspace.load(linear_repo)
+    with pytest.raises(RevsetError):
+        ws.diff_stat("@---", "@-|@--")

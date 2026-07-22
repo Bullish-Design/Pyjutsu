@@ -11,7 +11,7 @@ use futures::StreamExt as _;
 use futures::TryStreamExt as _;
 use pyo3::PyErr;
 
-use jj_lib::backend::TreeValue;
+use jj_lib::backend::{CommitId, TreeValue};
 use jj_lib::commit::Commit;
 use jj_lib::copies::{CopyOperation, CopyRecords};
 use jj_lib::diff::{ContentDiff, DiffHunkKind};
@@ -72,38 +72,70 @@ pub(crate) fn compute(repo: &dyn Repo, commit: &Commit) -> Result<DiffData, PyEr
             .map_err(map_backend_err)?;
         let to_tree = commit.tree();
 
-        let mut files = Vec::new();
         // Copy/rename detection is only well-defined against a single parent. For root commits
         // (no parent) and merges (many parents), `get_copy_records`'s (root, head) pair is
         // ambiguous, so fall back to plain name-status there (matching jj's own behavior).
-        if parents.len() == 1 {
-            let mut copy_records = CopyRecords::default();
-            // `add_records` now takes resolved `CopyRecord`s (no longer `Result`s) and is
-            // infallible, so collect the stream into a `BackendResult<Vec<_>>` here.
-            let records: Vec<_> = store
-                .get_copy_records(None, parents[0].id(), commit.id())
-                .map_err(map_backend_err)?
-                .try_collect()
-                .await
-                .map_err(map_backend_err)?;
-            copy_records.add_records(records);
-
-            let mut stream =
-                from_tree.diff_stream_with_copies(&to_tree, &EverythingMatcher, &copy_records);
-            while let Some(entry) = stream.next().await {
-                let diff = entry.values.map_err(map_backend_err)?;
-                let source = entry.path.source.as_ref().map(|(p, op)| (p, *op));
-                files.push(build_file_change(store, entry.path.target(), source, &diff).await?);
-            }
-        } else {
-            let mut stream = from_tree.diff_stream(&to_tree, &EverythingMatcher);
-            while let Some(entry) = stream.next().await {
-                let diff = entry.values.map_err(map_backend_err)?;
-                files.push(build_file_change(store, &entry.path, None, &diff).await?);
-            }
-        }
+        let copy_ids = (parents.len() == 1).then(|| (parents[0].id(), commit.id()));
+        let files = diff_trees(store, &from_tree, &to_tree, copy_ids).await?;
         Ok(DiffData { files })
     })
+}
+
+/// Compute the name-status **between two arbitrary commits** — `from_`'s whole tree against `to`'s
+/// (concept §12 "two-revset diff"). Unlike [`compute`] (a commit vs its parents) this is a plain
+/// tree-to-tree diff of a single `from_ → to` pair, so copy/rename detection always applies.
+/// Synchronous wrapper over jj-lib's async tree diff; call off the GIL.
+pub(crate) fn compute_between(
+    repo: &dyn Repo,
+    from_: &Commit,
+    to: &Commit,
+) -> Result<DiffData, PyErr> {
+    pollster::block_on(async {
+        let store = repo.store();
+        let from_tree = from_.tree();
+        let to_tree = to.tree();
+        let files = diff_trees(store, &from_tree, &to_tree, Some((from_.id(), to.id()))).await?;
+        Ok(DiffData { files })
+    })
+}
+
+/// Shared tree-to-tree diff loop for [`compute`] and [`compute_between`]. When `copy_ids` is
+/// `Some((from_id, to_id))` the backend's copy records for that pair drive rename/copy detection;
+/// `None` (root/merge) yields a plain name-status stream.
+async fn diff_trees(
+    store: &Store,
+    from_tree: &jj_lib::merged_tree::MergedTree,
+    to_tree: &jj_lib::merged_tree::MergedTree,
+    copy_ids: Option<(&CommitId, &CommitId)>,
+) -> Result<Vec<FileChangeData>, PyErr> {
+    let mut files = Vec::new();
+    if let Some((from_id, to_id)) = copy_ids {
+        let mut copy_records = CopyRecords::default();
+        // `add_records` now takes resolved `CopyRecord`s (no longer `Result`s) and is
+        // infallible, so collect the stream into a `BackendResult<Vec<_>>` here.
+        let records: Vec<_> = store
+            .get_copy_records(None, from_id, to_id)
+            .map_err(map_backend_err)?
+            .try_collect()
+            .await
+            .map_err(map_backend_err)?;
+        copy_records.add_records(records);
+
+        let mut stream =
+            from_tree.diff_stream_with_copies(to_tree, &EverythingMatcher, &copy_records);
+        while let Some(entry) = stream.next().await {
+            let diff = entry.values.map_err(map_backend_err)?;
+            let source = entry.path.source.as_ref().map(|(p, op)| (p, *op));
+            files.push(build_file_change(store, entry.path.target(), source, &diff).await?);
+        }
+    } else {
+        let mut stream = from_tree.diff_stream(to_tree, &EverythingMatcher);
+        while let Some(entry) = stream.next().await {
+            let diff = entry.values.map_err(map_backend_err)?;
+            files.push(build_file_change(store, &entry.path, None, &diff).await?);
+        }
+    }
+    Ok(files)
 }
 
 /// Build one row from a diff entry: classify its kind, then (for resolved text files) read both

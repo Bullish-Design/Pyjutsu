@@ -48,33 +48,58 @@ pub(crate) fn compute(repo: &dyn Repo, commit: &Commit) -> Result<DiffStatData, 
             .await
             .map_err(map_backend_err)?;
         let to_tree = commit.tree();
+        stat_trees(store, &from_tree, &to_tree).await
+    })
+}
 
-        let mut stream = from_tree.diff_stream(&to_tree, &EverythingMatcher);
-        let mut files = Vec::new();
-        let mut total_insertions = 0;
-        let mut total_deletions = 0;
-        while let Some(entry) = stream.next().await {
-            let diff = entry.values.map_err(map_backend_err)?;
-            let before = read_text(store, &entry.path, &diff.before).await?;
-            let after = read_text(store, &entry.path, &diff.after).await?;
-            let (insertions, deletions) = match (before, after) {
-                (Some(b), Some(a)) => count_line_changes(&b, &a),
-                // Non-text change (symlink/submodule/conflict/binary): list it, count nothing.
-                _ => (0, 0),
-            };
-            total_insertions += insertions;
-            total_deletions += deletions;
-            files.push(FileStatData {
-                path: entry.path.as_internal_file_string().to_owned(),
-                insertions,
-                deletions,
-            });
-        }
-        Ok(DiffStatData {
-            files,
-            total_insertions,
-            total_deletions,
-        })
+/// Compute the diff stat **between two arbitrary commits** — `from_`'s whole tree against `to`'s
+/// (concept §12 "two-revset diff"), rather than a commit vs its parents. Synchronous wrapper over
+/// jj-lib's async tree diff; call off the GIL.
+pub(crate) fn compute_between(
+    repo: &dyn Repo,
+    from_: &Commit,
+    to: &Commit,
+) -> Result<DiffStatData, PyErr> {
+    pollster::block_on(async {
+        let store = repo.store();
+        let from_tree = from_.tree();
+        let to_tree = to.tree();
+        stat_trees(store, &from_tree, &to_tree).await
+    })
+}
+
+/// Shared per-file line-count loop over a `from_tree → to_tree` diff, for both [`compute`] and
+/// [`compute_between`].
+async fn stat_trees(
+    store: &Store,
+    from_tree: &jj_lib::merged_tree::MergedTree,
+    to_tree: &jj_lib::merged_tree::MergedTree,
+) -> Result<DiffStatData, PyErr> {
+    let mut stream = from_tree.diff_stream(to_tree, &EverythingMatcher);
+    let mut files = Vec::new();
+    let mut total_insertions = 0;
+    let mut total_deletions = 0;
+    while let Some(entry) = stream.next().await {
+        let diff = entry.values.map_err(map_backend_err)?;
+        let before = read_text(store, &entry.path, &diff.before).await?;
+        let after = read_text(store, &entry.path, &diff.after).await?;
+        let (insertions, deletions) = match (before, after) {
+            (Some(b), Some(a)) => count_line_changes(&b, &a),
+            // Non-text change (symlink/submodule/conflict/binary): list it, count nothing.
+            _ => (0, 0),
+        };
+        total_insertions += insertions;
+        total_deletions += deletions;
+        files.push(FileStatData {
+            path: entry.path.as_internal_file_string().to_owned(),
+            insertions,
+            deletions,
+        });
+    }
+    Ok(DiffStatData {
+        files,
+        total_insertions,
+        total_deletions,
     })
 }
 

@@ -19,6 +19,10 @@ in
     pkgs.uv
     pkgs.maturin
     jjPkgs.jujutsu
+    # Fast linker for the native extension. `_pyjutsu` is one crate statically linked against the
+    # whole of jj-lib, so every incremental rebuild re-links a large cdylib — `mold` cuts that link
+    # step from many seconds to ~1s. Wired up as the linker in `.cargo/config.toml`.
+    pkgs.mold
   ];
 
   # https://devenv.sh/languages/

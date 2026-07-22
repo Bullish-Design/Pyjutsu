@@ -27,7 +27,7 @@ from .models import (
     WorkspaceInfo,
 )
 from .repo_view import RepoView
-from .revset import Revset
+from .revset import Revset, _revset_str
 from .transaction import Transaction
 
 __all__ = ["Workspace"]
@@ -222,6 +222,42 @@ class Workspace:
         else:
             names = list(bookmark)
         row = self._handle.git_push(remote, names, allow_new, delete, all, tracked)
+        return Operation.model_validate(row) if row is not None else None
+
+    def create_tag(
+        self,
+        name: str,
+        target: str | Revset,
+        message: str,
+        *,
+        force: bool = False,
+    ) -> Operation | None:
+        """Create an **annotated** git tag ``name`` at the single commit named by ``target``,
+        carrying ``message`` → the published :class:`Operation` (or ``None`` if the tag already
+        pointed there).
+
+        jj-lib is read-only on tags, so pyjutsu writes the annotated tag *object* straight to the
+        colocated ``.git`` (tagger = this workspace's ``user.name``/``user.email`` at the current
+        time), creates ``refs/tags/<name>``, and imports it into the jj view so a later
+        :meth:`push_tag` copies the annotated object to a remote. ``force=False`` (the default)
+        refuses to overwrite an existing tag of the same name; ``force=True`` overwrites it.
+
+        Requires a colocated git backend. Raises :class:`~pyjutsu.errors.RevsetError` unless
+        ``target`` names exactly one revision, or :class:`~pyjutsu.errors.GitError` on a git-side
+        failure (including a name clash when ``force=False``).
+        """
+        row = self._handle.create_tag(name, _revset_str(target), message, force)
+        return Operation.model_validate(row) if row is not None else None
+
+    def push_tag(self, name: str, remote: str) -> Operation | None:
+        """Push the annotated tag ``name`` to git ``remote`` → the published :class:`Operation`, or
+        ``None`` if the remote already has the tag at that target.
+
+        Copies the annotated tag *object* written by :meth:`create_tag` (not just the pointed-at
+        commit). Raises :class:`~pyjutsu.errors.GitError` if there is no local tag ``name``, the
+        push is rejected, or the remote/tag is conflicted.
+        """
+        row = self._handle.push_tag(name, remote)
         return Operation.model_validate(row) if row is not None else None
 
     @classmethod
@@ -434,13 +470,21 @@ class Workspace:
         """The conflicts in the single commit named by ``revset`` (delegates to a head view)."""
         return self.head().conflicts(revset)
 
-    def diff_stat(self, revset: str | Revset) -> DiffStat:
-        """The diff stat of the single commit named by ``revset`` (delegates to a head view)."""
-        return self.head().diff_stat(revset)
+    def diff_stat(self, revset: str | Revset, to: str | Revset | None = None) -> DiffStat:
+        """The diff stat of a commit, or the range ``revset``→``to`` (delegates to a head view)."""
+        return self.head().diff_stat(revset, to)
 
-    def diff(self, revset: str | Revset) -> Diff:
-        """The name-status diff of the single commit named by ``revset`` (delegates to a head view)."""
-        return self.head().diff(revset)
+    def diff(self, revset: str | Revset, to: str | Revset | None = None) -> Diff:
+        """The name-status diff of a commit, or the range ``revset``→``to`` (delegates to a head view)."""
+        return self.head().diff(revset, to)
+
+    def is_ancestor(self, ancestor: str | Revset, descendant: str | Revset) -> bool:
+        """Whether ``ancestor`` is an ancestor of ``descendant`` (delegates to a head view)."""
+        return self.head().is_ancestor(ancestor, descendant)
+
+    def patch_id(self, revset: str | Revset) -> str:
+        """A stable content identity for the change ``revset`` introduces (delegates to a head view)."""
+        return self.head().patch_id(revset)
 
     def head_operation(self) -> str:
         """The id of the current head operation."""

@@ -1,0 +1,18 @@
+# Local build tuning for the `_pyjutsu` native extension. Dev-only: the release profile is
+# untouched, so CI/wheels build exactly as before.
+#
+# `_pyjutsu` is a single crate statically linked against the whole of jj-lib, so each incremental
+# rebuild recompiles one large crate and re-links a big cdylib. The two dominant costs are the link
+# step and full debug-info codegen — both addressed here.
+
+[target.x86_64-unknown-linux-gnu]
+# Use the `mold` linker (from devenv.nix) instead of GNU ld — the single biggest win for the
+# link-heavy incremental rebuilds this project does.
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[profile.dev]
+# Line-tables give usable backtraces (file:line) without the codegen/link cost of full `debug = 2`
+# DWARF — tests and dev iteration don't need variable-level debug info.
+debug = "line-tables-only"
+# Keep debug info in separate files rather than embedding it in the objects the linker must process.
+split-debuginfo = "unpacked"

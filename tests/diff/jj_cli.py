@@ -115,9 +115,9 @@ class JjCli:
         """The change id of ``revset`` as seen at operation ``op`` (`jj --at-op`)."""
         return self(repo, "--at-op", op, "log", "--no-graph", "-r", revset, "-T", "change_id").strip()
 
-    def diff_stat_totals(self, repo: Path, revset: str) -> tuple[int, int]:
-        """``(insertions, deletions)`` from the summary line of `jj diff -r <revset> --stat`."""
-        out = self(repo, "diff", "-r", revset, "--stat")
+    @staticmethod
+    def _stat_totals(out: str) -> tuple[int, int]:
+        """Parse ``(insertions, deletions)`` from a `jj diff --stat` summary line."""
         summary = out.splitlines()[-1] if out.strip() else ""
         insertions = deletions = 0
         for part in summary.split(","):
@@ -128,10 +128,30 @@ class JjCli:
                 deletions = int(part.split()[0])
         return insertions, deletions
 
+    def diff_stat_totals(self, repo: Path, revset: str) -> tuple[int, int]:
+        """``(insertions, deletions)`` from the summary line of `jj diff -r <revset> --stat`."""
+        return self._stat_totals(self(repo, "diff", "-r", revset, "--stat"))
+
+    def diff_stat_totals_between(self, repo: Path, from_: str, to: str) -> tuple[int, int]:
+        """``(insertions, deletions)`` from `jj diff --from <from_> --to <to> --stat`."""
+        return self._stat_totals(self(repo, "diff", "--from", from_, "--to", to, "--stat"))
+
     #: Maps the leading letter of a `jj diff --summary` line to a Pyjutsu name-status kind. jj
     #: renders a type change (file↔symlink) as a plain `M`, so the oracle flattens it to
     #: "modified"; tests that need the binding's finer `type_changed` assert it directly.
     _SUMMARY_KINDS = {"A": "added", "M": "modified", "D": "removed"}
+
+    def _summary_map(self, out: str) -> dict[str, str]:
+        """Parse a name-status ``{path: kind}`` map from `jj diff --summary` output."""
+        result: dict[str, str] = {}
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            letter, path = line.split(" ", 1)
+            kind = self._SUMMARY_KINDS.get(letter)
+            if kind is not None:
+                result[path] = kind
+        return result
 
     def diff_summary(self, repo: Path, revset: str) -> dict[str, str]:
         """Name-status map ``{path: kind}`` from `jj diff -r <revset> --summary`.
@@ -140,15 +160,11 @@ class JjCli:
         (``R``/``C``, rendered ``R {old => new}``) are skipped here — they are slice 3's concern;
         :meth:`rename_summary` parses those.
         """
-        result: dict[str, str] = {}
-        for line in self(repo, "diff", "-r", revset, "--summary").splitlines():
-            if not line.strip():
-                continue
-            letter, path = line.split(" ", 1)
-            kind = self._SUMMARY_KINDS.get(letter)
-            if kind is not None:
-                result[path] = kind
-        return result
+        return self._summary_map(self(repo, "diff", "-r", revset, "--summary"))
+
+    def diff_summary_between(self, repo: Path, from_: str, to: str) -> dict[str, str]:
+        """Name-status map ``{path: kind}`` from `jj diff --from <from_> --to <to> --summary`."""
+        return self._summary_map(self(repo, "diff", "--from", from_, "--to", to, "--summary"))
 
     @staticmethod
     def _parse_rename_token(token: str) -> tuple[str, str]:
