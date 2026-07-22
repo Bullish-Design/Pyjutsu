@@ -112,3 +112,25 @@ class RepoView:
         return Diff.model_validate(
             self._handle.diff_between(_revset_str(revset), _revset_str(to))
         )
+
+    def is_ancestor(self, ancestor: str | Revset, descendant: str | Revset) -> bool:
+        """Whether ``ancestor`` is an ancestor of ``descendant`` in the commit DAG.
+
+        A commit is its own ancestor (``is_ancestor(x, x)`` is ``True``), matching
+        ``git merge-base --is-ancestor``. Each side must name exactly one revision; accepts revset
+        strings or :class:`~pyjutsu.Revset` builders. Raises :class:`~pyjutsu.errors.RevsetError`
+        unless each side names exactly one revision.
+        """
+        return self._handle.is_ancestor(_revset_str(ancestor), _revset_str(descendant))
+
+    def patch_id(self, revset: str | Revset) -> str:
+        """A stable content identity for the change ``revset`` introduces against its parent(s).
+
+        Two commits that make the **same change** — e.g. before and after a rebase/squash that
+        re-hashes the commit id — share a ``patch_id`` even though their commit ids differ. It is a
+        hash of the diff's changed paths and added/removed line contents (line numbers excluded); it
+        is *not* byte-compatible with ``git patch-id``. Accepts a revset string or a
+        :class:`~pyjutsu.Revset` builder. Raises :class:`~pyjutsu.errors.RevsetError` unless
+        ``revset`` names exactly one revision.
+        """
+        return self._handle.patch_id(_revset_str(revset))

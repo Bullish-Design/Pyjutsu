@@ -24,7 +24,7 @@ use jj_lib::ref_name::WorkspaceNameBuf;
 use jj_lib::repo::{ReadonlyRepo, Repo};
 
 use crate::convert::{BookmarkData, CommitData, ConflictData, OperationData};
-use crate::diff::{self, DiffData};
+use crate::diff::{self, DiffData, FileChangeData};
 use crate::diff_stat::{self, DiffStatData};
 use crate::errors::{PyjutsuError, RevsetError, map_backend_err};
 use crate::revset;
@@ -323,6 +323,69 @@ impl PyRepoView {
         })?;
         diff_to_dict(py, &data)
     }
+
+    /// Whether `ancestor` is an ancestor of `descendant` in the commit DAG. A commit is its own
+    /// ancestor (so `is_ancestor(x, x)` is `True`), matching `git merge-base --is-ancestor`. Each
+    /// side must name exactly one commit, else `RevsetError` (project 13 §P4).
+    fn is_ancestor(&self, py: Python<'_>, ancestor: &str, descendant: &str) -> PyResult<bool> {
+        py.allow_threads(|| {
+            let a = self.resolve_single(ancestor)?;
+            let d = self.resolve_single(descendant)?;
+            self.repo
+                .index()
+                .is_ancestor(a.id(), d.id())
+                .map_err(|e| PyjutsuError::new_err(e.to_string()))
+        })
+    }
+
+    /// A content identity for the change the single commit named by `revset_str` introduces against
+    /// its parent(s): a stable hash of the *diff* (changed paths + added/removed line contents, with
+    /// line numbers excluded). Two commits that make the same change — e.g. before and after a
+    /// rebase/squash that re-hashes the commit id — share a `patch_id`, even though their commit ids
+    /// differ (project 13 §P4). Not byte-compatible with `git patch-id`; it is pyjutsu's own stable
+    /// diff digest. `RevsetError` unless `revset_str` names exactly one commit.
+    fn patch_id(&self, py: Python<'_>, revset_str: &str) -> PyResult<String> {
+        py.allow_threads(|| {
+            let commit = self.resolve_single(revset_str)?;
+            let data = diff::compute(self.repo.as_ref(), &commit)?;
+            Ok(patch_id_hex(&data))
+        })
+    }
+}
+
+/// Hash a name-status diff into a stable hex digest for `patch_id`. Files are sorted by path so the
+/// digest is order-independent; each contributes its path, kind, and rename/copy source, then — for
+/// text files — its added/removed line contents **without** line numbers, so the digest tracks
+/// *what* changed, not where (a rebase that only shifts line positions keeps the same id). Binary or
+/// typeless changes contribute path + kind only (their bytes aren't line-diffable).
+fn patch_id_hex(data: &DiffData) -> String {
+    let mut files: Vec<&FileChangeData> = data.files.iter().collect();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut hasher = gix::hash::hasher(gix::hash::Kind::Sha1);
+    for f in files {
+        hasher.update(f.path.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(f.kind.as_bytes());
+        hasher.update(b"\0");
+        if let Some(source) = &f.source {
+            hasher.update(source.as_bytes());
+        }
+        hasher.update(b"\0");
+        for hunk in &f.hunks {
+            for line in &hunk.lines {
+                hasher.update(line.kind.as_bytes());
+                hasher.update(b" ");
+                hasher.update(line.content.as_bytes());
+                hasher.update(b"\n");
+            }
+        }
+        hasher.update(b"\0\0");
+    }
+    hasher
+        .try_finalize()
+        .expect("sha1 finalization is infallible for fully-provided input")
+        .to_hex()
+        .to_string()
 }
 
 /// Build the `diff_stat` result dict (`files: [{path, insertions, deletions}], total_*`) from

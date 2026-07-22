@@ -478,6 +478,14 @@ class Workspace:
         """The name-status diff of a commit, or the range ``revset``→``to`` (delegates to a head view)."""
         return self.head().diff(revset, to)
 
+    def is_ancestor(self, ancestor: str | Revset, descendant: str | Revset) -> bool:
+        """Whether ``ancestor`` is an ancestor of ``descendant`` (delegates to a head view)."""
+        return self.head().is_ancestor(ancestor, descendant)
+
+    def patch_id(self, revset: str | Revset) -> str:
+        """A stable content identity for the change ``revset`` introduces (delegates to a head view)."""
+        return self.head().patch_id(revset)
+
     def head_operation(self) -> str:
         """The id of the current head operation."""
         return self._handle.head_operation()
