@@ -30,15 +30,17 @@ Project 13's promotion triggers fired: **P4** (`is_ancestor` / `patch_id`) and *
 That retirement is **gitman-side** and needs nothing here — it is tracked as the first consumer task,
 not a pyjutsu item.
 
-## What remains — four bindings
+## What remains — five items
 
 `is_ancestor` + `patch_id` deliver *ancestry* and *single-commit content identity* but deliberately
 stopped short of a **3-way merge / merge-tree** primitive. Together with three small colocated-git
-interop reads/writes, that is the whole remaining raw-`git` surface in gitman. Closing all four drives
-gitman's git-subprocess count to **zero**.
+interop reads/writes (P2–P4) and a colocate-time exclude fix (P5), that is the whole remaining
+raw-`git` surface in gitman plus the one colocation rough edge. Closing P1–P4 drives gitman's
+git-subprocess count to **zero**.
 
 Priority: **P1 is the must-have** (retires two call sites + the tree rev-parse; no clean gitman
-workaround). **P2–P4 are small interop reads/writes** — low effort, each retires one call site.
+workaround). **P2–P4 are small interop reads/writes** — low effort, each retires one call site. **P5 is
+a one-line-of-behavior colocation fix** — trivial, and it removes a manual step every consumer hits.
 
 | # | Binding | Retires (gitman) | jj-lib / gix mechanism | Size |
 |---|---------|------------------|------------------------|------|
@@ -46,6 +48,7 @@ workaround). **P2–P4 are small interop reads/writes** — low effort, each ret
 | P2 | `Workspace.git_refs(prefix="refs/heads/") -> dict[str,str]` | `state.py:266` `for-each-ref` | linked gix `Repository` ref read | S |
 | P3 | `Workspace.tracked_ignored_paths() -> list[str]` | `state.py:290` `ls-files --cached --ignored` | `GitIgnoreFile` + `@`-tree walk | S |
 | P4 | `Workspace.write_git_ref(name, target)` / `delete_git_ref(name)` | `reconcile.py:40,43` `update-ref [-d]` | gix direct ref write (as `create_tag`) | S |
+| P5 | colocate writes `/.jj/` to `.git/info/exclude` | manual `.git/info/exclude` edit after every colocate | gix/std file write in `adopt_existing_git` | XS |
 
 ---
 
@@ -147,13 +150,48 @@ it as a reconcile-only escape hatch, never a normal-path writer. **Consumer:** `
 
 ---
 
+## P5 — colocate writes `/.jj/` to `.git/info/exclude`  *(colocation rough edge)*
+
+**Motivation.** `Workspace.init(path, colocate=True)` adopts an existing `.git` but does **not** add
+`/.jj/` to `.git/info/exclude`, so immediately after colocation `git status` shows `.jj/` as an
+untracked directory. The reference CLI (`jj git init --colocate`) writes this exclude as part of
+colocation, precisely so the jj metadata dir stays invisible to git. **Found in the field** (2026-07-22)
+re-colocating the gitman repo: the colocate succeeded and everything else was in sync, but `git status`
+reported `?? .jj/` until `/.jj/` was hand-added to `.git/info/exclude`. Every consumer that colocates
+hits this and must fix it manually.
+
+**Why `.git/info/exclude`, not `.gitignore`.** The exclude is **local and uncommitted** — the correct
+home for machine-local, per-clone ignores. `.jj/` must never be committed to `.gitignore` (it's not
+shared project state; a non-colocated clone has no `.jj/`), which is exactly why jj uses `info/exclude`.
+
+**Proposed behavior.** In the colocate path (`adopt_existing_git`, and the fresh-`.git` init path too),
+after linking git, ensure `.git/info/exclude` contains a `/.jj/` line — append it if absent, idempotent
+(never duplicate on re-colocate). Mirror `jj`'s own text if practical. No Python API surface change; it's
+a side effect of `Workspace.init(colocate=True)`.
+
+**Mechanism.** Read/append `.git/info/exclude` (plain std file I/O against the resolved git dir; gix can
+give the git-dir path). Guard on the line already being present so re-adopting a colocated repo is a
+no-op. Do it for both the adopt-existing and create-new `.git` colocate branches.
+
+**Test.** Colocate a fresh work repo, then assert `.git/info/exclude` contains `/.jj/` and that
+`git status --porcelain` does **not** list `.jj/`. Re-run colocate; assert the line isn't duplicated.
+
+**Consumer.** Every colocation — gitman `ensure_colocated` / `init --colocate`, and the re-colocate
+runbook (gitman project 27). Removes a manual post-colocation step.
+
+**Rough size:** XS (a few lines in the Rust colocate path + one probe).
+
+---
+
 ## Sequencing
 
-1. **gitman-side, now (no pyjutsu work):** delete `tags.py`, route `release`/tag flow through
-   `create_tag`/`push_tag`/`git_default_branch`. Validates the 0.11.0 surface end-to-end and removes
-   the largest single subprocess module.
+1. **gitman-side, now (no pyjutsu work):** ~~delete `tags.py`~~ ✅ **done** (gitman `main`, commit
+   `c4505d0` — `release`/tag flow routes through `create_tag`/`push_tag`/`git_default_branch`;
+   validated the 0.11.0 surface end-to-end and removed the largest single subprocess module).
 2. **pyjutsu 0.12.0:** P1 (`try_merge` + `Commit.tree_id`) first — highest leverage. Then P2/P3/P4 as
-   one small interop batch (all gix-side reads/writes; ~a day together).
+   one small interop batch (all gix-side reads/writes; ~a day together), and **P5** (the colocate
+   exclude) folded in with them (XS). P5 has no API surface, so it can ship independently/first if
+   convenient — it just makes every colocate clean.
 3. **gitman-side follow:** retire the four remaining call sites; gitman's raw-`git` subprocess count
    reaches **zero** (`doctor`'s "git on PATH" check can then be relaxed to optional).
 
