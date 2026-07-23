@@ -16,7 +16,6 @@ from pyjutsu import RevsetError
 
 from tests.diff.jj_cli import JjCli
 
-
 # --- is_ancestor -------------------------------------------------------------------------------
 
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from ._pyjutsu import PyRepoView
-from .models import Bookmark, Commit, Conflict, Diff, DiffStat, Operation
+from .models import Bookmark, Commit, Conflict, Diff, DiffStat, MergeResult, Operation
 from .revset import Revset, _revset_str
 
 __all__ = ["RepoView"]
@@ -134,3 +134,21 @@ class RepoView:
         ``revset`` names exactly one revision.
         """
         return self._handle.patch_id(_revset_str(revset))
+
+    def try_merge(
+        self, a: str | Revset, b: str | Revset, base: str | Revset | None = None
+    ) -> MergeResult:
+        """A 3-way merge of the trees at ``a`` and ``b`` → the merged tree id + whether it conflicts.
+
+        With ``base=None`` the merge base is auto-computed (jj's ``merge_commit_trees`` behaviour);
+        pass ``base`` for a fixed 3-way merge against that revision's tree. Each argument must name
+        exactly one revision. No operation is published (a pure read). Compare the returned
+        ``tree_id`` against each tip's :attr:`Commit.tree_id` to answer content-relation questions;
+        read ``has_conflict`` to predict a merge/rebase conflict before performing it. Accepts revset
+        strings or :class:`~pyjutsu.Revset` builders. Raises :class:`~pyjutsu.errors.RevsetError`
+        unless each side names exactly one revision.
+        """
+        base_str = None if base is None else _revset_str(base)
+        return MergeResult.model_validate(
+            self._handle.try_merge(_revset_str(a), _revset_str(b), base_str)
+        )

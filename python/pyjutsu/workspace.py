@@ -260,6 +260,41 @@ class Workspace:
         row = self._handle.push_tag(name, remote)
         return Operation.model_validate(row) if row is not None else None
 
+    def git_refs(self, prefix: str = "refs/heads/") -> dict[str, str]:
+        """Read the colocated git refs under ``prefix`` → ``{short_name: hex_oid}`` (prefix stripped).
+
+        Reads the on-disk git refs directly — these can differ from jj's last-imported ``@git`` view,
+        and *seeing that drift* is the point (so :meth:`RepoView.bookmarks` is not a substitute).
+        Requires a colocated git backend. Values are commit oids (jj commit ids ARE the git oids in a
+        colocated repo, so they compare directly to :attr:`Commit.commit_id`).
+        """
+        return self._handle.git_refs(prefix)
+
+    def tracked_ignored_paths(self) -> list[str]:
+        """Paths tracked in ``@`` that the working-copy ``.gitignore`` would also ignore.
+
+        Detects the tracked-but-ignored churn source (e.g. a committed ``.claude/settings.local.json``)
+        that :meth:`untrack_paths` fixes. Intersects ``@``'s tracked tree with the working-copy ignore
+        matcher (``.git/info/exclude`` + the repo-root ``.gitignore``) — no git subprocess. Returns
+        repo-relative paths, sorted.
+        """
+        return list(self._handle.tracked_ignored_paths())
+
+    def write_git_ref(self, name: str, target: str) -> None:
+        """Force ``refs/heads/<name>`` to ``target`` (a commit oid) directly in the colocated ``.git``.
+
+        A **reconcile-only escape hatch**: bypasses the jj view to repair colocated-ref drift when
+        ``git_export`` is itself broken by a bad/leftover ref. Not a normal-path writer — for ordinary
+        bookmark moves use a transaction + ``git_export``. The caller must re-import/``sync_colocated``
+        afterward to bring the write into jj's view. Requires a colocated git backend.
+        """
+        self._handle.write_git_ref(name, target)
+
+    def delete_git_ref(self, name: str) -> None:
+        """Delete ``refs/heads/<name>`` directly in the colocated ``.git`` (reconcile-only escape
+        hatch; see :meth:`write_git_ref`). No-op-safe if the ref is already absent."""
+        self._handle.delete_git_ref(name)
+
     @classmethod
     def git_clone(
         cls,

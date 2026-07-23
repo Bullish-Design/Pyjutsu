@@ -18,12 +18,15 @@ use pyo3::types::{PyDict, PyList};
 
 use jj_lib::backend::CommitId;
 use jj_lib::commit::Commit;
+use jj_lib::merge::Merge;
+use jj_lib::merged_tree::MergedTree;
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_walk;
 use jj_lib::ref_name::WorkspaceNameBuf;
 use jj_lib::repo::{ReadonlyRepo, Repo};
+use jj_lib::rewrite::merge_commit_trees;
 
-use crate::convert::{BookmarkData, CommitData, ConflictData, OperationData};
+use crate::convert::{BookmarkData, CommitData, ConflictData, OperationData, merge_tree_id_hex};
 use crate::diff::{self, DiffData, FileChangeData};
 use crate::diff_stat::{self, DiffStatData};
 use crate::errors::{PyjutsuError, RevsetError, map_backend_err};
@@ -350,6 +353,49 @@ impl PyRepoView {
             let data = diff::compute(self.repo.as_ref(), &commit)?;
             Ok(patch_id_hex(&data))
         })
+    }
+
+    /// 3-way merge the trees at `a` and `b` → `{tree_id, has_conflict}`. A pure read (no operation
+    /// published). With `base=None` the merge base is auto-computed (jj's `merge_commit_trees`); with
+    /// an explicit `base` a fixed 3-way merge is done at the tree layer. Each argument must name
+    /// exactly one revision, else `RevsetError`. Mirrors `merge_commit_trees` in `diff`/`new`.
+    #[pyo3(signature = (a, b, base=None))]
+    fn try_merge<'py>(
+        &self,
+        py: Python<'py>,
+        a: &str,
+        b: &str,
+        base: Option<&str>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let (tree_id, has_conflict) = py.allow_threads(|| -> PyResult<(String, bool)> {
+            let repo = self.repo.as_ref();
+            let a_commit = self.resolve_single(a)?;
+            let b_commit = self.resolve_single(b)?;
+            let merged: MergedTree = pollster::block_on(async {
+                match base {
+                    // Auto merge-base: `merge_commit_trees` computes the base internally (jj's own
+                    // 3-way, matching `git merge-tree --write-tree`).
+                    None => merge_commit_trees(repo, &[a_commit.clone(), b_commit.clone()])
+                        .await
+                        .map_err(map_backend_err),
+                    // Fixed base: a tree-layer merge `[a, -base, b]` (adds a & b, removes base).
+                    Some(base_str) => {
+                        let base_commit = self.resolve_single(base_str)?;
+                        let terms = Merge::from_vec(vec![
+                            (a_commit.tree(), String::new()),
+                            (base_commit.tree(), String::new()),
+                            (b_commit.tree(), String::new()),
+                        ]);
+                        MergedTree::merge(terms).await.map_err(map_backend_err)
+                    }
+                }
+            })?;
+            Ok((merge_tree_id_hex(merged.tree_ids()), merged.has_conflict()))
+        })?;
+        let dict = PyDict::new(py);
+        dict.set_item("tree_id", tree_id)?;
+        dict.set_item("has_conflict", has_conflict)?;
+        Ok(dict)
     }
 }
 

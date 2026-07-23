@@ -33,6 +33,7 @@ from .models import (
     Hunk,
     HunkLine,
     JjResult,
+    MergeResult,
     Operation,
     Remote,
     Signature,
@@ -48,7 +49,7 @@ from .workspace import Workspace
 #: ``devenv.nix`` (exposed at runtime as :data:`JJ_VERSION`). This is the one hand-maintained
 #: version string; the guard below checks it against the compiled extension so a bump here without
 #: a rebuild fails loudly instead of silently mismatching.
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 #: The jj / jj-lib version the compiled extension is actually linked against. **Build-derived**
 #: (``build.rs`` reads the resolved ``Cargo.lock``), so it cannot drift from the linked dependency.
@@ -83,6 +84,7 @@ __all__ = [
     "WorkspaceInfo",
     "Remote",
     "Conflict",
+    "MergeResult",
     "Diff",
     "DiffStat",
     "FileChange",

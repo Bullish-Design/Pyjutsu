@@ -11,14 +11,26 @@ use pyo3::PyErr;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use jj_lib::backend::{Signature, Timestamp};
+use jj_lib::backend::{Signature, Timestamp, TreeId};
 use jj_lib::commit::Commit;
+use jj_lib::merge::Merge;
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_store::{RefTarget, RemoteRef};
 use jj_lib::operation::Operation;
 use jj_lib::repo::Repo;
 
 use crate::errors::map_backend_err;
+
+/// A stable hex key for a (possibly-conflicted) tree. A resolved tree yields its single git-style
+/// tree oid; a conflicted tree yields the concatenation of its term tree ids — still all-hex and
+/// deterministic, so `Commit.tree_id` and `RepoView.try_merge().tree_id`, computed the same way,
+/// compare directly. Shared by `CommitData::build` and `PyRepoView::try_merge`.
+pub(crate) fn merge_tree_id_hex(tree_ids: &Merge<TreeId>) -> String {
+    match tree_ids.as_resolved() {
+        Some(id) => id.hex(),
+        None => tree_ids.iter().map(ObjectId::hex).collect::<Vec<_>>().join(""),
+    }
+}
 
 /// Plain author/committer signature. Timestamps are carried as raw ms + minutes so the Python
 /// layer builds the tz-aware `datetime` (keeping policy out of Rust).
@@ -67,6 +79,7 @@ pub(crate) struct CommitData {
     parent_ids: Vec<String>,
     is_empty: bool,
     has_conflict: bool,
+    tree_id: String,
     bookmarks: Vec<String>,
 }
 
@@ -93,6 +106,7 @@ impl CommitData {
             parent_ids: commit.parent_ids().iter().map(ObjectId::hex).collect(),
             is_empty: pollster::block_on(commit.is_empty(repo)).map_err(map_backend_err)?,
             has_conflict: commit.has_conflict(),
+            tree_id: merge_tree_id_hex(commit.tree_ids()),
             bookmarks,
         })
     }
@@ -107,6 +121,7 @@ impl CommitData {
         dict.set_item("parent_ids", self.parent_ids.clone())?;
         dict.set_item("is_empty", self.is_empty)?;
         dict.set_item("has_conflict", self.has_conflict)?;
+        dict.set_item("tree_id", &self.tree_id)?;
         dict.set_item("bookmarks", self.bookmarks.clone())?;
         Ok(dict)
     }

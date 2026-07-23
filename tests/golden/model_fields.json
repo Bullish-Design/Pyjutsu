@@ -13,7 +13,12 @@
     "description",
     "has_conflict",
     "is_empty",
-    "parent_ids"
+    "parent_ids",
+    "tree_id"
+  ],
+  "MergeResult": [
+    "has_conflict",
+    "tree_id"
   ],
   "Bookmark": [
     "name",

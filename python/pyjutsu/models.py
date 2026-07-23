@@ -60,6 +60,11 @@ class Commit(BaseModel):
     is_empty: bool
     #: True if the commit's tree contains a conflict (jj's first-class conflicts).
     has_conflict: bool
+    #: The commit's tree id (git-style hex). Compare against :attr:`MergeResult.tree_id` from
+    #: :meth:`pyjutsu.RepoView.try_merge` for a content-equality check without a
+    #: ``rev-parse ^{tree}`` shell-out. For a conflicted tree this is the concatenation of the
+    #: conflict's term tree ids (still a stable comparison key computed the same way on both sides).
+    tree_id: CommitId
     #: Names of local bookmarks pointing at this commit (sorted).
     bookmarks: list[str]
 
@@ -166,6 +171,18 @@ class Conflict(BaseModel):
     num_sides: int
     #: Number of negative (base/remove) terms. A regular 3-way conflict is 2 sides / 1 base.
     num_bases: int
+
+
+class MergeResult(BaseModel):
+    """The result of :meth:`pyjutsu.RepoView.try_merge`: a 3-way merged tree and its conflict flag."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The merged tree's id (git-style hex). Equal to a tip's :attr:`Commit.tree_id` ⇒ that tip
+    #: holds no content the merge lacks.
+    tree_id: CommitId
+    #: True if the 3-way merge textually conflicts (both sides changed the same content).
+    has_conflict: bool
 
 
 class Bookmark(BaseModel):

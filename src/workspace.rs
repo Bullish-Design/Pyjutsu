@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use gix::remote::{Direction, fetch::Tags};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 use jj_lib::commit::Commit;
 use jj_lib::config::{ConfigSource, StackedConfig};
@@ -244,6 +244,45 @@ fn adopt_existing_git(workspace: &mut Workspace, repo: Arc<ReadonlyRepo>) -> PyR
 /// not itself resurrect a commit *as a visible head*. The visible off-main commit in that incident
 /// was anchored by a **tag** (project 10 §P2, fixed consumer-side in gitman). What this prune fixes
 /// is the orphaned-ref accumulation that forced the hand-purge (`git update-ref -d`) during recovery.
+/// Ensure the colocated `.git/info/exclude` contains a `/.jj/` line so git ignores jj's metadata
+/// directory (matching `jj git init --colocate`, which writes this exclude as part of colocation).
+/// Idempotent: a no-op if the line is already present, so re-colocating never duplicates it. `git_dir`
+/// is the resolved git directory (`.git` for a colocated repo). Best-effort std file I/O.
+fn ensure_jj_git_excluded(git_dir: &Path) -> PyResult<()> {
+    const JJ_EXCLUDE_LINE: &str = "/.jj/";
+    let info_dir = git_dir.join("info");
+    let exclude_path = info_dir.join("exclude");
+    let existing = match std::fs::read_to_string(&exclude_path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(map_workspace_err(format!(
+                "failed to read {}: {e}",
+                exclude_path.display()
+            )));
+        }
+    };
+    if existing.lines().any(|line| line.trim() == JJ_EXCLUDE_LINE) {
+        return Ok(()); // already excluded — don't duplicate on re-colocate
+    }
+    std::fs::create_dir_all(&info_dir).map_err(|e| {
+        map_workspace_err(format!("failed to create {}: {e}", info_dir.display()))
+    })?;
+    // Append the line, ensuring a preceding newline if the file didn't end with one.
+    let mut to_write = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        to_write.push('\n');
+    }
+    to_write.push_str(JJ_EXCLUDE_LINE);
+    to_write.push('\n');
+    let mut merged = existing;
+    merged.push_str(&to_write);
+    std::fs::write(&exclude_path, merged).map_err(|e| {
+        map_workspace_err(format!("failed to write {}: {e}", exclude_path.display()))
+    })?;
+    Ok(())
+}
+
 fn prune_orphaned_keep_refs(repo: &ReadonlyRepo) -> PyResult<()> {
     const NO_GC_REF_NAMESPACE: &str = "refs/jj/keep/";
     let git_repo = git::get_git_repo(repo.store()).map_err(map_git_err)?;
@@ -985,11 +1024,14 @@ impl PyWorkspace {
                 ))
                 .map_err(map_workspace_err)?;
                 adopt_existing_git(&mut workspace, repo)?;
+                // Keep jj's metadata dir invisible to git (matches `jj git init --colocate`).
+                ensure_jj_git_excluded(&path.join(".git"))?;
                 Ok(workspace)
             } else if colocate {
                 let (workspace, _repo) =
                     pollster::block_on(Workspace::init_colocated_git(&settings, &path))
                         .map_err(map_workspace_err)?;
+                ensure_jj_git_excluded(&path.join(".git"))?;
                 Ok(workspace)
             } else {
                 let (workspace, _repo) =
@@ -1806,6 +1848,151 @@ impl PyWorkspace {
                 GitFetch::new(tx.repo_mut(), subprocess, &options).map_err(map_git_err)?;
             let default = fetcher.get_default_branch(remote_name).map_err(map_git_err)?;
             Ok(default.map(|n| n.as_str().to_owned()))
+        })
+    }
+
+    /// Read the colocated git refs under `prefix` → `{short_name: hex_oid}` (prefix stripped). Reads
+    /// the on-disk git refs directly (which may differ from jj's last-imported `@git` — seeing that
+    /// drift is the point). Reuses `prune_orphaned_keep_refs`' ref-iteration machinery. Requires a
+    /// colocated git backend.
+    #[pyo3(signature = (prefix="refs/heads/".to_owned()))]
+    fn git_refs<'py>(&self, py: Python<'py>, prefix: String) -> PyResult<Bound<'py, PyDict>> {
+        let guard = self.locked()?;
+        let loader = Self::fresh_loader(&guard)?;
+        let pairs = py.allow_threads(|| -> PyResult<Vec<(String, String)>> {
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
+            let git_repo = git::get_git_repo(repo.store()).map_err(map_git_err)?;
+            let refs = git_repo.references().map_err(map_git_err)?;
+            let mut out = Vec::new();
+            for git_ref in refs.prefixed(prefix.as_str()).map_err(map_git_err)? {
+                let mut git_ref = git_ref.map_err(map_git_err)?;
+                // A heads ref points straight at a commit; peel to its object id.
+                let oid = git_ref.peel_to_id().map_err(map_git_err)?;
+                let full = git_ref.name().as_bstr().to_string(); // e.g. "refs/heads/foo"
+                let short = full.strip_prefix(prefix.as_str()).unwrap_or(&full).to_owned();
+                out.push((short, oid.detach().to_hex().to_string()));
+            }
+            Ok(out)
+        })?;
+        let dict = PyDict::new(py);
+        for (k, v) in pairs {
+            dict.set_item(k, v)?;
+        }
+        Ok(dict)
+    }
+
+    /// Paths tracked in `@` that the working-copy gitignore would also ignore (repo-relative, sorted).
+    /// Composes the same ignore layers `snapshot` uses (`.git/info/exclude` + the repo-root
+    /// `.gitignore`), then keeps the tracked-tree entries the matcher would exclude. No git subprocess.
+    fn tracked_ignored_paths<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let guard = self.locked()?;
+        let ws_name = guard.workspace_name().to_owned();
+        let ws_root = guard.workspace_root().to_owned();
+        let loader = Self::fresh_loader(&guard)?;
+        let paths = py.allow_threads(|| -> PyResult<Vec<String>> {
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
+            // Compose the same ignore layers snapshot uses: .git/info/exclude + repo-root .gitignore.
+            let mut ignores = GitIgnoreFile::empty();
+            if let Some(git_backend) = repo.store().backend_impl::<GitBackend>() {
+                let info_exclude = git_backend.git_repo_path().join("info").join("exclude");
+                ignores = ignores
+                    .chain_with_file(RepoPath::root(), info_exclude)
+                    .map_err(map_workingcopy_err)?;
+            }
+            ignores = ignores
+                .chain_with_file(RepoPath::root(), ws_root.join(".gitignore"))
+                .map_err(map_workingcopy_err)?;
+            // Walk @'s tracked tree; keep the file paths the ignore matcher would exclude.
+            let wc_id = repo
+                .view()
+                .get_wc_commit_id(&ws_name)
+                .cloned()
+                .ok_or_else(|| PyjutsuError::new_err("workspace has no working-copy commit"))?;
+            let commit = repo.store().get_commit(&wc_id).map_err(map_backend_err)?;
+            let tree = commit.tree();
+            let mut out = Vec::new();
+            for (path, value) in tree.entries() {
+                value.map_err(map_backend_err)?;
+                if ignores.matches_file(&path) {
+                    out.push(path.as_internal_file_string().to_owned());
+                }
+            }
+            out.sort();
+            Ok(out)
+        })?;
+        PyList::new(py, paths)
+    }
+
+    /// Force `refs/heads/<name>` to `target` (a commit oid) directly in the colocated `.git`, bypassing
+    /// jj's view. A reconcile-only escape hatch (heal colocated-ref drift when `git_export` is itself
+    /// broken); the caller re-imports afterward. Force-write (no fast-forward check). Requires a
+    /// colocated git backend.
+    fn write_git_ref(&self, py: Python<'_>, name: &str, target: &str) -> PyResult<()> {
+        let guard = self.locked()?;
+        let loader = Self::fresh_loader(&guard)?;
+        let (name, target) = (name.to_owned(), target.to_owned());
+        py.allow_threads(|| -> PyResult<()> {
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
+            let git_repo = git::get_git_repo(repo.store()).map_err(map_git_err)?;
+            let oid = gix::ObjectId::from_hex(target.as_bytes())
+                .map_err(|e| map_git_err(format!("invalid target oid '{target}': {e}")))?;
+            let full: gix::refs::FullName = format!("refs/heads/{name}")
+                .try_into()
+                .map_err(|e| map_git_err(format!("bad ref name '{name}': {e}")))?;
+            let edit = gix::refs::transaction::RefEdit {
+                change: gix::refs::transaction::Change::Update {
+                    log: gix::refs::transaction::LogChange {
+                        message: "gitman reconcile: heal colocated ref".into(),
+                        ..Default::default()
+                    },
+                    // Force-set (a repair, not a fast-forward check).
+                    expected: gix::refs::transaction::PreviousValue::Any,
+                    new: gix::refs::Target::Object(oid),
+                },
+                name: full,
+                deref: false,
+            };
+            git_repo
+                .edit_reference(edit)
+                .map_err(|e| map_git_err(format!("failed to write ref '{name}': {e}")))?;
+            Ok(())
+        })
+    }
+
+    /// Delete `refs/heads/<name>` directly in the colocated `.git` (reconcile-only escape hatch; see
+    /// `write_git_ref`). Idempotent: deleting an already-absent ref is a no-op, like `git update-ref
+    /// -d` on a missing ref. Requires a colocated git backend.
+    fn delete_git_ref(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        let guard = self.locked()?;
+        let loader = Self::fresh_loader(&guard)?;
+        let name = name.to_owned();
+        py.allow_threads(|| -> PyResult<()> {
+            let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
+            let git_repo = git::get_git_repo(repo.store()).map_err(map_git_err)?;
+            let full = format!("refs/heads/{name}");
+            // Idempotent: only delete if present (absent ref ⇒ no-op, not an error).
+            if git_repo
+                .try_find_reference(full.as_str())
+                .map_err(|e| map_git_err(format!("failed to look up ref '{name}': {e}")))?
+                .is_none()
+            {
+                return Ok(());
+            }
+            let full_name: gix::refs::FullName = full
+                .try_into()
+                .map_err(|e| map_git_err(format!("bad ref name '{name}': {e}")))?;
+            let edit = gix::refs::transaction::RefEdit {
+                change: gix::refs::transaction::Change::Delete {
+                    expected: gix::refs::transaction::PreviousValue::Any,
+                    log: gix::refs::transaction::RefLog::AndReference,
+                },
+                name: full_name,
+                deref: false,
+            };
+            git_repo
+                .edit_reference(edit)
+                .map_err(|e| map_git_err(format!("failed to delete ref '{name}': {e}")))?;
+            Ok(())
         })
     }
 
