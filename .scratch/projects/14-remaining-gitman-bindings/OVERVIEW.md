@@ -148,17 +148,24 @@ already exists internally — expose it). Scoped to `refs/heads/*`; does **not**
 caller re-imports/`sync_colocated` afterward as today). **Risk:** it deliberately bypasses jj — document
 it as a reconcile-only escape hatch, never a normal-path writer. **Consumer:** `reconcile` drift heal.
 
-**⚠️ Shipped in 0.12.0 but NOT yet adopted by gitman — directory/file conflict on fractal ref names.**
-The 0.12.0 `write_git_ref` writes a **loose** ref via gix, which fails with an IO error when a
-`/`-path lane name collides at the ref level: writing `refs/heads/T/api` while `refs/heads/T` exists
-as a loose ref needs `T` to be a directory (`GitError: failed to write ref 'T/api': An IO error
-occurred while applying an edit`). Raw `git update-ref` resolves this via packed-refs; the gix
-loose-ref write does not. Fractal lanes (`T`, `T/api`, `T/api/handler`) hit this in
-`reconcile`'s ref heal, so **gitman kept `_heal_colocated_refs` on raw `git update-ref`** (see
-`gitman/src/gitman/reconcile.py` NB) — P1/P2/P3 were adopted, P4 was not. **Follow-up (project 14b):**
-make `write_git_ref`/`delete_git_ref` D/F-safe (pack the conflicting ref, or use a gix ref
-transaction that repacks), then gitman swaps in P4 to reach raw-`git`-zero. Probe with a `T` + `T/api`
-pair, not just a flat name.
+**⚠️ Partly fixed in 0.12.1, but STILL NOT adopted by gitman — three-level fractal D/F remains.**
+`write_git_ref` originally (0.12.0) wrote a **loose** ref via gix `edit_reference`, which failed on any
+`/`-path collision (`GitError: failed to write ref 'T/api': An IO error occurred while applying an
+edit`). **0.12.1** (`60e6319`) routed the write through the file-store transaction with
+`PackedRefs::DeletionsAndNonSymbolicUpdatesRemoveLooseSourceReference` + reflog disabled, which fixed
+the **flat and two-level** cases (`T` loose, write `T/api` → packed). **But the real gitman case still
+fails:** with a *three-level* tree where all levels pre-exist as a mix of loose refs — `refs/heads/T`
+(loose file), `refs/heads/T/api/handler` (loose, so `refs/heads/T/api/` is a **directory**) — writing
+`refs/heads/T/api` hits a **bidirectional** D/F conflict (a file blocks it from below, a directory
+blocks it from above), and gix's packed transaction still can't acquire the loose lock for `T/api`.
+Reproduced by gitman's `test_reconcile_refreshes_stale_grandchild_workspace` (lanes `T`, `T/api`,
+`T/api/handler`). So gitman **stays on raw `git update-ref`** in `_heal_colocated_refs` — P1/P2/P3
+adopted (gitman `5c58fdc`), P4 not. **Proper fix (project 14b):** mirror `git pack-refs --all` — move
+**every** `refs/heads/*` (at its current oid) into `packed-refs` in one transaction so *no* loose head
+ref remains to conflict, rather than packing only the ref being written. Confirm gix's packed
+transaction does not still lock the conflicting loose paths during `prepare` (that was the sticking
+point); if it does, delete the conflicting loose refs explicitly first. **Probe the 3-level mixed
+loose/packed layout**, not just `T`+`T/api`. Effort: M (deeper gix ref-store work than 0.12.1).
 
 ---
 
