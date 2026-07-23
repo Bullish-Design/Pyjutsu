@@ -308,6 +308,115 @@ fn prune_orphaned_keep_refs(repo: &ReadonlyRepo) -> PyResult<()> {
     Ok(())
 }
 
+/// What to do to the target head ref in [`apply_head_ref_packed`]: force it to an oid, or delete it.
+enum HeadRefOp {
+    Set(gix::ObjectId),
+    Delete,
+}
+
+/// D/F-safe force-write/delete of a single `refs/heads/<name>` directly in the colocated `.git`,
+/// bypassing jj's view. The engine behind `write_git_ref`/`delete_git_ref` (reconcile-only escape
+/// hatches to heal colocated-ref drift when `git_export` is itself broken by a bad/leftover ref).
+///
+/// The hard part is **fractal lane names** — a loose file `refs/heads/T` and a `refs/heads/T/api`
+/// (or `T/api/handler`) below it are a directory/file (D/F) conflict on disk. gix chokes on these
+/// two ways: its per-edit existing-ref probe (`ref_contents`, in `prepare`) does a plain
+/// `File::open(refs/heads/<name>)` that fails with `ENOTDIR` when a loose file shadows an ancestor
+/// path (gix only tolerates `NotFound`); and at commit it removes each update's loose source with
+/// `remove_file`, which fails with `EISDIR` if an empty `refs/heads/T/` directory sits where a head
+/// is written. `git update-ref` sidesteps both by routing fractal writes through `packed-refs`
+/// (where names coexist freely), exactly as `git pack-refs --all` does.
+///
+/// Mirror that: enumerate every existing head (a loose-tree + packed-buffer walk that never opens a
+/// D/F-blocked path), then in ONE file-store transaction pack every head at its current oid plus the
+/// target's change — so no loose head remains to conflict. Before committing, physically clear the
+/// loose `refs/heads/` tree (all oids are already captured in the edit set, to be rewritten into
+/// `packed-refs`); this removes both the shadowing files that break the probe and the empty
+/// directories that break loose-source removal. Because the transaction holds the global packed-refs
+/// lock, gix also skips per-ref loose locks (`prepare`: `has_global_lock` ⇒ no `refs/heads/T.lock`).
+/// The reflog is disabled: its path mirrors the ref (`logs/refs/heads/<name>`), so it has the same
+/// D/F hazard, gix neither packs nor relocates reflogs, and a repair escape hatch needs no history.
+/// Only loose head files are cleared — `packed-refs` and any non-head ref are untouched.
+fn apply_head_ref_packed(
+    git_repo: &gix::Repository,
+    target: &gix::refs::FullName,
+    op: HeadRefOp,
+) -> PyResult<()> {
+    let make_update = |name: gix::refs::FullName, new: gix::ObjectId| gix::refs::transaction::RefEdit {
+        change: gix::refs::transaction::Change::Update {
+            log: gix::refs::transaction::LogChange {
+                message: "gitman reconcile: heal colocated ref".into(),
+                ..Default::default()
+            },
+            // Force-set (a repair, not a fast-forward check).
+            expected: gix::refs::transaction::PreviousValue::Any,
+            new: gix::refs::Target::Object(new),
+        },
+        name,
+        deref: false,
+    };
+    // Enumerate every existing head at its current oid; hold the target out to apply `op` to it.
+    let mut edits: Vec<gix::refs::transaction::RefEdit> = Vec::new();
+    let mut target_seen = false;
+    {
+        let refs = git_repo.references().map_err(map_git_err)?;
+        for git_ref in refs.prefixed("refs/heads/").map_err(map_git_err)? {
+            let mut git_ref = git_ref.map_err(map_git_err)?;
+            let ref_name = git_ref.name().to_owned();
+            if ref_name.as_bstr() == target.as_bstr() {
+                target_seen = true;
+                continue;
+            }
+            // A head ref points straight at a commit; peel to its object id.
+            let oid = git_ref.peel_to_id().map_err(map_git_err)?.detach();
+            edits.push(make_update(ref_name, oid));
+        }
+    }
+    match op {
+        HeadRefOp::Set(oid) => edits.push(make_update(target.clone(), oid)),
+        // Idempotent delete: an absent ref is a pure no-op (no packing side effect), like
+        // `git update-ref -d` on a missing ref.
+        HeadRefOp::Delete if target_seen => edits.push(gix::refs::transaction::RefEdit {
+            change: gix::refs::transaction::Change::Delete {
+                expected: gix::refs::transaction::PreviousValue::Any,
+                log: gix::refs::transaction::RefLog::AndReference,
+            },
+            name: target.clone(),
+            deref: false,
+        }),
+        HeadRefOp::Delete => return Ok(()),
+    }
+    // Physically clear the loose head tree (see the doc comment) before the packed transaction.
+    let heads_dir = git_repo.common_dir().join("refs").join("heads");
+    match std::fs::remove_dir_all(&heads_dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(map_git_err(format!("failed to clear loose head refs: {e}"))),
+    }
+    std::fs::create_dir_all(&heads_dir)
+        .map_err(|e| map_git_err(format!("failed to recreate refs/heads: {e}")))?;
+    let odb = Box::new(git_repo.objects.clone());
+    let mut ref_store = git_repo.refs.clone();
+    ref_store.write_reflog = gix::refs::store::WriteReflog::Disable;
+    ref_store
+        .transaction()
+        .packed_refs(
+            gix::refs::file::transaction::PackedRefs::DeletionsAndNonSymbolicUpdatesRemoveLooseSourceReference(
+                odb,
+            ),
+        )
+        .prepare(
+            edits,
+            gix::lock::acquire::Fail::Immediately,
+            gix::lock::acquire::Fail::Immediately,
+        )
+        .map_err(map_git_err)?
+        // No committer needed: the reflog is disabled above, so `commit` writes no reflog entry.
+        .commit(None)
+        .map_err(map_git_err)?;
+    Ok(())
+}
+
 /// Resolve a stored workspace root to an absolute path. jj 0.38 stores the default workspace's root
 /// as an absolute path, but a jj 0.42 binary writing the same store records it *relative to the repo
 /// dir* (`.jj/repo`) — e.g. `../../` — which would otherwise leak through the typed API and be
@@ -1939,59 +2048,16 @@ impl PyWorkspace {
             let full: gix::refs::FullName = format!("refs/heads/{name}")
                 .try_into()
                 .map_err(|e| map_git_err(format!("bad ref name '{name}': {e}")))?;
-            let edit = gix::refs::transaction::RefEdit {
-                change: gix::refs::transaction::Change::Update {
-                    log: gix::refs::transaction::LogChange {
-                        message: "gitman reconcile: heal colocated ref".into(),
-                        ..Default::default()
-                    },
-                    // Force-set (a repair, not a fast-forward check).
-                    expected: gix::refs::transaction::PreviousValue::Any,
-                    new: gix::refs::Target::Object(oid),
-                },
-                name: full,
-                deref: false,
-            };
-            // D/F-safe write. A plain `edit_reference` writes a *loose* ref, which fails on
-            // directory/file conflicts: a loose file `refs/heads/T` blocks creating the file
-            // `refs/heads/T/api` (the parent must be a directory), and vice-versa. `git update-ref`
-            // resolves this by moving the update into `packed-refs`, where `T` and `T/api` coexist
-            // freely. Mirror that: route the edit through the file-ref store transaction configured
-            // with `DeletionsAndNonSymbolicUpdatesRemoveLooseSourceReference`, which writes the
-            // (non-symbolic) update straight into packed-refs and never touches the conflicting
-            // loose path — so the D/F conflict can't arise. `git_repo.objects` peels the target for
-            // packing (a commit oid peels to itself).
-            let odb = Box::new(git_repo.objects.clone());
-            // Disable the reflog for this repair write. A reflog entry lives at a path mirroring the
-            // ref (`.git/logs/refs/heads/<name>`), so the same D/F conflict recurs there (a loose
-            // `logs/refs/heads/T` file blocks `logs/refs/heads/T/api`) — and gix does not pack or
-            // relocate reflogs. A reconcile escape hatch has no need for reflog history, so skip it.
-            let mut ref_store = git_repo.refs.clone();
-            ref_store.write_reflog = gix::refs::store::WriteReflog::Disable;
-            let prepared = ref_store
-                .transaction()
-                .packed_refs(
-                    gix::refs::file::transaction::PackedRefs::DeletionsAndNonSymbolicUpdatesRemoveLooseSourceReference(
-                        odb,
-                    ),
-                )
-                .prepare(
-                    Some(edit),
-                    gix::lock::acquire::Fail::Immediately,
-                    gix::lock::acquire::Fail::Immediately,
-                )
-                .map_err(|e| map_git_err(format!("failed to write ref '{name}': {e}")))?;
-            // No committer needed: the reflog is disabled above, so `commit` writes no reflog entry.
-            prepared
-                .commit(None)
-                .map_err(|e| map_git_err(format!("failed to write ref '{name}': {e}")))?;
-            Ok(())
+            apply_head_ref_packed(&git_repo, &full, HeadRefOp::Set(oid))
         })
     }
 
     /// Delete `refs/heads/<name>` directly in the colocated `.git` (reconcile-only escape hatch; see
     /// `write_git_ref`). Idempotent: deleting an already-absent ref is a no-op, like `git update-ref
-    /// -d` on a missing ref. Requires a colocated git backend.
+    /// -d` on a missing ref. D/F-safe for fractal names — a plain `edit_reference`/`try_find` would
+    /// hit `ENOTDIR` when a loose file shadows the target's ancestor path, so it goes through the
+    /// same pack-all-heads transaction as `write_git_ref` (see `apply_head_ref_packed`). Requires a
+    /// colocated git backend.
     fn delete_git_ref(&self, py: Python<'_>, name: &str) -> PyResult<()> {
         let guard = self.locked()?;
         let loader = Self::fresh_loader(&guard)?;
@@ -1999,30 +2065,10 @@ impl PyWorkspace {
         py.allow_threads(|| -> PyResult<()> {
             let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
             let git_repo = git::get_git_repo(repo.store()).map_err(map_git_err)?;
-            let full = format!("refs/heads/{name}");
-            // Idempotent: only delete if present (absent ref ⇒ no-op, not an error).
-            if git_repo
-                .try_find_reference(full.as_str())
-                .map_err(|e| map_git_err(format!("failed to look up ref '{name}': {e}")))?
-                .is_none()
-            {
-                return Ok(());
-            }
-            let full_name: gix::refs::FullName = full
+            let full: gix::refs::FullName = format!("refs/heads/{name}")
                 .try_into()
                 .map_err(|e| map_git_err(format!("bad ref name '{name}': {e}")))?;
-            let edit = gix::refs::transaction::RefEdit {
-                change: gix::refs::transaction::Change::Delete {
-                    expected: gix::refs::transaction::PreviousValue::Any,
-                    log: gix::refs::transaction::RefLog::AndReference,
-                },
-                name: full_name,
-                deref: false,
-            };
-            git_repo
-                .edit_reference(edit)
-                .map_err(|e| map_git_err(format!("failed to delete ref '{name}': {e}")))?;
-            Ok(())
+            apply_head_ref_packed(&git_repo, &full, HeadRefOp::Delete)
         })
     }
 
