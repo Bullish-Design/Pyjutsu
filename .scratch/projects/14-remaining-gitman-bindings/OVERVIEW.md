@@ -148,6 +148,18 @@ already exists internally — expose it). Scoped to `refs/heads/*`; does **not**
 caller re-imports/`sync_colocated` afterward as today). **Risk:** it deliberately bypasses jj — document
 it as a reconcile-only escape hatch, never a normal-path writer. **Consumer:** `reconcile` drift heal.
 
+**⚠️ Shipped in 0.12.0 but NOT yet adopted by gitman — directory/file conflict on fractal ref names.**
+The 0.12.0 `write_git_ref` writes a **loose** ref via gix, which fails with an IO error when a
+`/`-path lane name collides at the ref level: writing `refs/heads/T/api` while `refs/heads/T` exists
+as a loose ref needs `T` to be a directory (`GitError: failed to write ref 'T/api': An IO error
+occurred while applying an edit`). Raw `git update-ref` resolves this via packed-refs; the gix
+loose-ref write does not. Fractal lanes (`T`, `T/api`, `T/api/handler`) hit this in
+`reconcile`'s ref heal, so **gitman kept `_heal_colocated_refs` on raw `git update-ref`** (see
+`gitman/src/gitman/reconcile.py` NB) — P1/P2/P3 were adopted, P4 was not. **Follow-up (project 14b):**
+make `write_git_ref`/`delete_git_ref` D/F-safe (pack the conflicting ref, or use a gix ref
+transaction that repacks), then gitman swaps in P4 to reach raw-`git`-zero. Probe with a `T` + `T/api`
+pair, not just a flat name.
+
 ---
 
 ## P5 — colocate writes `/.jj/` to `.git/info/exclude`  *(colocation rough edge)*
