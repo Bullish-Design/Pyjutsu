@@ -1952,8 +1952,38 @@ impl PyWorkspace {
                 name: full,
                 deref: false,
             };
-            git_repo
-                .edit_reference(edit)
+            // D/F-safe write. A plain `edit_reference` writes a *loose* ref, which fails on
+            // directory/file conflicts: a loose file `refs/heads/T` blocks creating the file
+            // `refs/heads/T/api` (the parent must be a directory), and vice-versa. `git update-ref`
+            // resolves this by moving the update into `packed-refs`, where `T` and `T/api` coexist
+            // freely. Mirror that: route the edit through the file-ref store transaction configured
+            // with `DeletionsAndNonSymbolicUpdatesRemoveLooseSourceReference`, which writes the
+            // (non-symbolic) update straight into packed-refs and never touches the conflicting
+            // loose path — so the D/F conflict can't arise. `git_repo.objects` peels the target for
+            // packing (a commit oid peels to itself).
+            let odb = Box::new(git_repo.objects.clone());
+            // Disable the reflog for this repair write. A reflog entry lives at a path mirroring the
+            // ref (`.git/logs/refs/heads/<name>`), so the same D/F conflict recurs there (a loose
+            // `logs/refs/heads/T` file blocks `logs/refs/heads/T/api`) — and gix does not pack or
+            // relocate reflogs. A reconcile escape hatch has no need for reflog history, so skip it.
+            let mut ref_store = git_repo.refs.clone();
+            ref_store.write_reflog = gix::refs::store::WriteReflog::Disable;
+            let prepared = ref_store
+                .transaction()
+                .packed_refs(
+                    gix::refs::file::transaction::PackedRefs::DeletionsAndNonSymbolicUpdatesRemoveLooseSourceReference(
+                        odb,
+                    ),
+                )
+                .prepare(
+                    Some(edit),
+                    gix::lock::acquire::Fail::Immediately,
+                    gix::lock::acquire::Fail::Immediately,
+                )
+                .map_err(|e| map_git_err(format!("failed to write ref '{name}': {e}")))?;
+            // No committer needed: the reflog is disabled above, so `commit` writes no reflog entry.
+            prepared
+                .commit(None)
                 .map_err(|e| map_git_err(format!("failed to write ref '{name}': {e}")))?;
             Ok(())
         })

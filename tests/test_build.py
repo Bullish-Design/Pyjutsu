@@ -22,4 +22,4 @@ def test_pyjutsu_version_matches_extension() -> None:
     # extension's `pyjutsu_version()`. If a bump to `__version__` lands without `maturin develop`,
     # importing pyjutsu raises at module load — so reaching this assertion already proves the two
     # agree; we also pin the current release value.
-    assert ext.pyjutsu_version() == pyjutsu.__version__ == "0.12.0"
+    assert ext.pyjutsu_version() == pyjutsu.__version__ == "0.12.1"
