@@ -1114,8 +1114,8 @@ impl PyWorkspace {
     /// I/O-heavy and `Send` → the constructor runs **off the GIL**. The returned `Workspace` is
     /// wrapped in a fresh `PyWorkspace` (same shape as `load`).
     #[staticmethod]
-    #[pyo3(signature = (path, colocate=false))]
-    fn init(py: Python<'_>, path: PathBuf, colocate: bool) -> PyResult<Self> {
+    #[pyo3(signature = (path, colocate=false, trunk=None))]
+    fn init(py: Python<'_>, path: PathBuf, colocate: bool, trunk: Option<String>) -> PyResult<Self> {
         // At init time the repo config doesn't exist yet, so this loads `JJ_CONFIG` + built-in
         // defaults (the repo layer is silently skipped) — the same identity the CLI's `jj git init`
         // authors with, so any commit this workspace later makes shares the CLI's commit ids.
@@ -1141,6 +1141,19 @@ impl PyWorkspace {
                     pollster::block_on(Workspace::init_colocated_git(&settings, &path))
                         .map_err(map_workspace_err)?;
                 ensure_jj_git_excluded(&path.join(".git"))?;
+                // If a trunk name is given, set HEAD in the colocated .git to point at that
+                // branch so no leftover default-branch ref (e.g. refs/heads/master) survives.
+                // Best-effort plain-file write — HEAD is guaranteed a loose file, never packed.
+                if let Some(trunk) = &trunk {
+                    if trunk.contains('\n') || trunk.contains('\r') {
+                        return Err(PyjutsuError::new_err(format!(
+                            "invalid trunk name: {trunk:?}"
+                        )));
+                    }
+                    let head_path = path.join(".git").join("HEAD");
+                    // Non-fatal on write failure: the repo is valid; the caller can fix HEAD.
+                    let _ = std::fs::write(&head_path, format!("ref: refs/heads/{trunk}\n"));
+                }
                 Ok(workspace)
             } else {
                 let (workspace, _repo) =

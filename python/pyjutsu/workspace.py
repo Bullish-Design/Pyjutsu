@@ -67,7 +67,13 @@ class Workspace:
         return cls(PyWorkspace.load(os.fspath(path)))
 
     @classmethod
-    def init(cls, path: str | os.PathLike[str], *, colocate: bool = False) -> Workspace:
+    def init(
+        cls,
+        path: str | os.PathLike[str],
+        *,
+        colocate: bool = False,
+        trunk: str | None = None,
+    ) -> Workspace:
         """Create or adopt a jj repo + default workspace at ``path`` → a :class:`Workspace`.
 
         Matches ``jj git init`` (``colocate=False``, an internal git store under
@@ -82,8 +88,13 @@ class Workspace:
         Adopt first prunes any orphaned ``refs/jj/keep/*`` from the ``.git`` — the GC-anchor refs a
         ``.jj`` deleted out of band leaves behind — so re-adopting a recovered repo starts from its
         real git refs (branches + tags) instead of carrying the dead workspace's bookkeeping forward.
+
+        ``trunk`` is an optional branch name for the colocated ``.git``'s initial HEAD symref when
+        colocating onto a directory with no pre-existing ``.git`` — so there is no leftover default
+        branch ref (e.g. ``refs/heads/master``) to clean up. Ignored when a ``.git`` already exists
+        (the adopt path) and for ``colocate=False``.
         """
-        return cls(PyWorkspace.init(os.fspath(path), colocate))
+        return cls(PyWorkspace.init(os.fspath(path), colocate, trunk))
 
     def add_workspace(
         self, path: str | os.PathLike[str], *, name: str | None = None
@@ -269,6 +280,15 @@ class Workspace:
         colocated repo, so they compare directly to :attr:`Commit.commit_id`).
         """
         return self._handle.git_refs(prefix)
+
+    def git_default_branch(self, remote: str) -> str | None:
+        """The name of ``remote``'s default branch (what ``git remote show`` reports as ``HEAD``).
+
+        ``None`` if the remote advertises none (the remote has no commits / an ambiguous default).
+        Reads the remote's advertised HEAD via a ``git`` subprocess; raises
+        :class:`~pyjutsu.errors.GitError` on an unknown remote or subprocess failure.
+        """
+        return self._handle.git_default_branch(remote)
 
     def tracked_ignored_paths(self) -> list[str]:
         """Paths tracked in ``@`` that the working-copy ``.gitignore`` would also ignore.
