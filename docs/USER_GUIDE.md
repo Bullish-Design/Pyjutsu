@@ -323,7 +323,172 @@ binary and is **not** part of the in-process guarantee.
 
 ---
 
-## 11. Errors
+## 11. Hooks
+
+Pre-commit-style hooks fire around the mutation verbs: **pre-hooks run before an operation and can
+veto it; post-hooks observe it after it published.** Hooks are in-process Python callbacks — no
+subprocess, no serialization — and cost nothing when none are registered (a registered pre-commit
+hook even sees the pending change's file list for free).
+
+jj deliberately never runs git hooks (it passes `--no-verify` to git), so a repo's
+`.git/hooks/*` never fire on jj operations — including operations made through pyjutsu. This is
+the gap hooks fill: they are pyjutsu's own event points, not git's.
+
+### Registering hooks (imperative)
+
+Every `Workspace` owns a registry (`ws.hooks`); registrations never cross workspaces:
+
+```python
+ws.hooks.add("pre-commit", check_license)        # returns fn — composes with decorators
+
+@ws.hooks.on("pre-commit")                        # decorator form
+@ws.hooks.on("post-commit")
+def check_license(tx, *, paths=None): ...
+
+with ws.hooks("pre-commit", check_license):      # registered for the block only
+    ...
+```
+
+### Semantics
+
+- A **pre-hook that raises** (`HookAbort` explicitly, or any exception — wrapped) **vetoes** the
+  operation. A transaction rolls back and publishes nothing; `git push`/`fetch` never start.
+- A **post-hook failure** raises `PostHookError` carrying the published `operation_id`: the
+  operation landed, only the hook failed. Distinguish the two — a transaction that raised
+  `PostHookError` did commit. Set `ws.hooks.on_post_failure = "warn"` (or `on_post_failure =
+  "warn"` in the config) to downgrade post-hook failures to a `UserWarning` instead.
+- By default **every hook runs** even after one fails, and all failures are reported before
+  aborting (`fail_fast = false`, pre-commit's run-all behavior); set `fail_fast = true` to stop at
+  the first failure.
+- A `pre-commit` hook receives the **live, open transaction** — it can call `tx.*` methods to
+  amend the pending commit before it publishes (no JSON round-trip), and it receives
+  `paths=`, the repo-relative paths changed by the pending commit
+  (`tx.changed_paths("@")` — available to you too, and it sees in-flight rewrites the
+  read surface cannot).
+
+### Events
+
+| Event | Hook called as |
+|---|---|
+| `pre-commit` | `fn(tx: Transaction, *, paths: list[str] | None = None)` |
+| `post-commit` | `fn(operation_id: str, description: str)` |
+| `pre-push` / `post-push` | `fn(remote, bookmarks)` / `fn(operation: Operation \| None, remote)` |
+| `pre-fetch` / `post-fetch` | `fn(remote, bookmarks: list[str] \| None)` / `fn(operation \| None, remote)` |
+| `pre-import` / `post-import` | `fn()` / `fn(operation: Operation \| None)` |
+| `pre-export` / `post-export` | `fn()` / `fn(operation: Operation \| None)` |
+| `pre-sync` / `post-sync` (`sync_colocated`) | `fn()` / `fn(operation: Operation \| None)` |
+| `pre-snapshot` / `post-snapshot` | `fn()` / `fn(operation: Operation \| None)` |
+| `pre-untrack` / `post-untrack` | `fn(paths)` / `fn(operation \| None, paths)` |
+| `pre-undo` / `post-undo` | `fn(operation: str \| None)` / `fn(operation: Operation)` |
+| `pre-restore` / `post-restore` | `fn(operation: str)` / `fn(operation: Operation)` |
+
+The auto-snapshot inside `transaction(auto_snapshot=True)` is tx-internal and does not fire
+`pre-`/`post-snapshot`; the tag verbs, remotes CRUD, `add_workspace`/`forget_workspace`, and
+`update_stale` have no events.
+
+### Declarative config: `.pyjutsu-hooks.toml`
+
+A pre-commit-config-style file, loaded automatically by `Workspace.load(...)` (the default
+`hooks_config="auto"`) when `<repo>/.pyjutsu-hooks.toml` exists — or explicitly with
+`ws.load_config_hooks(path)` / `Workspace.load(path, hooks_config="off")`:
+
+```toml
+fail_fast = false           # optional: run every hook even after one fails (default)
+on_post_failure = "raise"   # optional: "raise" (default) or "warn"
+
+[hooks.pre-commit]
+commands = [
+  { command = "ruff check --fix", files = "\\.py$", timeout = 120 },   # external program
+  { command = ["pytest", "-q"], pass_filenames = false },
+  { command = "deploy", env = { DEPLOY_KEY = "..." } },
+]
+python = ["myapp.hooks:check_license"]      # in-process callable, zero subprocess
+adapters = ["run_prek"]                     # delegate to prek / pre-commit
+
+[hooks.post-commit]
+commands = [{ command = "notify-ci" }]
+```
+
+- `command` is a string (shlex-split, no shell) or an argv list; a non-zero exit vetoes a `pre-*`
+  event (or fails a `post-*` one). `files`/`exclude` regexes filter the event's path list
+  (pre-commit style — `pre-commit` is the one event that passes paths today) and matching paths
+  are appended to the command; `pass_filenames = false` skips the appending; `env` adds
+  environment variables to the child process; `timeout` and `cwd` override the process defaults.
+- `python` entries are dotted paths (`module:attr`); called in-process with the event's args.
+- `adapters` build argv for a pre-commit-compatible binary: `run_prek` / `run_pre_commit`
+  (`prek run --all-files` for `pre-commit`, with `--hook-stage post-commit` for post events;
+  jj has no git index, so the default is `--all-files`, not "staged").
+
+Validation is strict — an unknown event, key, or bad regex is an error, so a typo fails loudly
+rather than silently not running.
+
+### Performance
+
+The registry is a dict lookup over an empty tuple when nothing is registered: no subprocess, no
+allocation, no serialization. With no `pre-commit` hooks the pending diff is never computed. Only
+declared `commands`/`adapters` cost what their external program costs.
+
+### Recipes
+
+A whole policy in one `.pyjutsu-hooks.toml`, exercising the pieces together:
+
+```toml
+fail_fast = true            # stop at the first failure
+on_post_failure = "warn"    # a broken notifier must never fail the commit
+
+[hooks.pre-commit]
+# Lint the .py files you're about to commit — skipped entirely when none changed.
+commands = [
+  { command = "ruff check", files = "\\.py$" },
+  { command = "cargo fmt --check", files = "\\.rs$", pass_filenames = false },
+]
+# Veto commits that hand-edit generated/ (see the python hook below).
+python = ["myapp.hooks:no_changes_to_generated"]
+
+[hooks.pre-push]
+# Run the whole test suite before anything reaches a remote.
+commands = [{ command = "pytest -q", pass_filenames = false }]
+
+[hooks.post-commit]
+# Notify CI after every commit; failure is a warning, never an error.
+python = ["myapp.hooks:notify_ci"]
+```
+
+```python
+# myapp/hooks.py — the in-process halves, zero subprocess
+from pyjutsu import HookAbort
+
+
+def no_changes_to_generated(tx, *, paths=None):
+    if any(p.startswith("generated/") for p in (paths or [])):
+        raise HookAbort("edit the source, not generated/ — regenerate instead")
+
+
+def notify_ci(operation_id, description):
+    ...  # post hooks receive the published operation id
+```
+
+The same policies work imperatively (e.g. a `pre-push` guard that reads the call's arguments):
+
+```python
+@ws.hooks.on("pre-push")
+def protect_main(remote, bookmarks):
+    if "main" in bookmarks:
+        raise HookAbort("pushing main requires a second person")
+```
+
+### Ordering & re-loading
+
+- Hooks run in **registration order**. Config hooks are registered when the config loads (at
+  `Workspace.load`/`init`/`git_clone`, or `load_config_hooks`), so they run before hooks added
+  later imperatively. Within one event, add the policy hooks first if ordering matters.
+- `load_config`/`load_config_hooks` **appends** — re-loading the same file registers the hooks
+  again (duplicates). Reload after a config edit by clearing first: `ws.hooks.clear()` (all) or
+  `ws.hooks.clear("pre-commit")` (one event).
+
+---
+
+## 12. Errors
 
 All in-process errors derive from `PyjutsuError` (import from `pyjutsu` or `pyjutsu.errors`):
 
@@ -341,7 +506,7 @@ All in-process errors derive from `PyjutsuError` (import from `pyjutsu` or `pyju
 
 ---
 
-## 12. What's intentionally out of scope
+## 13. What's intentionally out of scope
 
 Pyjutsu binds jj primitives faithfully and stays un-opinionated (no lanes, no workflow policy).
 Deliberately **not** provided (see [`PYJUTSU_CONCEPT.md`](PYJUTSU_CONCEPT.md) §12):

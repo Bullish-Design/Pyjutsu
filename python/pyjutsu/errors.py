@@ -30,6 +30,8 @@ __all__ = [
     "ImmutableCommitError",
     "GitError",
     "JjCliError",
+    "HookAbort",
+    "PostHookError",
 ]
 
 
@@ -62,3 +64,31 @@ class JjCliError(PyjutsuError):
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+class HookAbort(PyjutsuError):
+    """A pre-hook vetoed (or failed) before its operation ran.
+
+    Raised by the hook machinery when a registered ``pre-*`` hook raises: either the hook raises
+    :class:`HookAbort` itself, or any other exception is wrapped in one (fail-closed, like git).
+    For a transaction the pending transaction is rolled back (nothing is published) and the error
+    propagates out of the ``with`` block; for a git verb (:meth:`~pyjutsu.Workspace.git_push`,
+    :meth:`~pyjutsu.Workspace.git_fetch`) the operation is never started.
+    """
+
+
+class PostHookError(PyjutsuError):
+    """A ``post-*`` hook failed *after* its operation was published.
+
+    The operation is already in the op log (or, for git verbs, already on the remote) — this error
+    says *the hook* failed, not the operation. Carries the published operation id so the caller
+    can act on the landed op; a transaction that raised this did commit.
+
+    Attributes:
+        operation_id: the id of the published operation, or ``None`` if the event published none
+            (e.g. a push that changed nothing).
+    """
+
+    def __init__(self, operation_id: str | None, message: str) -> None:
+        super().__init__(message)
+        self.operation_id = operation_id

@@ -12,14 +12,17 @@ from .errors import (
     BackendError,
     ConflictError,
     GitError,
+    HookAbort,
     ImmutableCommitError,
     JjCliError,
+    PostHookError,
     PyjutsuError,
     RevsetError,
     StaleWorkingCopyError,
     WorkingCopyError,
     WorkspaceError,
 )
+from .hooks import HookRegistry, run_pre_commit, run_prek
 from .models import (
     Bookmark,
     ChangeId,
@@ -49,7 +52,7 @@ from .workspace import Workspace
 #: ``devenv.nix`` (exposed at runtime as :data:`JJ_VERSION`). This is the one hand-maintained
 #: version string; the guard below checks it against the compiled extension so a bump here without
 #: a rebuild fails loudly instead of silently mismatching.
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 #: The jj / jj-lib version the compiled extension is actually linked against. **Build-derived**
 #: (``build.rs`` reads the resolved ``Cargo.lock``), so it cannot drift from the linked dependency.
@@ -105,6 +108,11 @@ __all__ = [
     "ImmutableCommitError",
     "GitError",
     "JjCliError",
+    "HookAbort",
+    "PostHookError",
+    "HookRegistry",
+    "run_prek",
+    "run_pre_commit",
     "JJ_VERSION",
     "__version__",
 ]

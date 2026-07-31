@@ -43,6 +43,7 @@ use jj_lib::store::Store;
 use jj_lib::transaction::Transaction;
 
 use crate::convert::{BookmarkData, CommitData};
+use crate::diff;
 use crate::diff_stat::read_text;
 use crate::errors::{
     ImmutableCommitError, PyjutsuError, RevsetError, StaleWorkingCopyError, map_backend_err,
@@ -476,6 +477,26 @@ impl PyTransaction {
         let restored = self.resolve_single(&*repo, commit)?; // re-read post-rewrite (id changed)
         let data = CommitData::build(&*repo, &restored)?;
         data.to_dict(py)
+    }
+
+    /// The paths changed by the single revision named by `revset_str` (diffed against its
+    /// merged-parent tree, like the read surface's `diff`), evaluated against the **open**
+    /// `MutableRepo` — so it sees this transaction's in-flight rewrites, which the read surface
+    /// (op-log based) cannot. This is the "what is this commit introducing" list a pre-commit
+    /// hook filters on; the hook wiring passes it as the `paths=` payload. Runs on the GIL
+    /// (`MutableRepo` is `!Send`, see module docs); the diff itself is in-memory tree walking +
+    /// object reads, reusing `crate::diff::compute` so it can never disagree with `diff()` about
+    /// a path.
+    fn changed_paths(&self, revset_str: &str) -> PyResult<Vec<String>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs).
+        let repo = tx.repo_mut();
+        let commit = self.resolve_single(&*repo, revset_str)?;
+        let data = diff::compute(&*repo, &commit)?;
+        Ok(data.files.into_iter().map(|file| file.path).collect())
     }
 
     /// Build the **partial tree** for a hunk-level selection of `commit`'s diff and return its

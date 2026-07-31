@@ -9,8 +9,11 @@ re-enter the same handle; each returns the affected revision read back from the 
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
+from .errors import HookAbort, PostHookError
+from .hooks import HookRegistry
 from .models import Bookmark, Commit
 
 if TYPE_CHECKING:
@@ -56,7 +59,15 @@ class Transaction:
     jj operation. Not reentrant and not safe to share across threads.
     """
 
-    __slots__ = ("_handle", "_description", "_auto_snapshot", "_state", "_native", "_operation_id")
+    __slots__ = (
+        "_handle",
+        "_description",
+        "_auto_snapshot",
+        "_state",
+        "_native",
+        "_operation_id",
+        "_hooks",
+    )
 
     # Lifecycle states. "pending": constructed, not yet entered. "open": inside the `with`.
     # "committed"/"rolled_back": terminal — the token cannot be reused.
@@ -67,6 +78,7 @@ class Transaction:
         description: str,
         *,
         auto_snapshot: bool = True,
+        hooks: HookRegistry | None = None,
     ) -> None:
         # Internal: construct via `Workspace.transaction(...)`.
         self._handle = handle
@@ -78,6 +90,8 @@ class Transaction:
         # The native, unsendable transaction handle, live only between `__enter__` and `__exit__`.
         self._native: PyTransaction | None = None
         self._operation_id: str | None = None
+        # The owning workspace's hook registry; `pre-commit`/`post-commit` fire from `__exit__`.
+        self._hooks = hooks if hooks is not None else HookRegistry()
 
     def __enter__(self) -> Transaction:
         if self._state != "pending":
@@ -98,14 +112,57 @@ class Transaction:
     ) -> bool:
         if self._state != "open" or self._native is None:
             return False
-        native, self._native = self._native, None
         if exc_type is not None:
             # An exception in the body aborts the whole transaction: nothing is published.
+            native, self._native = self._native, None
             native.rollback()
             self._state = "rolled_back"
             return False
+        # Pre-commit hooks fire while the transaction is still OPEN, so a hook can both veto
+        # (raise HookAbort) and mutate the pending commit through the tx methods before it is
+        # published. Any failure rolls the transaction back and publishes nothing — fail-closed,
+        # like git. (Hooks must not open a *second* transaction on the same workspace: the
+        # single-tx guard would wait on this one.) Registered hooks receive the pending change's
+        # paths (`paths=`); with no hooks registered nothing is computed — zero cost.
+        try:
+            if self._hooks.count("pre-commit"):
+                self._hooks.fire("pre-commit", self, paths=self.changed_paths("@"))
+            else:
+                self._hooks.fire("pre-commit", self)
+        except HookAbort:
+            native, self._native = self._native, None
+            native.rollback()
+            self._state = "rolled_back"
+            raise
+        except Exception as e:
+            native, self._native = self._native, None
+            native.rollback()
+            self._state = "rolled_back"
+            raise HookAbort(
+                f"pre-commit hook failed; the transaction was rolled back and nothing was "
+                f"published: {e}"
+            ) from e
+        native, self._native = self._native, None
         self._operation_id = native.commit(self._description)
         self._state = "committed"
+        # Post-commit hooks fire after the operation is PUBLISHED; a failure must not look like a
+        # failed commit — the op landed, only the hook failed. PostHookError carries the operation
+        # id so the caller can tell them apart (mirrors the native commit()'s StaleWorkingCopyError
+        # pattern for the same reason).
+        try:
+            self._hooks.fire("post-commit", self._operation_id, self._description)
+        except Exception as e:
+            if self._hooks.on_post_failure == "warn":
+                warnings.warn(
+                    f"post-commit hook failed after the operation was published "
+                    f"(operation {self._operation_id}): {e}",
+                    stacklevel=2,
+                )
+            else:
+                raise PostHookError(
+                    self._operation_id,
+                    f"post-commit hook failed after the operation was published: {e}",
+                ) from e
         return False
 
     def _require_open(self) -> PyTransaction:
@@ -216,6 +273,18 @@ class Transaction:
         :class:`~pyjutsu.errors.ImmutableCommitError`. Must be called inside the ``with`` block.
         """
         return Commit.model_validate(self._require_open().restore(commit, from_, paths))
+
+    def changed_paths(self, commit: str = "@") -> list[str]:
+        """The paths the pending transaction changed for ``commit`` (vs its merged parent tree).
+
+        Evaluated against the **open** transaction's state, so it sees in-flight rewrites the read
+        surface (:meth:`~pyjutsu.RepoView.diff`) cannot — this is the "files this commit is about
+        to introduce" list, and the one the ``pre-commit`` hook wiring passes as ``paths``.
+        ``commit`` is a single-revision revset (default ``@``); raises
+        :class:`~pyjutsu.errors.RevsetError` unless it names exactly one revision. Must be called
+        inside the transaction's ``with`` block.
+        """
+        return self._require_open().changed_paths(commit)
 
     def select_tree(
         self, commit: str, selection: Mapping[str, Sequence[int] | None]

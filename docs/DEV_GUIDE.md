@@ -52,7 +52,7 @@ as small as possible, pin it exactly, and turn any behavioral drift into a loud 
 | `diff.rs`, `diff_stat.rs` | Diff + diff-stat computation, producing the plain hunk/stat dicts. |
 | `convert.rs` | jj-lib value → plain-Python-dict converters (the shape the Pydantic models expect). |
 | `errors.rs` | The `PyjutsuError` hierarchy + `jj-lib` error → exception mapping. |
-| `build.rs` | Emits `PYJUTSU_JJ_LIB_VERSION` from the resolved `Cargo.lock` (see §6). |
+| `build.rs` | Emits `PYJUTSU_JJ_LIB_VERSION` from the resolved `Cargo.lock` (see §7). |
 
 ### Python (`python/pyjutsu/`) → the public package
 
@@ -119,7 +119,7 @@ Say you want to bind a new jj verb. The change almost always touches five places
    strings, list-or-scalar), call the native handle, `Model.model_validate(row)` the result, and
    write the **user-facing docstring** (the native layer carries none). This is where defaults and
    ergonomics live.
-5. **Tests** — a differential test vs the pinned CLI (§5) is the primary correctness proof; add
+5. **Tests** — a differential test vs the pinned CLI (§6) is the primary correctness proof; add
    unit tests for the Python coercion/validation.
 
 Keep the Rust side mechanical. If you're tempted to make a *decision* in Rust (a default, a
@@ -134,7 +134,43 @@ its `Mutex`) and the Python `Transaction` is just a token that drives it between
 
 ---
 
-## 5. Testing strategy — differential tests are the safety net
+## 5. Adding a hook event
+
+Hooks are a **pure-Python feature** (concept §4: the Rust layer stays thin and dumb), so a new
+event touches no Rust. Adding one for an operation that already publishes a jj op is a three-step
+change:
+
+1. **Wire the verb** in `python/pyjutsu/workspace.py` (or `transaction.py`): call
+   `self._fire_pre("<event>", *payload)` before the native call and
+   `self._fire_post("<event>", op_id, *payload)` after it, exactly like `git_push` does for
+   `pre-push`/`post-push`. Pre payloads are the call's arguments; post payloads lead with the
+   published operation (or its id). `Transaction.__exit__` is the model for
+   `pre-commit`/`post-commit`, where the pre-hook must run while the transaction is still **open**
+   (so hooks can mutate it) and the pending path list is computed lazily — only when a pre-hook is
+   actually registered, keeping the zero-cost promise:
+
+   ```python
+   if self._hooks.count("pre-commit"):
+       self._hooks.fire("pre-commit", self, paths=self.changed_paths("@"))
+   else:
+       self._hooks.fire("pre-commit", self)
+   ```
+
+2. **Declare the event** in `python/pyjutsu/hooks.py`: add it to `CONFIG_EVENTS` (the declarative
+   config rejects events that aren't wired — a config may never declare a hook that won't fire) and
+   to the per-event signature table in the module docstring.
+
+3. **Test** in `tests/test_hooks.py`: add a parametrized veto case + a post-fire case to the
+   `test_pre_hooks_veto_every_wired_event` / `test_post_hooks_fire_after_every_wired_event` tables
+   (your event + a lambda), plus any payload-shape assertions.
+
+The `_fire_pre`/`_fire_post` helpers already wrap failures into `HookAbort` (pre) / `PostHookError`
+(post, carrying the published op id), honor `on_post_failure = "warn"`, and let `fire`'s
+`fail_fast` policy apply — a new event gets the full semantics for free.
+
+---
+
+## 6. Testing strategy — differential tests are the safety net
 
 The core defense against jj-lib instability is **differential testing against the pinned `jj`
 CLI**: run an operation through both Pyjutsu and `jj`, then assert the repo state is equivalent
@@ -162,7 +198,7 @@ when a model's shape legitimately changes.
 
 ---
 
-## 6. Versioning & the pins
+## 7. Versioning & the pins
 
 Two version numbers, kept deliberately separate:
 
@@ -180,11 +216,11 @@ tests compare against the exact CLI of the bound library. `gix` is pinned to jj-
 locked `=0.84.0` so the types unify (`cargo tree -i gix` must show a single version).
 
 A **normal feature/fix** is an ordinary minor/patch bump of `__version__` — nothing jj-related
-moves. Bumping jj-lib is a separate, deliberate act (§7).
+moves. Bumping jj-lib is a separate, deliberate act (§8).
 
 ---
 
-## 7. Porting to a new jj-lib version
+## 8. Porting to a new jj-lib version
 
 jj-lib is explicitly unstable; a bump is a Rust-side port, not a routine dependency update. The
 0.38→0.42 port (pyjutsu 0.8.0) is the worked example (see memory
@@ -205,7 +241,7 @@ no hand-editing of version constants scattered through the code.
 
 ---
 
-## 8. Gotchas worth knowing up front
+## 9. Gotchas worth knowing up front
 
 - **Panics across FFI abort the process** — but PyO3 wraps `#[pymethods]` bodies in
   `catch_unwind`, so a panic surfaces as a Python exception. Still, map fallible jj-lib paths to
@@ -223,7 +259,7 @@ no hand-editing of version constants scattered through the code.
 
 ---
 
-## 9. Where to look next
+## 10. Where to look next
 
 - [`PYJUTSU_CONCEPT.md`](PYJUTSU_CONCEPT.md) — the canonical design spec (architecture §4,
   testing §7, risks §8, workspaces §11, scope §12).

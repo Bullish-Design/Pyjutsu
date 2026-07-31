@@ -10,11 +10,13 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import warnings
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 from ._pyjutsu import PyWorkspace
-from .errors import JjCliError, PyjutsuError
+from .errors import HookAbort, JjCliError, PostHookError, PyjutsuError
+from .hooks import CONFIG_FILENAME, HookRegistry
 from .models import (
     Bookmark,
     Commit,
@@ -55,16 +57,30 @@ class Workspace:
     reuse it (``view.log(...)``, ``view.diff_stat(...)``) to load the repo once.
     """
 
-    __slots__ = ("_handle",)
+    __slots__ = ("_handle", "_hooks")
 
     def __init__(self, handle: PyWorkspace) -> None:
         # Internal: construct via `Workspace.load(...)`, not directly.
         self._handle = handle
+        # The workspace's hook registry — zero hooks until one is added or a config is loaded.
+        # Rooted at the working copy so declarative command hooks run with the right cwd.
+        self._hooks = HookRegistry(root=Path(self._handle.workspace_root()))
 
     @classmethod
-    def load(cls, path: str | os.PathLike[str]) -> Workspace:
-        """Load the workspace whose working copy is rooted at ``path``."""
-        return cls(PyWorkspace.load(os.fspath(path)))
+    def load(cls, path: str | os.PathLike[str], *, hooks_config: str = "auto") -> Workspace:
+        """Load the workspace whose working copy is rooted at ``path``.
+
+        ``hooks_config`` selects the declarative hook config (pre-commit-config style, see
+        :mod:`pyjutsu.hooks`):
+
+        - ``"auto"`` (default): load ``<path>/.pyjutsu-hooks.toml`` when it exists. A repo without
+          one is unchanged (no hooks, no file reads).
+        - ``"off"``: never read a config file — imperative :attr:`hooks` registration only.
+        - any other value: treated as a config file path to load.
+        """
+        ws = cls(PyWorkspace.load(os.fspath(path)))
+        ws._load_hooks_config(hooks_config)
+        return ws
 
     @classmethod
     def init(
@@ -73,6 +89,7 @@ class Workspace:
         *,
         colocate: bool = False,
         trunk: str | None = None,
+        hooks_config: str = "auto",
     ) -> Workspace:
         """Create or adopt a jj repo + default workspace at ``path`` → a :class:`Workspace`.
 
@@ -93,8 +110,14 @@ class Workspace:
         colocating onto a directory with no pre-existing ``.git`` — so there is no leftover default
         branch ref (e.g. ``refs/heads/master``) to clean up. Ignored when a ``.git`` already exists
         (the adopt path) and for ``colocate=False``.
+
+        ``hooks_config`` behaves like :meth:`load`'s: ``"auto"`` (default) reads
+        ``<path>/.pyjutsu-hooks.toml`` when present, ``"off"`` never reads one, any other value is
+        a config file path.
         """
-        return cls(PyWorkspace.init(os.fspath(path), colocate, trunk))
+        ws = cls(PyWorkspace.init(os.fspath(path), colocate, trunk))
+        ws._load_hooks_config(hooks_config)
+        return ws
 
     def add_workspace(
         self, path: str | os.PathLike[str], *, name: str | None = None
@@ -140,9 +163,14 @@ class Workspace:
         branches, abandoning commits that became unreachable in git). If the import moves ``@``, the
         on-disk working copy is checked out to the new ``@``. Raises
         :class:`~pyjutsu.errors.GitError` on a git backend failure.
+
+        Hooks: fires ``pre-import`` (veto before the import) and ``post-import``.
         """
+        self._fire_pre("pre-import")
         row = self._handle.git_import()
-        return Operation.model_validate(row) if row is not None else None
+        op = Operation.model_validate(row) if row is not None else None
+        self._fire_post("post-import", op.id if op is not None else None, op)
+        return op
 
     def git_export(self) -> Operation | None:
         """Export jj's bookmarks to the backing git repo's refs → the published :class:`Operation`,
@@ -150,9 +178,14 @@ class Workspace:
 
         Matches ``jj git export``: writes each jj bookmark to its ``refs/heads/<name>`` git ref.
         Raises :class:`~pyjutsu.errors.GitError` listing any bookmark that failed to export.
+
+        Hooks: fires ``pre-export`` (veto before the export) and ``post-export``.
         """
+        self._fire_pre("pre-export")
         row = self._handle.git_export()
-        return Operation.model_validate(row) if row is not None else None
+        op = Operation.model_validate(row) if row is not None else None
+        self._fire_post("post-export", op.id if op is not None else None, op)
+        return op
 
     def sync_colocated(self) -> Operation | None:
         """Repair the colocated git checkout — reset git ``HEAD`` (detached at ``@``'s parent) and
@@ -164,9 +197,14 @@ class Workspace:
         even when ``None`` is returned. Idempotent and ``@``-neutral: safe to call after any
         mutation. Requires a colocated git backend; raises :class:`~pyjutsu.errors.GitError`
         otherwise. This is the standalone form of the HEAD/index sync :meth:`git_export` also does.
+
+        Hooks: fires ``pre-sync`` (veto before the repair) and ``post-sync``.
         """
+        self._fire_pre("pre-sync")
         row = self._handle.sync_colocated()
-        return Operation.model_validate(row) if row is not None else None
+        op = Operation.model_validate(row) if row is not None else None
+        self._fire_post("post-sync", op.id if op is not None else None, op)
+        return op
 
     def git_fetch(
         self, remote: str, *, bookmarks: list[str] | None = None
@@ -190,9 +228,14 @@ class Workspace:
         Tags are still not fetched (jj #7528) and ``--all-remotes`` is out of scope. Raises
         :class:`~pyjutsu.errors.GitError` on a malformed pattern or a git failure (unknown remote,
         rejected update, subprocess error).
+
+        Hooks: fires ``pre-fetch`` (veto before any network I/O) and ``post-fetch``.
         """
+        self._fire_pre("pre-fetch", remote, bookmarks)
         row = self._handle.git_fetch(remote, bookmarks)
-        return Operation.model_validate(row) if row is not None else None
+        op = Operation.model_validate(row) if row is not None else None
+        self._fire_post("post-fetch", op.id if op is not None else None, op, remote)
+        return op
 
     def git_push(
         self,
@@ -225,6 +268,11 @@ class Workspace:
         a bulk mode, a (non-delete) named bookmark is missing/conflicted or new without
         ``allow_new``, a delete target has no remote ref, or the remote rejects the push. Force-push,
         ``--deleted``/``--change``/``-r <rev>`` selection remain out of scope.
+
+        Hooks: fires ``pre-push`` (veto by raising :class:`~pyjutsu.errors.HookAbort`; nothing is
+        pushed) before the push, and ``post-push`` after — a post-hook failure raises
+        :class:`~pyjutsu.errors.PostHookError` carrying the published operation id (the push
+        landed; only the hook failed).
         """
         if bookmark is None:
             names: list[str] = []
@@ -232,8 +280,11 @@ class Workspace:
             names = [bookmark]
         else:
             names = list(bookmark)
+        self._fire_pre("pre-push", remote, names)
         row = self._handle.git_push(remote, names, allow_new, delete, all, tracked)
-        return Operation.model_validate(row) if row is not None else None
+        op = Operation.model_validate(row) if row is not None else None
+        self._fire_post("post-push", op.id if op is not None else None, op, remote)
+        return op
 
     def create_tag(
         self,
@@ -323,6 +374,7 @@ class Workspace:
         *,
         colocate: bool = False,
         remote: str = "origin",
+        hooks_config: str = "auto",
     ) -> Workspace:
         """Clone the git repo at ``url`` into a new jj workspace at ``path`` → a :class:`Workspace`.
 
@@ -334,11 +386,16 @@ class Workspace:
 
         Raises :class:`~pyjutsu.errors.WorkspaceError` if ``path`` already holds a repo, or
         :class:`~pyjutsu.errors.GitError` on a remote/fetch failure.
+
+        ``hooks_config`` behaves like :meth:`load`'s: ``"auto"`` (default) reads
+        ``<path>/.pyjutsu-hooks.toml`` when the clone contains one (so hook config travels with the
+        repo, like ``.pre-commit-config.yaml``), ``"off"`` never reads one, any other value is a
+        config file path.
         """
         # `jj git clone` creates the destination directory; `init` (like `jj git init`) needs it to
         # exist already, so create it here first.
         Path(path).mkdir(parents=True, exist_ok=True)
-        ws = cls.init(path, colocate=colocate)
+        ws = cls.init(path, colocate=colocate, hooks_config="off")  # config loads after the clone
         ws.add_remote(remote, url)
         ws.git_fetch(remote)
 
@@ -354,6 +411,7 @@ class Workspace:
             if tip is not None:
                 with ws.transaction(f"check out {default}", auto_snapshot=False) as tx:
                     tx.new([tip.commit_id])
+        ws._load_hooks_config(hooks_config)
         return ws
 
     def remotes(self) -> list[Remote]:
@@ -397,6 +455,75 @@ class Workspace:
         self._handle.set_remote_url(name, url)
 
     @property
+    def hooks(self) -> HookRegistry:
+        """This workspace's hook registry — register pre/post-hook callbacks here.
+
+        Events fired: ``pre-commit``/``post-commit`` (transaction commit), ``pre-push``/``post-push``
+        (:meth:`git_push`), ``pre-fetch``/``post-fetch``, ``pre-import``/``post-import``,
+        ``pre-export``/``post-export``, ``pre-sync``/``post-sync`` (:meth:`sync_colocated`),
+        ``pre-snapshot``/``post-snapshot``, ``pre-untrack``/``post-untrack``,
+        ``pre-undo``/``post-undo``, ``pre-restore``/``post-restore``. See :mod:`pyjutsu.hooks` for
+        the declarative ``.pyjutsu-hooks.toml`` layer, the per-event call signatures, and the
+        abort/post semantics.
+        """
+        return self._hooks
+
+    def load_config_hooks(self, path: str | os.PathLike[str] | None = None) -> int:
+        """Load a ``.pyjutsu-hooks.toml`` into this workspace's hook registry → hooks registered.
+
+        ``path=None`` reads ``<workspace>/.pyjutsu-hooks.toml`` (raising if absent). Same parser
+        :meth:`Workspace.load`'s ``hooks_config`` uses, for imperative setups. Returns the number
+        of hooks registered.
+
+        Config hooks register at load time, so they run **before** hooks added later imperatively.
+        Re-loading **appends** (re-registering duplicates) — call ``ws.hooks.clear()`` first to
+        reload a file cleanly after editing it.
+        """
+        if path is None:
+            path = self.root / CONFIG_FILENAME
+        return self._hooks.load_config(path)
+
+    def _load_hooks_config(self, spec: str) -> None:
+        if spec == "off":
+            return
+        path = self.root / CONFIG_FILENAME if spec == "auto" else Path(spec)
+        if spec == "auto" and not path.is_file():
+            return
+        self._hooks.load_config(path)
+
+    def _fire_pre(self, event: str, *args: object) -> None:
+        """Run a ``pre-*`` hook set before an operation starts; any failure vetoes it."""
+        try:
+            self._hooks.fire(event, *args)
+        except HookAbort:
+            raise
+        except Exception as e:
+            raise HookAbort(f"{event} hook failed: {e}") from e
+
+    def _fire_post(self, event: str, operation_id: str | None, *args: object) -> None:
+        """Run a ``post-*`` hook set after an operation published.
+
+        A failure raises :class:`PostHookError` (carrying the published operation id) — or, with
+        ``ws.hooks.on_post_failure == "warn"``, surfaces as a :class:`UserWarning` and the
+        operation's result is returned normally.
+        """
+        try:
+            self._hooks.fire(event, *args)
+        except Exception as e:
+            if self._hooks.on_post_failure == "warn":
+                warnings.warn(
+                    f"{event} hook failed after the operation was published"
+                    + (f" (operation {operation_id})" if operation_id else "")
+                    + f": {e}",
+                    stacklevel=2,
+                )
+                return
+            raise PostHookError(
+                operation_id,
+                f"{event} hook failed after the operation was published: {e}",
+            ) from e
+
+    @property
     def name(self) -> str:
         """This workspace's name/id (e.g. ``"default"``)."""
         return self._handle.name()
@@ -420,7 +547,9 @@ class Workspace:
         ``auto_snapshot`` (default ``True``) snapshots a dirty ``@`` as a separate preceding
         operation on open (matching the CLI); set it ``False`` to have the mutation see ``@`` as-is.
         """
-        return Transaction(self._handle, description, auto_snapshot=auto_snapshot)
+        return Transaction(
+            self._handle, description, auto_snapshot=auto_snapshot, hooks=self._hooks
+        )
 
     def snapshot(self) -> Operation | None:
         """Snapshot a dirty ``@`` as a separate ``snapshot working copy`` operation → that
@@ -429,9 +558,16 @@ class Workspace:
         This is what the ``jj`` CLI does automatically before each command; :meth:`transaction`
         does it for you on open when ``auto_snapshot`` is set. Raises
         :class:`~pyjutsu.errors.StaleWorkingCopyError` if ``@`` is stale.
+
+        Hooks: fires ``pre-snapshot`` (veto before the snapshot) and ``post-snapshot``. The
+        auto-snapshot inside :meth:`transaction` (``auto_snapshot=True``) is part of the tx
+        lifecycle and does not fire these events.
         """
+        self._fire_pre("pre-snapshot")
         row = self._handle.snapshot()
-        return Operation.model_validate(row) if row is not None else None
+        op = Operation.model_validate(row) if row is not None else None
+        self._fire_post("post-snapshot", op.id if op is not None else None, op)
+        return op
 
     def untrack_paths(self, paths: list[str]) -> Operation | None:
         """Stop tracking each path in ``paths`` (and anything under it) → the published
@@ -443,9 +579,14 @@ class Workspace:
         intended path is to ``.gitignore`` it: jj evaluates gitignore before the
         ``snapshot.auto-track`` fileset, so an ignored, now-untracked path stays out. Raises
         :class:`~pyjutsu.errors.StaleWorkingCopyError` if ``@`` is stale.
+
+        Hooks: fires ``pre-untrack`` (veto before the rewrite) and ``post-untrack``.
         """
+        self._fire_pre("pre-untrack", paths)
         row = self._handle.untrack_paths(paths)
-        return Operation.model_validate(row) if row is not None else None
+        op = Operation.model_validate(row) if row is not None else None
+        self._fire_post("post-untrack", op.id if op is not None else None, op, paths)
+        return op
 
     def is_stale(self) -> bool:
         """Whether the on-disk working copy is stale relative to the repo's current ``@``.
@@ -475,8 +616,13 @@ class Workspace:
         Matches ``jj undo``. Undoing the repo-initialization operation (it has no parent) or a merge
         operation raises :class:`~pyjutsu.errors.PyjutsuError`. If the reverse moves ``@``, the
         on-disk working copy is checked out to the new ``@``.
+
+        Hooks: fires ``pre-undo`` (veto before the undo) and ``post-undo``.
         """
-        return Operation.model_validate(self._handle.undo(operation))
+        self._fire_pre("pre-undo", operation)
+        op = Operation.model_validate(self._handle.undo(operation))
+        self._fire_post("post-undo", op.id, op)
+        return op
 
     def restore_operation(self, operation: str) -> Operation:
         """Reset the repo to the state a past operation recorded, publishing a new operation → that
@@ -484,8 +630,13 @@ class Workspace:
 
         Matches ``jj op restore``. If the restored state moves ``@``, the on-disk working copy is
         checked out to it.
+
+        Hooks: fires ``pre-restore`` (veto before the restore) and ``post-restore``.
         """
-        return Operation.model_validate(self._handle.restore_operation(operation))
+        self._fire_pre("pre-restore", operation)
+        op = Operation.model_validate(self._handle.restore_operation(operation))
+        self._fire_post("post-restore", op.id, op)
+        return op
 
     def head(self) -> RepoView:
         """A :class:`RepoView` of the repo at its **head** operation, scoped to this workspace.

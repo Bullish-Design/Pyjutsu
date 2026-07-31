@@ -18,7 +18,13 @@ CLI. 0.8.0 ported the binding to jj-lib 0.42.0; 0.9.0 added native sub-file `tx.
 0.10.0 adds `untrack_paths` (stop tracking a path, leave it on disk), an idempotent
 `sync_colocated` (repair colocated git `HEAD` + index), and documents that `git_push` is
 force-with-lease by contract — a non-fast-forward bookmark move succeeds only while the
-remote-tracking lease holds, and is rejected (never blindly forced) otherwise. Still flagged out of
+remote-tracking lease holds, and is rejected (never blindly forced) otherwise. 0.14.0 adds
+pre-commit-style **hooks** — an in-process, zero-cost-when-unused callback registry
+(`ws.hooks`) plus a declarative `.pyjutsu-hooks.toml` (pre-commit-config style), wired to every
+mutation verb (`pre-commit`/`post-commit`, `pre-push`/`post-push`, `pre-fetch`, `pre-export`,
+`pre-snapshot`, `pre-undo`, …) with pre-hook veto, `tx.changed_paths` for the pending change's
+file list, and `run_prek`/`run_pre_commit` adapters — see [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)
+§11. Still flagged out of
 scope: a native async facade, two-revset `diff(from, to)`, word/inline diff, and assorted
 git/rewrite refinements (see `docs/PYJUTSU_CONCEPT.md` §12).
 
@@ -90,6 +96,26 @@ from the typed in-process surface). It depends on a `jj` binary on `PATH`, which
 result = ws.run_jj(["describe", "-m", "msg"])   # JjResult(args, returncode, stdout, stderr)
 ws.run_jj(["bad-command"], check=False)         # don't raise on non-zero exit
 ```
+
+## Hooks
+
+Pre-commit-style hooks around every mutation verb — in-process Python callbacks, zero cost when
+none are registered (jj never runs `.git/hooks/*`; this is pyjutsu's own event surface):
+
+```python
+@ws.hooks.on("pre-commit")
+def check_license(tx, *, paths=None):
+    if any("LICENSE" in p for p in paths):
+        raise HookAbort("add a license file first")
+```
+
+Pre-hooks veto (a transaction rolls back, a push never starts); post-hooks observe and a failure
+raises `PostHookError` carrying the published operation id. Every hook runs by default and all
+failures are reported (`fail_fast = false`); `on_post_failure = "warn"` downgrades post-hook
+failures to a warning. A declarative `.pyjutsu-hooks.toml`
+(pre-commit-config style) is auto-loaded by `Workspace.load(...)` when present, and
+`run_prek`/`run_pre_commit` adapters delegate to the pre-commit ecosystem. See
+[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) §11.
 
 ## Async usage
 
