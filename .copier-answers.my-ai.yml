@@ -1,0 +1,6 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+# This is the my-ai *personal layer* link. The repo's own template is recorded
+# separately in .copier-answers.yml — the two converge independently.
+#   copyroom update --layer my-ai
+_commit: v0.2.0
+_src_path: gh:Bullish-Design/my-ai
