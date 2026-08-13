@@ -11,6 +11,15 @@ inputs:
   # Provides the exact CPython for `languages.python.version = "3.13"`.
   nixpkgs-python:
     url: github:cachix/nixpkgs-python
+  # shellij: durable Zellij workbenches. This repo does not import RepoMan's
+  # meta-module, so it imports shellij's devenv module directly — shellij/zellij/
+  # yazi packages, the guarded `shellij open` enterShell hook, and
+  # YAZI_CONFIG_HOME pointing at the packaged Yazi assets.
+  shellij:
+    url: path:/home/andrew/Documents/Projects/shellij
+
+imports:
+  - shellij/modules
 
 # If you're using non-OSS software, you can set allowUnfree to true.
 # allowUnfree: true
