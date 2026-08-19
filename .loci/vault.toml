@@ -1,0 +1,20 @@
+schema = 1
+id = "01a01bd6-744d-7dbe-99e3-a96f35e7d15b"
+
+[discovery]
+include = ["**/*.md"]
+exclude = [".obsidian/**", ".git/**", ".trash/**", ".jj/**", ".hg/**", ".svn/**", ".venv/**", "venv/**", ".devenv/**", ".direnv/**", ".tox/**", ".ruff_cache/**", ".pytest_cache/**", ".mypy_cache/**", ".hypothesis/**", "__pycache__/**", "node_modules/**", "target/**", "dist/**", "build/**", "result", "result-*"]
+link_targets = ["**/*"]
+
+[schema_policy]
+kind_property = "type"
+
+[resolution]
+case_sensitive = false
+alias_resolution = true
+path_links_only = false
+
+[consistency]
+sync_backed = false
+open_mode = "current"
+audit_interval_seconds = 900
