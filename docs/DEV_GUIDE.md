@@ -202,6 +202,16 @@ The second operation creates and edits the requested working-copy commit. Tests 
 the topology and the checked-out files. Resolve all explicit revisions before filesystem mutation.
 Treat a post-registration error as partial state and include a recovery action.
 
+Run the live secondary-workspace acceptance contract after the build gate:
+
+```bash
+devenv shell -- python scripts/verify_secondary_workspaces.py /tmp/pyjutsu-secondary-live
+```
+
+Use a path that does not exist. The verifier creates isolated user configuration and real on-disk
+workspaces. It compares Pyjutsu with the pinned `jj` CLI for topology, trees, conflicts, sparse
+patterns, operation history, validation, and authoring configuration.
+
 Other layers: Rust unit tests (`cargo test`, e.g. the diff line-counting cases in `diff_stat.rs`),
 Python unit tests for model validation/coercion, and **golden fixtures** (`tests/golden/`,
 checked by `test_golden.py`) that pin the model field shapes — regenerate them against the pin

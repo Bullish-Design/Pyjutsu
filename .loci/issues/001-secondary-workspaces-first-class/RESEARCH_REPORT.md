@@ -138,3 +138,35 @@ environment conditions, user paths, empty `JJ_CONFIG`, warning delivery, and no-
 
 The tests did not induce a safe post-registration storage or checkout failure.
 The typed `PartialWorkspaceError` path is present, but destructive fault injection remains untested.
+
+## Live acceptance evidence
+
+The standalone verifier creates isolated home and configuration directories. It uses real on-disk
+repositories and workspaces. It runs Pyjutsu against the built extension and uses `jj 0.42.0` as
+the differential oracle.
+
+The live run proved:
+
+- default sibling placement and the two-operation lifecycle;
+- stable change ID and typed `Revset` placement;
+- multi-parent topology, identical merged tree IDs, conflict metadata, and checked-out files;
+- copy, full, and empty sparse modes;
+- pre-mutation rejection for invalid, empty, and multiple-result revsets;
+- duplicate-name and non-empty-destination rejection without lost files;
+- repository identity parity for primary, secondary, and CLI authoring;
+- distinct workspace configuration, repository/workspace path conditions, and environment overrides;
+- no secure configuration creation during a normal load; and
+- secure configuration migration warnings delivered through Python.
+
+The first complete live run passed. See
+[`artifacts/20260819T224136Z-live-run/`](artifacts/20260819T224136Z-live-run/).
+The generated repositories are local runtime artifacts. The committed evidence contains commands,
+environment details, build output, and the complete structured live log.
+
+The final verification repeated all canonical gates and the live run after the verifier and lint
+scope changes. All gates passed. The fresh live run passed 43 assertions and five expected-error
+checks. See [`artifacts/20260819T224733Z-final/`](artifacts/20260819T224733Z-final/).
+
+A post-review run narrowed validation checks to `PyjutsuError`, reran the complete lint gate, and
+repeated all 43 live assertions. It passed. See
+[`artifacts/20260819T225032Z-post-review/`](artifacts/20260819T225032Z-post-review/).

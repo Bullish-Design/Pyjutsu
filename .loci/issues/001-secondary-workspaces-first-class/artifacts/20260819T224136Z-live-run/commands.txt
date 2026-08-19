@@ -1,0 +1,2 @@
+devenv tasks run pyjutsu:build
+python scripts/verify_secondary_workspaces.py .loci/issues/001-secondary-workspaces-first-class/artifacts/20260819T224136Z-live-run/run-root

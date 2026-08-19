@@ -1,0 +1,47 @@
+1.8M	.loci/issues/001-secondary-workspaces-first-class/artifacts/20260819T224733Z-final/run-root
+clean-repository/.git/HEAD 21 bytes
+clean-repository/.git/config 156 bytes
+clean-repository/.git/description 77 bytes
+clean-repository/.jj/.gitignore 3 bytes
+cli-default/.jj/repo 25 bytes
+cli-default/common.txt 7 bytes
+cli-explicit/.jj/repo 25 bytes
+cli-merge/.jj/repo 25 bytes
+cli-merge/a-only.txt 2 bytes
+cli-merge/b-only.txt 2 bytes
+cli-merge/common.txt 7 bytes
+cli-merge/conflict.txt 199 bytes
+conditional/.jj/repo 25 bytes
+migration-repository/.git/HEAD 21 bytes
+migration-repository/.git/config 156 bytes
+migration-repository/.git/description 77 bytes
+migration-repository/.jj/.gitignore 3 bytes
+nonempty/keep.txt 5 bytes
+py-default/.jj/repo 25 bytes
+py-default/common.txt 7 bytes
+py-empty/.jj/repo 25 bytes
+py-explicit/.jj/repo 25 bytes
+py-explicit/.jj/workspace-config-id 20 bytes
+py-merge/.jj/repo 25 bytes
+py-merge/a-only.txt 2 bytes
+py-merge/b-only.txt 2 bytes
+py-merge/common.txt 7 bytes
+py-merge/conflict.txt 199 bytes
+py-typed/.jj/repo 25 bytes
+py-typed/common.txt 7 bytes
+py-typed/conflict.txt 5 bytes
+repository/.git/HEAD 41 bytes
+repository/.git/config 156 bytes
+repository/.git/description 77 bytes
+repository/.git/index 512 bytes
+repository/.jj/.gitignore 3 bytes
+cli-default|cbb76d474e912d30314b883d460392e858f7a291
+cli-explicit|4dda55f635e60bca880434a919860b492ec505ab
+cli-merge|9f8cf83737029082e4fb55f924d281305b923b16
+conditional|f5ac13afb294c68c8b04a6ee048e463019f28584
+default|1b890b65714a22f1244622be2e254b5d926379c7
+py-default|fb96582734473119ccb4d9134f3ee7175acb0b78
+py-empty|b43661d105ee30570f7eba2ba289285dacac0698
+py-explicit|4e9f3ad94f36417f8b057b77894cd7eb8435303d
+py-merge|b3574de01ff70dde9fae0abe23a4fb10819e94e9
+py-typed|659297e13802fa055feb8f2ff64a494df8b63028

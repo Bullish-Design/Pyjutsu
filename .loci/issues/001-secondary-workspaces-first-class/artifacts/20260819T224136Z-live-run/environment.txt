@@ -1,0 +1,7 @@
+UTC start: 2026-08-19T22:41:36Z
+Pyjutsu commit: 059289d5cb0fd83079158dce9898dcf3d4467641
+Jujutsu: jj 0.42.0
+Python: 3.13.13
+Rust: rustc 1.94.1 (e408947bf 2026-03-25)
+Environment: devenv shell
+Isolation: fresh HOME, XDG_CONFIG_HOME, and runtime root under run-root/
