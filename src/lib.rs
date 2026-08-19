@@ -11,6 +11,7 @@
 //! than aborting the process.
 
 mod convert;
+mod config_loader;
 mod diff;
 mod diff_stat;
 mod errors;

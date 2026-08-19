@@ -19,6 +19,7 @@ create_exception!(_pyjutsu, RevsetError, PyjutsuError, "A revset failed to parse
 create_exception!(_pyjutsu, ConflictError, PyjutsuError, "A conflict blocked an operation.");
 create_exception!(_pyjutsu, BackendError, PyjutsuError, "The underlying store/backend reported an error.");
 create_exception!(_pyjutsu, WorkspaceError, PyjutsuError, "A workspace could not be loaded or is unusable.");
+create_exception!(_pyjutsu, PartialWorkspaceError, WorkspaceError, "Workspace registration succeeded, but later initialization failed.");
 create_exception!(_pyjutsu, WorkingCopyError, PyjutsuError, "The working copy could not be locked, snapshotted, or checked out.");
 // StaleWorkingCopyError ⊂ WorkingCopyError: operating on a `@` another operation has moved past.
 create_exception!(_pyjutsu, StaleWorkingCopyError, WorkingCopyError, "The working copy is stale (another operation moved `@`).");
@@ -34,6 +35,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ConflictError", m.py().get_type::<ConflictError>())?;
     m.add("BackendError", m.py().get_type::<BackendError>())?;
     m.add("WorkspaceError", m.py().get_type::<WorkspaceError>())?;
+    m.add(
+        "PartialWorkspaceError",
+        m.py().get_type::<PartialWorkspaceError>(),
+    )?;
     m.add("WorkingCopyError", m.py().get_type::<WorkingCopyError>())?;
     m.add("StaleWorkingCopyError", m.py().get_type::<StaleWorkingCopyError>())?;
     m.add("ImmutableCommitError", m.py().get_type::<ImmutableCommitError>())?;

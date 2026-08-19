@@ -187,9 +187,20 @@ The shared fixtures live in `tests/conftest.py`:
 
 Getting **commit-id parity** with the CLI requires care (documented in memory + the M2 notes):
 pinned commit timestamp, `JJ_CONFIG` loaded in-process, and jj's trailing-newline description
-convention (`transaction.py::_complete_newline`). When adding a differential test, author commits
-from the **default** workspace — a secondary workspace's `.jj/repo` is a pointer file that skips
-the repo config layer, so its commit ids can legitimately differ from the CLI's.
+convention (`transaction.py::_complete_newline`). Differential tests can author from primary or
+secondary workspaces. Both resolve the same secure repository configuration identity.
+
+`src/config_loader.rs` is the small Jujutsu 0.42 policy adapter over jj-lib.
+It loads defaults, environment base values, user paths, secure repository configuration, secure
+workspace configuration, and environment overrides. It then resolves conditional scopes.
+The workspace loader resolves the canonical repository path before final `UserSettings` exist.
+Normal loads use `SecureConfig::maybe_load_config()` and do not create empty configuration files.
+Initialization uses the bootstrap path because repository configuration does not exist yet.
+
+Workspace creation follows the pinned CLI lifecycle. The first operation registers the workspace.
+The second operation creates and edits the requested working-copy commit. Tests must compare both
+the topology and the checked-out files. Resolve all explicit revisions before filesystem mutation.
+Treat a post-registration error as partial state and include a recovery action.
 
 Other layers: Rust unit tests (`cargo test`, e.g. the diff line-counting cases in `diff_stat.rs`),
 Python unit tests for model validation/coercion, and **golden fixtures** (`tests/golden/`,

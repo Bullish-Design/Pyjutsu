@@ -23,6 +23,9 @@ class BackendError(PyjutsuError):
 class WorkspaceError(PyjutsuError):
     """A workspace could not be loaded or is unusable."""
 
+class PartialWorkspaceError(WorkspaceError):
+    """Workspace registration succeeded, but later initialization failed."""
+
 class WorkingCopyError(PyjutsuError):
     """The working copy could not be locked, snapshotted, or checked out."""
 
@@ -74,7 +77,11 @@ class PyWorkspace:
     @staticmethod
     def init(path: str | os.PathLike[str], colocate: bool = ...) -> PyWorkspace: ...
     def add_workspace(
-        self, path: str | os.PathLike[str], name: str | None = ...
+        self,
+        path: str | os.PathLike[str],
+        name: str | None = ...,
+        revisions: list[str] | None = ...,
+        sparse_patterns: str = ...,
     ) -> dict[str, object]: ...
     def forget_workspace(self, name: str) -> None: ...
     def workspaces(self) -> list[dict[str, object]]: ...

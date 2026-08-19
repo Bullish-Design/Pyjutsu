@@ -1,0 +1,19 @@
+• Validating lock
+✓ Validating lock in 1.29s
+• Configuring cachix
+✓ Configuring cachix in 3.20ms
+• Configuring shell
+• Evaluating shell
+✓ Evaluating shell in 1.65ms (cached)
+✓ Configuring shell in 2.70ms
+• Loading tasks
+• Evaluating devenv.config.task.config
+✓ Evaluating devenv.config.task.config in 896µs (cached)
+✓ Loading tasks in 2.79ms
+• Running tasks
+• Running pyjutsu:lint
+    Checking pyjutsu v0.15.0 (/home/andrew/.paseo/worktrees/39ifwuy3/hesitant-anaconda)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.28s
+✓ Running pyjutsu:lint in 1.44s
+✓ Running tasks in 1.44s
+{}

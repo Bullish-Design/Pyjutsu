@@ -6,17 +6,18 @@
 //! re-enter this handle. A mutation transaction publishes exactly one jj operation on commit.
 
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gix::remote::{Direction, fetch::Tags};
+use pyo3::exceptions::PyUserWarning;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use jj_lib::commit::Commit;
-use jj_lib::config::{ConfigSource, StackedConfig};
 use jj_lib::git::{
     self, GitFetch, GitFetchRefExpression, GitImportOptions, GitProgress, GitPushOptions,
     GitPushRefTargets, GitSidebandLineTerminator, GitSubprocessCallback, GitSubprocessOptions,
@@ -33,16 +34,18 @@ use jj_lib::merged_tree_builder::MergedTreeBuilder;
 use jj_lib::ref_name::{RefName, RefNameBuf, RemoteName, WorkspaceName, WorkspaceNameBuf};
 use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader, StoreFactories};
 use jj_lib::repo_path::{RepoPath, RepoPathBuf, RepoPathUiConverter};
-use jj_lib::settings::{HumanByteSize, UserSettings};
+use jj_lib::rewrite::merge_commit_trees;
+use jj_lib::settings::HumanByteSize;
 use jj_lib::str_util::{StringExpression, StringPattern};
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
 use jj_lib::workspace::{Workspace, default_working_copy_factories, default_working_copy_factory};
 use jj_lib::workspace_store::{SimpleWorkspaceStore, WorkspaceStore};
 
 use crate::convert::{CommitData, OperationData, RemoteData, WorkspaceInfoData};
+use crate::config_loader::{bootstrap_user_settings, resolved_workspace_settings};
 use crate::errors::{
-    PyjutsuError, RevsetError, StaleWorkingCopyError, map_backend_err, map_edit_err,
-    map_fileset_err, map_git_err, map_workingcopy_err, map_workspace_err, to_py_err,
+    PartialWorkspaceError, PyjutsuError, RevsetError, StaleWorkingCopyError, map_backend_err,
+    map_edit_err, map_fileset_err, map_git_err, map_workingcopy_err, map_workspace_err, to_py_err,
 };
 use crate::repo_view::PyRepoView;
 use crate::transaction::PyTransaction;
@@ -94,69 +97,6 @@ fn parse_fetch_bookmarks(specs: &[String]) -> PyResult<StringExpression> {
         expr = expr.intersection(StringExpression::pattern(neg).negated());
     }
     Ok(expr)
-}
-
-/// Build the `UserSettings` the workspace authors commits with, replicating the CLI's config
-/// stacking so the binding and the pinned `jj` CLI share one identity (→ identical commit ids).
-///
-/// jj-lib hands us the layering primitives but not the env policy: `JJ_CONFIG` is a CLI concept,
-/// so we reproduce it here (concept §2.3). Precedence (low→high): built-in defaults → user config
-/// (`JJ_CONFIG`, else the platform config dir) → this repo's `.jj/repo/config.toml`.
-fn load_user_settings(workspace_root: &Path) -> Result<UserSettings, PyErr> {
-    let mut config = StackedConfig::with_defaults();
-
-    // User layer. `JJ_CONFIG` may name a file or a directory, or be an OS-path-separated list of
-    // them (matching the CLI); when unset, fall back to the platform user config directory.
-    if let Some(raw) = std::env::var_os("JJ_CONFIG") {
-        for path in std::env::split_paths(&raw) {
-            if path.as_os_str().is_empty() {
-                continue;
-            }
-            load_config_path(&mut config, ConfigSource::User, &path)?;
-        }
-    } else if let Some(dir) = default_user_config_dir()
-        && dir.is_dir()
-    {
-        config
-            .load_dir(ConfigSource::User, &dir)
-            .map_err(map_workspace_err)?;
-    }
-
-    // Repo layer (highest precedence here): the default workspace's `.jj/repo/config.toml`. For
-    // secondary workspaces `.jj/repo` is a pointer file, so we only load a regular config file.
-    let repo_config = workspace_root.join(".jj").join("repo").join("config.toml");
-    if repo_config.is_file() {
-        config
-            .load_file(ConfigSource::Repo, repo_config)
-            .map_err(map_workspace_err)?;
-    }
-
-    UserSettings::from_config(config).map_err(map_workspace_err)
-}
-
-/// Load a single `JJ_CONFIG` entry as `source`, treating a directory as a config dir and anything
-/// else as a config file. A missing path is skipped (lenient; the path may simply not exist yet).
-fn load_config_path(
-    config: &mut StackedConfig,
-    source: ConfigSource,
-    path: &Path,
-) -> Result<(), PyErr> {
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.is_dir() => config.load_dir(source, path).map_err(map_workspace_err),
-        Ok(_) => config.load_file(source, path).map_err(map_workspace_err),
-        Err(_) => Ok(()),
-    }
-}
-
-/// The platform user config directory jj reads when `JJ_CONFIG` is unset: `$XDG_CONFIG_HOME/jj`
-/// (or `$HOME/.config/jj`) on Unix. Only the env-driven path is reproduced here; differential
-/// tests always set `JJ_CONFIG`, so this is the convenience path for real usage.
-fn default_user_config_dir() -> Option<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
-        return Some(PathBuf::from(xdg).join("jj"));
-    }
-    let home = std::env::var_os("HOME").filter(|s| !s.is_empty())?;
-    Some(PathBuf::from(home).join(".config").join("jj"))
 }
 
 /// Adopt an existing colocated git repo into a freshly `init_external_git`'d workspace: import its
@@ -560,15 +500,21 @@ impl PyWorkspace {
 impl PyWorkspace {
     /// Load the workspace whose working copy is rooted at `path`.
     #[staticmethod]
-    fn load(path: PathBuf) -> PyResult<Self> {
-        // M2 authors commits, so load the *real* stacked config (user + repo), not just defaults:
-        // `CommitBuilder` and op metadata take author/committer from these settings, and they must
-        // match the CLI's to produce identical commit ids (concept §2.3).
-        let settings = load_user_settings(&path)?;
+    fn load(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
+        // Resolve the workspace metadata before settings. Secondary `.jj/repo` files therefore
+        // identify the same secure repository configuration as the primary workspace.
+        let resolved = resolved_workspace_settings(&path)?;
+        for warning in resolved.warnings {
+            let message = CString::new(warning).map_err(map_workspace_err)?;
+            PyErr::warn(py, &py.get_type::<PyUserWarning>(), &message, 1)?;
+        }
+        let settings = resolved.settings;
         let user_email = settings.user_email().to_owned();
         let store_factories = StoreFactories::default();
         let working_copy_factories = default_working_copy_factories();
-        let inner = Workspace::load(&settings, &path, &store_factories, &working_copy_factories)
+        let inner = resolved
+            .loader
+            .load(&settings, &store_factories, &working_copy_factories)
             .map_err(map_workspace_err)?;
         Ok(Self {
             inner: Mutex::new(inner),
@@ -1116,10 +1062,9 @@ impl PyWorkspace {
     #[staticmethod]
     #[pyo3(signature = (path, colocate=false, trunk=None))]
     fn init(py: Python<'_>, path: PathBuf, colocate: bool, trunk: Option<String>) -> PyResult<Self> {
-        // At init time the repo config doesn't exist yet, so this loads `JJ_CONFIG` + built-in
-        // defaults (the repo layer is silently skipped) — the same identity the CLI's `jj git init`
-        // authors with, so any commit this workspace later makes shares the CLI's commit ids.
-        let settings = load_user_settings(&path)?;
+        // Initialization is a bootstrap path. No repository or workspace configuration identity
+        // exists until jj-lib creates the workspace metadata.
+        let settings = bootstrap_user_settings()?;
         let user_email = settings.user_email().to_owned();
         // Colocating onto an existing `.git` adopts it; `init_colocated_git` would instead try to
         // *create* a git repo and fail ("Failed to initialize git repository").
@@ -1169,20 +1114,20 @@ impl PyWorkspace {
         })
     }
 
-    /// Add a secondary workspace rooted at `path`, sharing this repo's store; returns its
-    /// `WorkspaceInfo` (name + path + the fresh empty `@`). `name` defaults to `path`'s basename.
-    /// jj-lib's `init_workspace_with_existing_repo` does everything here — it creates the new `.jj`,
-    /// checks out a fresh empty commit on `root()` for the new workspace, and **publishes its own
-    /// `add workspace '<name>'` operation** — so this is one off-GIL constructor call, not a
-    /// hand-rolled transaction. Matches `jj workspace add`, except the new `@` lands on `root()`; the
-    /// CLI's default instead bases it on the current `@`'s parents (the `-r <revs>` placement and
-    /// `--sparse-patterns` inheritance are out-of-scope refinements — flagged, not faked).
-    #[pyo3(signature = (path, name=None))]
+    /// Add a secondary workspace on zero, one, or many requested parent revisions.
+    ///
+    /// Registration and initial commit creation follow jj 0.42's two-operation lifecycle. Every
+    /// explicit revset resolves before filesystem mutation. With no revisions, the new workspace
+    /// uses the source working-copy commit's parents. The root commit is the fallback only when the
+    /// source workspace has no working-copy commit.
+    #[pyo3(signature = (path, name=None, revisions=None, sparse_patterns="copy"))]
     fn add_workspace<'py>(
         &self,
         py: Python<'py>,
         path: PathBuf,
         name: Option<&str>,
+        revisions: Option<Vec<String>>,
+        sparse_patterns: &str,
     ) -> PyResult<Bound<'py, PyDict>> {
         let guard = self.locked()?;
         let repo_path = guard.repo_path().to_owned();
@@ -1194,19 +1139,82 @@ impl PyWorkspace {
                 .ok_or_else(|| PyjutsuError::new_err("workspace path has no valid basename"))?
                 .to_owned(),
         });
+        if name_buf.as_str().is_empty() {
+            return Err(PyjutsuError::new_err("new workspace name cannot be empty"));
+        }
 
-        // Load this repo at head, then let jj-lib create the new workspace (+ its op). The new `@`
-        // is an empty commit on root, so there are no files to check out. All `Send` → off the GIL.
-        // The `!Send` `Transaction` jj-lib opens internally is created and dropped on this one
-        // worker thread, so it never crosses a thread boundary.
+        let sparse_patterns = match sparse_patterns {
+            "copy" => Some(
+                guard
+                    .working_copy()
+                    .sparse_patterns()
+                    .map_err(map_workingcopy_err)?
+                    .to_vec(),
+            ),
+            "full" => None,
+            "empty" => Some(Vec::new()),
+            other => {
+                return Err(PyjutsuError::new_err(format!(
+                    "sparse_patterns must be 'copy', 'full', or 'empty', got '{other}'"
+                )));
+            }
+        };
+
+        let source_name = guard.workspace_name().to_owned();
+        let source_root = guard.workspace_root().to_owned();
+        let user_email = self.user_email.clone();
         let loader = guard.repo_loader();
         let (wc_id, new_root) = py.allow_threads(|| -> PyResult<_> {
-            // `init_workspace_with_existing_repo` creates `<path>/.jj` but not `<path>` itself;
-            // `jj workspace add` creates the destination dir, so do the same here.
-            std::fs::create_dir_all(&path).map_err(map_workspace_err)?;
             let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
+            if repo.view().get_wc_commit_id(&name_buf).is_some() {
+                return Err(PyjutsuError::new_err(format!(
+                    "workspace named '{}' already exists",
+                    name_buf.as_str()
+                )));
+            }
+            if path.exists() {
+                let mut entries = std::fs::read_dir(&path).map_err(map_workspace_err)?;
+                if entries.next().transpose().map_err(map_workspace_err)?.is_some() {
+                    return Err(PyjutsuError::new_err(
+                        "destination path exists and is not an empty directory",
+                    ));
+                }
+            }
+
+            // Resolve every parent before creating the destination or registering the workspace.
+            let parents = if revisions.as_ref().is_none_or(Vec::is_empty) {
+                if let Some(wc_id) = repo.view().get_wc_commit_id(&source_name) {
+                    let wc_commit = repo.store().get_commit(wc_id).map_err(map_backend_err)?;
+                    pollster::block_on(wc_commit.parents()).map_err(map_backend_err)?
+                } else {
+                    vec![repo.store().root_commit()]
+                }
+            } else {
+                let mut parents = Vec::new();
+                for expression in revisions.as_deref().unwrap_or_default() {
+                    let mut commits = crate::revset::evaluate(
+                        &*repo,
+                        expression,
+                        &source_name,
+                        &source_root,
+                        &user_email,
+                    )?;
+                    if commits.len() != 1 {
+                        return Err(RevsetError::new_err(format!(
+                            "revset '{expression}' resolved to {} revisions, expected exactly 1",
+                            commits.len()
+                        )));
+                    }
+                    parents.push(commits.pop().expect("length checked as one"));
+                }
+                parents
+            };
+
+            if !path.exists() {
+                std::fs::create_dir(&path).map_err(map_workspace_err)?;
+            }
             let factory = default_working_copy_factory();
-            let (new_ws, new_repo) =
+            let (mut new_ws, registered_repo) =
                 pollster::block_on(Workspace::init_workspace_with_existing_repo(
                     &path,
                     &repo_path,
@@ -1215,12 +1223,61 @@ impl PyWorkspace {
                     name_buf.clone(),
                 ))
                 .map_err(map_workspace_err)?;
-            let wc_id = new_repo
-                .view()
-                .get_wc_commit_id(&name_buf)
-                .ok_or_else(|| PyjutsuError::new_err("new workspace has no working-copy commit"))?
-                .hex();
-            Ok((wc_id, new_ws.workspace_root().to_owned()))
+
+            let finish_initialization = || -> PyResult<_> {
+                if let Some(patterns) = sparse_patterns {
+                    let mut locked_ws =
+                        pollster::block_on(new_ws.start_working_copy_mutation())
+                            .map_err(map_workingcopy_err)?;
+                    pollster::block_on(locked_ws.locked_wc().set_sparse_patterns(patterns))
+                        .map_err(map_workingcopy_err)?;
+                    let operation_id = locked_ws.locked_wc().old_operation_id().clone();
+                    pollster::block_on(locked_ws.finish(operation_id))
+                        .map_err(map_workingcopy_err)?;
+                }
+
+                let mut tx = registered_repo.start_transaction();
+                let tree = pollster::block_on(merge_commit_trees(tx.repo(), &parents))
+                    .map_err(map_backend_err)?;
+                let parent_ids = parents.iter().map(|commit| commit.id().clone()).collect();
+                let new_commit = pollster::block_on(
+                    tx.repo_mut().new_commit(parent_ids, tree).write(),
+                )
+                .map_err(map_backend_err)?;
+                pollster::block_on(tx.repo_mut().edit(name_buf.clone(), &new_commit))
+                    .map_err(map_edit_err)?;
+                pollster::block_on(tx.repo_mut().rebase_descendants())
+                    .map_err(map_backend_err)?;
+                let new_repo = pollster::block_on(tx.commit(format!(
+                    "create initial working-copy commit in workspace {}",
+                    name_buf.as_str()
+                )))
+                .map_err(map_backend_err)?;
+
+                let old_tree = new_ws
+                    .working_copy()
+                    .tree()
+                    .map_err(map_workingcopy_err)?
+                    .clone();
+                pollster::block_on(new_ws.check_out(
+                    new_repo.operation().id().clone(),
+                    Some(&old_tree),
+                    &new_commit,
+                ))
+                .map_err(map_workingcopy_err)?;
+                Ok((new_commit.id().hex(), new_ws.workspace_root().to_owned()))
+            };
+
+            finish_initialization().map_err(|error| {
+                PartialWorkspaceError::new_err(format!(
+                    "workspace '{}' was registered at '{}', but initialization failed: {error}; \
+                     recover with source_workspace.forget_workspace({:?}); files remain at '{}'",
+                    name_buf.as_str(),
+                    path.display(),
+                    name_buf.as_str(),
+                    path.display()
+                ))
+            })
         })?;
         WorkspaceInfoData::new(name_buf.as_str(), Some(&new_root), &wc_id).to_dict(py)
     }

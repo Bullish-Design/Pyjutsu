@@ -1,11 +1,4 @@
-"""Slice 9: workspace management — `init` / `add_workspace` / `forget_workspace` / `workspaces`.
-
-These are `Workspace`-level verbs (not `Transaction` methods). A fresh workspace `@` gets a random
-change id (like `tx.new`), so — as in `test_new` — these assert *structure* (names present/absent in
-the workspace set, `@` empty on `root()`, one op each), not commit-id parity. `add_workspace` puts
-the new `@` on `root()`; the CLI's `jj workspace add` default bases it on the current `@`'s parents,
-so the differential drives the CLI with `-r 'root()'` to match the primitive's placement.
-"""
+"""Workspace management, including parent-aware secondary workspace creation."""
 
 from __future__ import annotations
 
@@ -14,7 +7,7 @@ from pathlib import Path
 
 import pyjutsu
 import pytest
-from pyjutsu import PyjutsuError, WorkspaceError
+from pyjutsu import PyjutsuError, Revset, RevsetError, WorkspaceError
 
 from tests.diff.jj_cli import JjCli
 
@@ -87,11 +80,165 @@ def test_add_workspace_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli
     assert "second" in jj.workspaces(other)
     assert (tmp_path / "second" / ".jj").exists()
 
-    # The binding delegates to jj-lib's faithful primitive, which publishes exactly one
-    # `add workspace '<name>'` op. (The CLI's `jj workspace add` is a richer wrapper that emits a
-    # second `create initial working-copy commit in workspace …` op for its `-r` placement logic —
-    # the out-of-scope refinement §1(b) — so op-count parity is not expected on the CLI side.)
-    assert len(jj.op_log_ids(scratch_repo)) == ops_before + 1
+    # Registration and initial working-copy creation are separate operations, matching the CLI.
+    assert len(jj.op_log_ids(scratch_repo)) == ops_before + 2
+    assert jj.op_log_descriptions(scratch_repo, 2) == [
+        "create initial working-copy commit in workspace second",
+        "add workspace 'second'",
+    ]
+
+
+def test_add_workspace_default_uses_source_parents(
+    linear_repo: Path, tmp_path: Path, jj: JjCli
+) -> None:
+    other = _copy_repo(linear_repo, tmp_path / "default-copy")
+    expected_parents = jj.parent_commit_ids(linear_repo, "@")
+
+    ws = pyjutsu.Workspace.load(linear_repo)
+    info = ws.add_workspace(tmp_path / "default-second", name="second")
+    jj(other, "workspace", "add", "--name", "second", str(tmp_path / "cli-default-second"))
+
+    assert ws.head().resolve(info.wc_commit_id).parent_ids == expected_parents
+    assert jj.parent_commit_ids(other, "second@") == expected_parents
+
+
+def test_add_workspace_accepts_explicit_parent(
+    linear_repo: Path, tmp_path: Path, jj: JjCli
+) -> None:
+    expected_parent = jj.commit_id(linear_repo, "@--")
+
+    ws = pyjutsu.Workspace.load(linear_repo)
+    info = ws.add_workspace(
+        tmp_path / "explicit-second",
+        name="second",
+        revisions="@--",
+    )
+
+    assert ws.head().resolve(info.wc_commit_id).parent_ids == [expected_parent]
+    assert (tmp_path / "explicit-second" / "a.txt").is_file()
+    assert (tmp_path / "explicit-second" / "b.txt").is_file()
+    assert not (tmp_path / "explicit-second" / "c.txt").exists()
+
+
+def test_add_workspace_accepts_change_id_and_typed_revset(
+    linear_repo: Path, tmp_path: Path, jj: JjCli
+) -> None:
+    expected_parent = jj.commit_id(linear_repo, "@--")
+    change_id = jj.change_id(linear_repo, "@--")
+    ws = pyjutsu.Workspace.load(linear_repo)
+
+    by_change = ws.add_workspace(
+        tmp_path / "by-change",
+        name="by-change",
+        revisions=change_id,
+    )
+    by_revset = ws.add_workspace(
+        tmp_path / "by-revset",
+        name="by-revset",
+        revisions=Revset("@--"),
+    )
+
+    assert ws.head().resolve(by_change.wc_commit_id).parent_ids == [expected_parent]
+    assert ws.head().resolve(by_revset.wc_commit_id).parent_ids == [expected_parent]
+
+
+def test_add_workspace_multiple_parents_preserves_conflicts(
+    conflict_repo: Path, tmp_path: Path, jj: JjCli
+) -> None:
+    other = _copy_repo(conflict_repo, tmp_path / "conflict-copy")
+    expected_parents = sorted(
+        [jj.commit_id(conflict_repo, "sideA"), jj.commit_id(conflict_repo, "sideB")]
+    )
+    ws = pyjutsu.Workspace.load(conflict_repo)
+
+    info = ws.add_workspace(
+        tmp_path / "merge-second",
+        name="merge-second",
+        revisions=["sideA", "sideB"],
+    )
+    jj.add_workspace(
+        other,
+        tmp_path / "cli-merge-second",
+        name="merge-second",
+        revisions=["sideA", "sideB"],
+    )
+
+    created = ws.head().resolve(info.wc_commit_id)
+    assert sorted(created.parent_ids) == expected_parents
+    assert sorted(jj.parent_commit_ids(other, "merge-second@")) == expected_parents
+    assert created.has_conflict
+    assert pyjutsu.Workspace.load(info.path).conflicts("@")
+    assert jj.conflicted_paths(tmp_path / "cli-merge-second") == {"file.txt": 2}
+    assert (tmp_path / "merge-second" / "file.txt").is_file()
+
+
+@pytest.mark.parametrize(
+    "revision",
+    ["this is not a revset (", "none()", "all()"],
+    ids=["invalid", "empty", "multiple"],
+)
+def test_add_workspace_rejects_non_single_revision_before_creation(
+    linear_repo: Path,
+    tmp_path: Path,
+    revision: str,
+) -> None:
+    destination = tmp_path / f"bad-{revision[:3]}"
+    ws = pyjutsu.Workspace.load(linear_repo)
+
+    with pytest.raises(RevsetError):
+        ws.add_workspace(destination, name=f"bad-{revision[:3]}", revisions=revision)
+
+    assert not destination.exists()
+    assert all(not row.name.startswith("bad-") for row in ws.workspaces())
+
+
+def test_add_workspace_rejects_duplicate_name_and_nonempty_destination(
+    scratch_repo: Path, tmp_path: Path
+) -> None:
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    ws.add_workspace(tmp_path / "first", name="taken", revisions="root()")
+
+    duplicate_destination = tmp_path / "duplicate"
+    with pytest.raises(PyjutsuError, match="already exists"):
+        ws.add_workspace(duplicate_destination, name="taken", revisions="root()")
+    assert not duplicate_destination.exists()
+
+    nonempty = tmp_path / "nonempty"
+    nonempty.mkdir()
+    marker = nonempty / "keep.txt"
+    marker.write_text("keep\n")
+    with pytest.raises(PyjutsuError, match="not an empty directory"):
+        ws.add_workspace(nonempty, name="new-name", revisions="root()")
+    assert marker.read_text() == "keep\n"
+    assert "new-name" not in {row.name for row in ws.workspaces()}
+
+
+def test_add_workspace_sparse_pattern_modes(
+    linear_repo: Path, tmp_path: Path, jj: JjCli
+) -> None:
+    jj(linear_repo, "sparse", "set", "--clear", "--add", "a.txt")
+    ws = pyjutsu.Workspace.load(linear_repo)
+
+    copied = ws.add_workspace(tmp_path / "sparse-copy", name="sparse-copy")
+    full = ws.add_workspace(
+        tmp_path / "sparse-full",
+        name="sparse-full",
+        sparse_patterns="full",
+    )
+    empty = ws.add_workspace(
+        tmp_path / "sparse-empty",
+        name="sparse-empty",
+        sparse_patterns="empty",
+    )
+
+    assert copied.path is not None and full.path is not None and empty.path is not None
+    copied_path = Path(copied.path)
+    full_path = Path(full.path)
+    empty_path = Path(empty.path)
+    assert (copied_path / "a.txt").is_file()
+    assert not (copied_path / "b.txt").exists()
+    assert all((full_path / name).is_file() for name in ("a.txt", "b.txt", "c.txt"))
+    assert {path.name for path in empty_path.iterdir()} == {".jj"}
 
 
 def test_add_workspace_default_name_is_basename(scratch_repo: Path, tmp_path: Path) -> None:

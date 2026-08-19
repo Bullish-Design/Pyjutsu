@@ -69,6 +69,25 @@ ws.git_push("origin", "main", allow_new=True)
 ws.undo()                        # revert the head operation
 ```
 
+## Secondary workspaces
+
+Create a workspace on the source workspace's parents, one selected revision, or several parents:
+
+```python
+info = ws.add_workspace("../candidate", name="candidate")
+info = ws.add_workspace("../candidate", revisions="trunk()")
+info = ws.add_workspace("../integration", revisions=["candidate-a", "candidate-b"])
+candidate = Workspace.load(info.path)
+```
+
+`revisions=None` matches `jj workspace add`: the new `@` is a sibling of the source `@`.
+Use `revisions="root()"` for the former Pyjutsu default. Multiple parents use Jujutsu's merged
+tree and preserve conflicts. `sparse_patterns` accepts `"copy"`, `"full"`, or `"empty"`.
+
+Primary and secondary workspaces load the same secure repository configuration. Intentional
+workspace configuration remains workspace-specific. Configuration precedence and conditional
+path, hostname, and environment scopes match the pinned Jujutsu 0.42 behavior.
+
 ## Revset builder
 
 A typed, composable builder renders to jj revset strings (it evaluates nothing) — escaping mirrors

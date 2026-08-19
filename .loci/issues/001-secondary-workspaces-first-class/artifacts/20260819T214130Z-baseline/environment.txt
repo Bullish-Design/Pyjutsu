@@ -1,0 +1,5 @@
+command=pytest -q tests/test_workspace_mgmt.py tests/test_workspace_load.py
+jj_version=jj 0.42.0
+rustc_version=rustc 1.94.1 (e408947bf 2026-03-25) (built from a source tarball)
+python_version=Python 3.13.13
+git_commit=9b1075526b19c801e631c8b42b1f1aafbfaf3ae2

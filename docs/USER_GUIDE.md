@@ -60,6 +60,37 @@ ws.root            # Path to the working-copy root
 branches become jj bookmarks, `@` becomes an empty child of the imported `HEAD`, and any
 uncommitted edits are preserved.
 
+### Add a secondary workspace
+
+`add_workspace()` returns `WorkspaceInfo`. Load its path to obtain a workspace handle.
+
+```python
+info = ws.add_workspace(
+    "../candidate",
+    name="candidate",
+    revisions="trunk()",
+)
+candidate = Workspace.load(info.path)
+```
+
+`revisions` accepts a string, a `Revset`, a sequence of either type, or `None`.
+With `None`, the new `@` uses the source `@`'s parents and becomes its sibling.
+Each explicit revset must resolve to one commit. Several revisions create a merge working-copy
+commit with Jujutsu's merged tree. Conflicts remain first-class Jujutsu conflicts.
+
+Use `revisions="root()"` to request the former root-based behavior.
+The `sparse_patterns` setting accepts `"copy"` (default), `"full"`, or `"empty"`.
+Registration and initial commit creation publish two operations, as in Jujutsu 0.42.
+
+Pyjutsu validates revision expressions, the name, and the destination before registration.
+If later initialization fails, `PartialWorkspaceError` explains how to forget the registration.
+Pyjutsu leaves existing files in place.
+
+Workspace loading uses Jujutsu's secure configuration identities.
+Primary and secondary workspaces share repository configuration.
+Workspace configuration can intentionally differ for each workspace.
+Conditional configuration receives canonical repository and workspace paths, hostname, and environment context.
+
 ---
 
 ## 3. Reading the repo
@@ -498,6 +529,7 @@ All in-process errors derive from `PyjutsuError` (import from `pyjutsu` or `pyju
 | `ConflictError` | a conflict blocked an operation |
 | `BackendError` | the store/backend reported an error |
 | `WorkspaceError` | a workspace couldn't be loaded or is unusable |
+| `PartialWorkspaceError` | registration succeeded, but later workspace initialization failed |
 | `WorkingCopyError` | the working copy couldn't be locked/snapshotted/checked out |
 | `StaleWorkingCopyError` (⊂ `WorkingCopyError`) | `@` is stale — call `update_stale()` |
 | `ImmutableCommitError` | you tried to rewrite/abandon an immutable commit (e.g. the root) |

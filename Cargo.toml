@@ -30,6 +30,14 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 pollster = "0.4"
 futures = "0.3"
 
+# jj-cli owns environment and config-path policy, while jj-lib owns the configuration data model.
+# These exact jj 0.42 dependencies support Pyjutsu's small parity adapter without linking jj-cli.
+dunce = "=1.0.5"
+etcetera = "=0.11.0"
+rand = "=0.10.1"
+rand_chacha = "=0.10.0"
+whoami = "=2.1.2"
+
 # Git interop (M2 slice 10): `jj_lib::git::add_remote` takes `gix::remote::fetch::Tags`, and there
 # is no public jj-lib remote-URL reader, so we read it back via `gix::Remote::url(Direction::Fetch)`.
 # Pinned to jj-lib 0.42.0's own locked gix so the types unify (Cargo reuses the single 0.84.0 build;
