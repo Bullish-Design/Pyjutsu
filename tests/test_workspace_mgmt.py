@@ -18,6 +18,11 @@ def _copy_repo(src: Path, dst: Path) -> Path:
     return dst
 
 
+def _cli_tree_id(workspace_root: Path) -> str:
+    """The tree id of the working-copy commit in a CLI-created workspace at ``workspace_root``."""
+    return pyjutsu.Workspace.load(workspace_root).working_copy().tree_id
+
+
 def test_init_creates_loadable_repo(tmp_path: Path, jj: JjCli) -> None:
     target = tmp_path / "r"
     target.mkdir()
@@ -98,13 +103,17 @@ def test_add_workspace_default_uses_source_parents(
     info = ws.add_workspace(tmp_path / "default-second", name="second")
     jj(other, "workspace", "add", "--name", "second", str(tmp_path / "cli-default-second"))
 
-    assert ws.head().resolve(info.wc_commit_id).parent_ids == expected_parents
+    created = ws.head().resolve(info.wc_commit_id)
+    assert created.parent_ids == expected_parents
     assert jj.parent_commit_ids(other, "second@") == expected_parents
+    # The checked-out content must match the CLI's, not only the topology.
+    assert created.tree_id == _cli_tree_id(tmp_path / "cli-default-second")
 
 
 def test_add_workspace_accepts_explicit_parent(
     linear_repo: Path, tmp_path: Path, jj: JjCli
 ) -> None:
+    other = _copy_repo(linear_repo, tmp_path / "explicit-copy")
     expected_parent = jj.commit_id(linear_repo, "@--")
 
     ws = pyjutsu.Workspace.load(linear_repo)
@@ -113,8 +122,18 @@ def test_add_workspace_accepts_explicit_parent(
         name="second",
         revisions="@--",
     )
+    jj.add_workspace(
+        other,
+        tmp_path / "cli-explicit-second",
+        name="second",
+        revisions=[expected_parent],
+    )
 
-    assert ws.head().resolve(info.wc_commit_id).parent_ids == [expected_parent]
+    created = ws.head().resolve(info.wc_commit_id)
+    assert created.parent_ids == [expected_parent]
+    assert jj.parent_commit_ids(other, "second@") == [expected_parent]
+    # The checked-out content must match the CLI's, not only the topology.
+    assert created.tree_id == _cli_tree_id(tmp_path / "cli-explicit-second")
     assert (tmp_path / "explicit-second" / "a.txt").is_file()
     assert (tmp_path / "explicit-second" / "b.txt").is_file()
     assert not (tmp_path / "explicit-second" / "c.txt").exists()
@@ -166,10 +185,39 @@ def test_add_workspace_multiple_parents_preserves_conflicts(
     created = ws.head().resolve(info.wc_commit_id)
     assert sorted(created.parent_ids) == expected_parents
     assert sorted(jj.parent_commit_ids(other, "merge-second@")) == expected_parents
+    # The merged (conflicted) tree must match the CLI's, not only the topology.
+    assert created.tree_id == _cli_tree_id(tmp_path / "cli-merge-second")
     assert created.has_conflict
     assert pyjutsu.Workspace.load(info.path).conflicts("@")
     assert jj.conflicted_paths(tmp_path / "cli-merge-second") == {"file.txt": 2}
     assert (tmp_path / "merge-second" / "file.txt").is_file()
+
+
+def test_add_workspace_deduplicates_repeated_revisions(
+    bookmarked_repo: Path, tmp_path: Path, jj: JjCli
+) -> None:
+    """A commit named twice becomes one parent, matching the CLI's `IndexSet<CommitId>`."""
+    other = _copy_repo(bookmarked_repo, tmp_path / "dedupe-copy")
+    expected_parent = jj.commit_id(bookmarked_repo, "feature")
+
+    ws = pyjutsu.Workspace.load(bookmarked_repo)
+    info = ws.add_workspace(
+        tmp_path / "dedupe-second",
+        name="second",
+        revisions=["feature", "feature"],
+    )
+    jj.add_workspace(
+        other,
+        tmp_path / "cli-dedupe-second",
+        name="second",
+        revisions=["feature", "feature"],
+    )
+
+    # One parent on both sides — a merge commit must never record the same parent twice.
+    created = ws.head().resolve(info.wc_commit_id)
+    assert created.parent_ids == [expected_parent]
+    assert jj.parent_commit_ids(other, "second@") == [expected_parent]
+    assert created.tree_id == _cli_tree_id(tmp_path / "cli-dedupe-second")
 
 
 @pytest.mark.parametrize(

@@ -27,8 +27,15 @@ text. Four ideas carry the whole API:
 4. **The operation log is your undo history.** `ws.undo()`, `ws.restore_operation(op)`, and
    `ws.at_operation(op)` (time-travel reads) all work off it.
 
-Revisions are named with **revset strings** — jj's own query language (`"@"`, `"trunk()..@"`,
+Revisions are named with **revset strings** — jj's own query language (`"@"`, `"main..@"`,
 `"main::"`). Anywhere a revset is accepted you can pass a string or a built `Revset` (see §7).
+
+> **No CLI revset aliases.** Pyjutsu evaluates jj-lib revsets. It does not load the `jj`
+> command-line crate, which is where the alias definitions live. So `trunk()`,
+> `immutable_heads()`, `immutable()`, `mutable()`, `visible()`, and `hidden()` do not exist here —
+> they raise `RevsetError: Function ... doesn't exist`. Repository `[revset-aliases]` configuration
+> has no effect either. Name the bookmark directly (`"main"`), or use a relative form such as
+> `"@-"` or `"main..@"`.
 
 ```python
 import pyjutsu
@@ -68,7 +75,7 @@ uncommitted edits are preserved.
 info = ws.add_workspace(
     "../candidate",
     name="candidate",
-    revisions="trunk()",
+    revisions="main",
 )
 candidate = Workspace.load(info.path)
 ```
@@ -77,6 +84,9 @@ candidate = Workspace.load(info.path)
 With `None`, the new `@` uses the source `@`'s parents and becomes its sibling.
 Each explicit revset must resolve to one commit. Several revisions create a merge working-copy
 commit with Jujutsu's merged tree. Conflicts remain first-class Jujutsu conflicts.
+This rule is stricter than the pinned `jj` 0.42 CLI, which lets `jj workspace add -r 'A|B'` take
+one expression that matches two commits. To give the new `@` several parents, pass several
+revisions rather than one expression that matches several commits.
 
 Use `revisions="root()"` to request the former root-based behavior.
 The `sparse_patterns` setting accepts `"copy"` (default), `"full"`, or `"empty"`.
@@ -100,8 +110,8 @@ operation), or on a `RepoView` you hold and reuse. Reads are **side-effect-free*
 
 ```python
 ws.working_copy()                 # Commit for @
-ws.resolve("trunk()")             # a single-revision revset -> Commit (errors if 0 or many)
-ws.log("trunk()..@", limit=50)    # list[Commit] in revset order
+ws.resolve("main")                # a single-revision revset -> Commit (errors if 0 or many)
+ws.log("main..@", limit=50)       # list[Commit] in revset order
 ws.iter_log("::@")                # lazy Iterator[Commit] for huge histories
 ws.bookmarks()                    # list[Bookmark] (local + remote-tracking)
 ws.operations(limit=20)           # list[Operation] (the op log, newest first)
@@ -154,8 +164,8 @@ You may make several mutations in one block; they land as one atomic operation.
 
 ```python
 with ws.transaction("start feature") as tx:
-    trunk = ws.resolve("trunk()")
-    child = tx.new(parents=[trunk.change_id])   # new empty commit, @ moves onto it
+    base = ws.resolve("main")
+    child = tx.new(parents=[base.change_id])    # new empty commit, @ moves onto it
     tx.describe(child.change_id, "Add feature")
     tx.set_bookmark("feature", child.change_id)
 
@@ -281,7 +291,7 @@ ws.log(R.author("alice") & R.description("fix"))    # (author(substring:"alice")
 ws.log(R.range(R.root(), R.working_copy()))         # root()..@
 ws.log(R.bookmark("main").descendants())            # main::
 ws.log(R.description(Pattern.glob("release-*")))     # explicit pattern kind
-ws.log(R.raw("trunk() | tags()"))                    # escape hatch: anything unbound, verbatim
+ws.log(R.raw("main | tags()"))                       # escape hatch: anything unbound, verbatim
 ```
 
 - A bare `str` passed to a filter (`author`/`description`/…) is coerced to a **substring** pattern

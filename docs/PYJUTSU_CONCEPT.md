@@ -101,8 +101,8 @@ ws = Workspace.load(Path("my-repo"))            # or Workspace.init(path, coloca
 
 # --- reads (frozen Pydantic models; a RepoView never snapshots @) ---
 at = ws.working_copy()                           # Commit for @
-trunk = ws.resolve("trunk()")                    # single-revision resolve → Commit
-hist: list[Commit] = ws.log("trunk()..@", limit=50)
+base = ws.resolve("main")                        # single-revision resolve → Commit
+hist: list[Commit] = ws.log("main..@", limit=50)
 bms: list[Bookmark] = ws.bookmarks()             # local + remote tracking
 ops: list[Operation] = ws.operations(limit=20)   # op log (id, time, description, tags)
 stat = ws.diff_stat(at.commit_id)                # files / insertions / deletions
@@ -110,7 +110,7 @@ conflicts = ws.conflicts("@")                    # list[Conflict]; first-class, 
 
 # --- mutations: one transaction == one jj operation (native, atomic) ---
 with ws.transaction("start feature") as tx:
-    child = tx.new(parents=[trunk.change_id])
+    child = tx.new(parents=[base.change_id])
     tx.describe(child, "Add feature")
     tx.set_bookmark("feature", child)
 op_id = ws.head_operation()                       # the op the tx produced
@@ -265,7 +265,7 @@ ws.working_copy()      # -> the @ of THIS workspace only
 ws.name                # this workspace's id (e.g. "default")
 
 # create a second working copy sharing the same repo
-info = ws.add_workspace(path=Path("../repo-feat"), name="feat", revisions="trunk()")
+info = ws.add_workspace(path=Path("../repo-feat"), name="feat", revisions="main")
 other = Workspace.load(info.path)
 #   -> WorkspaceInfo first, then a handle bound to ../repo-feat
 
@@ -281,8 +281,10 @@ the retained path and a recovery action. If `path` exists and is non-empty, the 
 registration.
 
 With no revisions, the new `@` uses the source `@`'s parents. Explicit revisions each resolve to
-one commit. Multiple parents use Jujutsu's merged-tree semantics. Sparse patterns copy by default,
-with full and empty modes available explicitly.
+one commit. This is stricter than the pinned `jj` 0.42 CLI, which accepts one expression that
+matches several commits; to give the new `@` several parents, pass several revisions rather than
+one expression that matches several commits. Multiple parents use Jujutsu's merged-tree semantics.
+Sparse patterns copy by default, with full and empty modes available explicitly.
 
 Workspace loading resolves the canonical repository identity through jj-lib before it constructs
 `UserSettings`. Secure repository configuration is shared. Secure workspace configuration remains

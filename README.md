@@ -38,8 +38,8 @@ from pyjutsu import Workspace
 ws = Workspace.load("my-repo")
 
 ws.working_copy()                # Commit for @
-ws.resolve("trunk()")            # single-revision revset -> Commit
-ws.log("trunk()..@", limit=50)   # list[Commit] in revset order
+ws.resolve("main")               # single-revision revset -> Commit
+ws.log("main..@", limit=50)      # list[Commit] in revset order
 ws.iter_log("::@")               # lazy Iterator[Commit] for huge histories
 ws.bookmarks()                   # list[Bookmark] (local + remote-tracking)
 ws.operations(limit=20)          # list[Operation] (the op log)
@@ -75,7 +75,7 @@ Create a workspace on the source workspace's parents, one selected revision, or 
 
 ```python
 info = ws.add_workspace("../candidate", name="candidate")
-info = ws.add_workspace("../candidate", revisions="trunk()")
+info = ws.add_workspace("../candidate", revisions="main")
 info = ws.add_workspace("../integration", revisions=["candidate-a", "candidate-b"])
 candidate = Workspace.load(info.path)
 ```
@@ -83,6 +83,10 @@ candidate = Workspace.load(info.path)
 `revisions=None` matches `jj workspace add`: the new `@` is a sibling of the source `@`.
 Use `revisions="root()"` for the former Pyjutsu default. Multiple parents use Jujutsu's merged
 tree and preserve conflicts. `sparse_patterns` accepts `"copy"`, `"full"`, or `"empty"`.
+
+Each explicit revset must resolve to exactly one commit. This is stricter than the pinned `jj`
+0.42 CLI, which accepts one expression that matches several commits. To give the new `@` several
+parents, pass several revisions instead of one expression that matches several commits.
 
 Primary and secondary workspaces load the same secure repository configuration. Intentional
 workspace configuration remains workspace-specific. Configuration precedence and conditional
@@ -103,6 +107,10 @@ ws.log(R.range(R.root(), R.working_copy()))        # root()..@
 ws.log(R.bookmark("main").descendants())           # main::
 ws.log(R.description(Pattern.glob("release-*")))   # explicit pattern kind
 ```
+
+Pyjutsu evaluates jj-lib revsets only. It does not load the `jj` command-line crate, so the CLI
+revset aliases (`trunk()`, `immutable_heads()`, `mutable()`, and the rest) do not exist here. Name
+the bookmark instead — see [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) §1.
 
 ## Escape hatch: `run_jj`
 

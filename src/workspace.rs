@@ -5,7 +5,7 @@
 //! a `Mutex`, since it owns a `MutableRepo`). The Python `tx` object is a thin token whose methods
 //! re-enter this handle. A mutation transaction publishes exactly one jj operation on commit.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1057,15 +1057,19 @@ impl PyWorkspace {
     /// removed out of band leaves its GC-anchor refs behind, and carrying them into the new
     /// workspace just accumulates dead bookkeeping (project 10 §P1; see `prune_orphaned_keep_refs`).
     ///
-    /// I/O-heavy and `Send` → the constructor runs **off the GIL**. The returned `Workspace` is
-    /// wrapped in a fresh `PyWorkspace` (same shape as `load`).
+    /// I/O-heavy and `Send` → the constructor runs **off the GIL**. Creation itself uses bootstrap
+    /// settings, because no repository or workspace configuration identity exists yet. The handle
+    /// this method returns is then built by `load`, so settings are re-resolved against the
+    /// now-existing repository and workspace paths. A user conditional scope keyed on
+    /// `--when.repositories` or `--when.workspaces` therefore applies to commits authored through
+    /// the returned handle, exactly as it does for `load`. Any secure-configuration warning reaches
+    /// Python as a `UserWarning`.
     #[staticmethod]
     #[pyo3(signature = (path, colocate=false, trunk=None))]
     fn init(py: Python<'_>, path: PathBuf, colocate: bool, trunk: Option<String>) -> PyResult<Self> {
         // Initialization is a bootstrap path. No repository or workspace configuration identity
         // exists until jj-lib creates the workspace metadata.
         let settings = bootstrap_user_settings()?;
-        let user_email = settings.user_email().to_owned();
         // Colocating onto an existing `.git` adopts it; `init_colocated_git` would instead try to
         // *create* a git repo and fail ("Failed to initialize git repository").
         let adopt_existing = colocate && path.join(".git").exists();
@@ -1107,19 +1111,25 @@ impl PyWorkspace {
                 Ok(workspace)
             }
         })?;
-        Ok(Self {
-            inner: Mutex::new(workspace),
-            user_email,
-            tx_open: Arc::new(AtomicBool::new(false)),
-        })
+        // The bootstrap settings resolved with no repository and no workspace path, so a
+        // conditional scope keyed on either path never applied. Release the bootstrap handle and
+        // re-open the workspace through `load`, which resolves settings against the paths that now
+        // exist on disk.
+        drop(workspace);
+        Self::load(py, path)
     }
 
     /// Add a secondary workspace on zero, one, or many requested parent revisions.
     ///
     /// Registration and initial commit creation follow jj 0.42's two-operation lifecycle. Every
-    /// explicit revset resolves before filesystem mutation. With no revisions, the new workspace
-    /// uses the source working-copy commit's parents. The root commit is the fallback only when the
-    /// source workspace has no working-copy commit.
+    /// explicit revset resolves before filesystem mutation. Each explicit revset must resolve to
+    /// exactly one commit — a deliberate divergence from the CLI, which accepts multi-commit
+    /// revsets. Explicit revisions that name the same commit collapse to one parent, and the first
+    /// occurrence keeps its position; this matches the CLI's `IndexSet<CommitId>`.
+    ///
+    /// With no revisions, the new workspace uses the source working-copy commit's parents. Those
+    /// parents are used as they are, without deduplication, exactly like the CLI. The root commit
+    /// is the fallback only when the source workspace has no working-copy commit.
     #[pyo3(signature = (path, name=None, revisions=None, sparse_patterns="copy"))]
     fn add_workspace<'py>(
         &self,
@@ -1190,7 +1200,11 @@ impl PyWorkspace {
                     vec![repo.store().root_commit()]
                 }
             } else {
-                let mut parents = Vec::new();
+                // The CLI collects explicit `-r` results into an `IndexSet<CommitId>`, so a commit
+                // named twice becomes one parent and argument order stays. Mirror that here: a
+                // merge commit must never record the same parent twice.
+                let mut parents: Vec<Commit> = Vec::new();
+                let mut seen: HashSet<_> = HashSet::new();
                 for expression in revisions.as_deref().unwrap_or_default() {
                     let mut commits = crate::revset::evaluate(
                         &*repo,
@@ -1205,7 +1219,10 @@ impl PyWorkspace {
                             commits.len()
                         )));
                     }
-                    parents.push(commits.pop().expect("length checked as one"));
+                    let commit = commits.pop().expect("length checked as one");
+                    if seen.insert(commit.id().clone()) {
+                        parents.push(commit);
+                    }
                 }
                 parents
             };

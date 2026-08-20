@@ -262,6 +262,66 @@ def test_normal_load_does_not_create_secure_config(
     assert not (config_home / "jj" / "workspaces").exists()
 
 
+def test_init_does_not_create_secure_config(
+    tmp_path: Path,
+    jj: JjCli,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`init` re-resolves settings through the load path, but still writes no secure config."""
+    config_home = tmp_path / "init-empty-config-home"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    repo = tmp_path / "init-no-config-repo"
+    repo.mkdir()
+
+    pyjutsu.Workspace.init(repo)
+
+    assert not (repo / ".jj" / "repo" / "config-id").exists()
+    assert not (repo / ".jj" / "workspace-config-id").exists()
+    assert not (config_home / "jj" / "repos").exists()
+    assert not (config_home / "jj" / "workspaces").exists()
+
+
+def test_init_handle_applies_repository_conditional_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The handle `init` returns must resolve conditional scopes keyed on the repository path.
+
+    `init` bootstraps with `repo_path = None`, so a `--when.repositories` scope cannot match while
+    the repository is being created. The returned handle must re-resolve settings afterwards.
+    """
+    # The conditional scope belongs in the *user* config. `JJ_CONFIG` (set by the `jj` fixture)
+    # would shadow the platform path, so remove it and use `XDG_CONFIG_HOME` alone.
+    monkeypatch.delenv("JJ_CONFIG", raising=False)
+    config_home = tmp_path / "init-scope-config-home"
+    config_dir = config_home / "jj"
+    config_dir.mkdir(parents=True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+    repo = tmp_path / "init-scope-repo"
+    repo.mkdir()
+    repo_config_path = repo.resolve() / ".jj" / "repo"
+    (config_dir / "config.toml").write_text(
+        f"""[user]
+name = "Base Author"
+email = "base@example.invalid"
+
+[[--scope]]
+--when.repositories = [{str(repo_config_path)!r}]
+[--scope.user]
+name = "Scoped Author"
+"""
+    )
+
+    init_handle = pyjutsu.Workspace.init(repo)
+    init_commit = _author_from_root(init_handle, "init identity")
+    load_commit = _author_from_root(pyjutsu.Workspace.load(repo), "load identity")
+
+    expected = ("Scoped Author", "base@example.invalid")
+    assert (init_commit.author.name, init_commit.author.email) == expected
+    assert (load_commit.author.name, load_commit.author.email) == expected
+
+
 def test_secure_config_migration_warning_reaches_python(
     tmp_path: Path,
     jj: JjCli,
