@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import pyjutsu
 import pytest
-from pyjutsu import PyjutsuError, Revset, RevsetError, WorkspaceError
+from pyjutsu import (
+    PartialWorkspaceError,
+    PyjutsuError,
+    Revset,
+    RevsetError,
+    WorkspaceError,
+)
 
 from tests.diff.jj_cli import JjCli
 
@@ -294,6 +301,77 @@ def test_add_workspace_default_name_is_basename(scratch_repo: Path, tmp_path: Pa
     info = ws.add_workspace(tmp_path / "wsx")
     assert info.name == "wsx"
     assert "wsx" in {w.name for w in ws.workspaces()}
+
+
+def _git(repo: Path, *args: str, stdin: str | None = None) -> str:
+    """Run raw git plumbing in the colocated `.git` of ``repo`` and return stdout."""
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        input=stdin,
+    ).stdout
+
+
+def _commit_with_reserved_path(repo: Path, bookmark: str) -> None:
+    """Write a git commit whose tree holds `.jj/marker`, then point ``bookmark`` at it.
+
+    jj refuses to check out a `.jj` path, because that name is reserved for its own metadata. The
+    jj CLI cannot author such a commit, so the tree is built with git plumbing (`mktree`), which
+    only rejects `.git`. `git_import` then makes the commit a normal jj revision.
+    """
+    blob = _git(repo, "hash-object", "-w", "--stdin", stdin="reserved\n").strip()
+    subtree = _git(repo, "mktree", stdin=f"100644 blob {blob}\tmarker\n").strip()
+    root_tree = _git(repo, "mktree", stdin=f"040000 tree {subtree}\t.jj\n").strip()
+    commit = _git(repo, "commit-tree", root_tree, "-m", "tree with a reserved .jj path").strip()
+    _git(repo, "update-ref", f"refs/heads/{bookmark}", commit)
+
+
+def test_add_workspace_checkout_failure_raises_partial_workspace_error(
+    scratch_repo: Path, tmp_path: Path, jj: JjCli
+) -> None:
+    """A checkout failure after registration must raise the typed partial-state error.
+
+    Step 3 of `add_workspace` registers the workspace and creates `.jj` in the destination. Step 4
+    then checks the new commit out. A parent tree that contains `.jj/marker` makes that checkout
+    fail on a reserved path component. The failure is deterministic, and it needs no permission
+    change and no race.
+    """
+    _commit_with_reserved_path(scratch_repo, "reserved")
+    ws = pyjutsu.Workspace.load(scratch_repo)
+    ws.git_import()
+
+    destination = tmp_path / "partial"
+    with pytest.raises(PartialWorkspaceError) as caught:
+        ws.add_workspace(destination, name="partial", revisions="reserved")
+
+    # The message names the workspace, the retained path, and the recovery action.
+    message = str(caught.value)
+    assert "partial" in message
+    assert str(destination) in message
+    assert "forget_workspace" in message
+
+    # `PartialWorkspaceError` is a `WorkspaceError`, so a broad handler still catches it.
+    assert issubclass(PartialWorkspaceError, WorkspaceError)
+    assert isinstance(caught.value, WorkspaceError)
+
+    # Pyjutsu never deletes user files: the destination and its `.jj` survive the failure.
+    assert destination.is_dir()
+    assert (destination / ".jj").is_dir()
+
+    # The registration is what makes the state partial: the repo still tracks the workspace.
+    assert "partial" in {row.name for row in ws.workspaces()}
+    assert "partial" in jj.workspaces(scratch_repo)
+
+    # The documented recovery drops the registration and leaves the repo usable.
+    ws.forget_workspace("partial")
+    assert "partial" not in {row.name for row in ws.workspaces()}
+    assert "partial" not in jj.workspaces(scratch_repo)
+    assert destination.is_dir()  # still not deleted
+    recovered = ws.add_workspace(tmp_path / "after", name="after", revisions="root()")
+    assert recovered.name == "after"
+    assert jj.workspaces(scratch_repo) == {"default", "after"}
 
 
 def test_forget_workspace_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli) -> None:

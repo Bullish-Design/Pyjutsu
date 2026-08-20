@@ -136,8 +136,21 @@ environment conditions, user paths, empty `JJ_CONFIG`, warning delivery, and no-
 - Complete test gate: passed. See [`artifacts/20260819T220058Z-test/`](artifacts/20260819T220058Z-test/).
 - Lint gate: passed. See [`artifacts/20260819T220137Z-lint/`](artifacts/20260819T220137Z-lint/).
 
-The tests did not induce a safe post-registration storage or checkout failure.
-The typed `PartialWorkspaceError` path is present, but destructive fault injection remains untested.
+The tests now induce a safe post-registration checkout failure. `tests/test_workspace_mgmt.py::
+test_add_workspace_checkout_failure_raises_partial_workspace_error` builds a git commit whose tree
+holds `.jj/marker`, imports it with `git_import()`, and passes it as the new workspace parent. Step 3
+registers the workspace and creates `.jj` in the destination. Step 4 then fails, because jj refuses
+to check out the reserved `.jj` path component. The induction is deterministic. It changes no
+permission and uses no race.
+
+The test asserts the whole `PartialWorkspaceError` contract: the message names the workspace, the
+retained path, and `forget_workspace`; the destination files survive; the workspace stays registered
+in both `workspaces()` and the `jj` CLI; and `forget_workspace()` clears the registration and leaves
+the repository usable. It also confirms `PartialWorkspaceError` subclasses `WorkspaceError`.
+
+A read-only destination does not reach this path. The destination must be an empty directory at
+validation time, and step 3 creates `.jj` inside it. Removing write permission therefore fails in
+step 3 with a plain `WorkspaceError` ("Cannot access <path>/.jj"), before any registration exists.
 
 ## Live acceptance evidence
 

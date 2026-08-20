@@ -1,7 +1,7 @@
 ---
 title: Make secondary workspaces first-class for orchestration consumers
 type: issue
-status: active
+status: done
 loci:
   schema: 1
   id: 01a01bd7-6b5b-7000-bf4b-cf03c0af3a5f
@@ -1231,3 +1231,21 @@ assert candidate.working_copy().parent_ids == [baseline.commit_id]
 and `candidate` should author subsequent changes with the same effective repository/user configuration semantics as an equivalent workspace created and used through the pinned JJ 0.42 CLI.
 
 At that point a higher-level orchestrator can safely treat secondary Pyjutsu workspaces as first-class, correctly positioned and correctly configured JJ authoring environments rather than partially supported special cases.
+
+---
+
+# Resolution
+
+Delivered:
+
+- `Workspace.add_workspace()` accepts zero, one, or many parent revisions. It resolves them before any filesystem or repository mutation.
+- `src/config_loader.rs` resolves the canonical repository path with jj-lib's workspace loader, then reads secure repository and workspace configuration. Primary and secondary workspaces share repository configuration.
+- Sparse patterns support `copy`, `full`, and `empty`.
+- Commit 445f107 added two corrections. Explicit parent revisions deduplicate to match the CLI. `Workspace.init` re-resolves settings, so conditional scopes apply.
+
+Gates at close: 364 pytest tests pass, 7 cargo tests pass, ruff is clean, clippy is clean, and the live acceptance script passes 43 assertions.
+
+Open gaps:
+
+- Revset evaluation still ignores repository and workspace configuration. [[.loci/issues/003-revset-ignores-configuration/issue.md]] records it. That gap also blocks configurable immutability enforcement.
+- `add_workspace` requires each explicit revset to resolve to exactly one commit. `jj workspace add -r 'A|B'` is less strict. This is deliberate and documented.
