@@ -18,8 +18,15 @@ inputs:
   shellij:
     url: path:/home/andrew/Documents/Projects/shellij
 
+  # devman: the automation plane's repo interface (CONCEPT.md §3.2). A devenv
+  # import is a PATH inside an input, never a flake output attribute, and the
+  # file it resolves to must be named devenv.nix.
+  devman:
+    url: "git+https://github.com/Bullish-Design/devman?ref=main&rev=b5e4aade186b94a4168246a15c411d5adf2c336d"
+
 imports:
   - shellij/modules
+  - devman/modules
 
 # If you're using non-OSS software, you can set allowUnfree to true.
 # allowUnfree: true
