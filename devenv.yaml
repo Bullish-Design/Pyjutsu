@@ -22,7 +22,7 @@ inputs:
   # import is a PATH inside an input, never a flake output attribute, and the
   # file it resolves to must be named devenv.nix.
   devman:
-    url: "git+https://github.com/Bullish-Design/devman?ref=main&rev=b5e4aade186b94a4168246a15c411d5adf2c336d"
+    url: "git+https://github.com/Bullish-Design/devman?ref=main&rev=53ff36b90e4cf8c0069316e412e10af838c78720"
 
 imports:
   - shellij/modules
