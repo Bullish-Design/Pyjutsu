@@ -7,7 +7,7 @@ Pyjutsu itself see [`DEV_GUIDE.md`](DEV_GUIDE.md).
 - **Import:** `import pyjutsu`
 - **Binds:** jujutsu / `jj-lib` **0.42.0** (pinned), in-process via PyO3 — no subprocess, no text
   parsing.
-- **Status:** shipping at `pyjutsu 0.10.0`.
+- **Status:** shipping at `pyjutsu 0.16.0`.
 
 ---
 
@@ -29,6 +29,22 @@ text. Four ideas carry the whole API:
 
 Revisions are named with **revset strings** — jj's own query language (`"@"`, `"trunk()..@"`,
 `"main::"`). Anywhere a revset is accepted you can pass a string or a built `Revset` (see §7).
+
+### 0.16.0 revset and safety changes
+
+Pyjutsu now uses the resolved jj revset configuration and vendors jj 0.42's default aliases, so
+`trunk()`, `immutable_heads()`, `immutable()`, `mutable()`, `visible()`, and `hidden()` work
+without a `jj-cli` dependency. User, repository, and workspace `[revset-aliases]` configuration
+overrides those defaults with jj precedence. An invalid configured alias emits a Python warning at
+`Workspace.load()` and does not prevent unrelated revsets from working.
+
+The unset default for `ui.revsets-use-glob-by-default` is now `true`, matching jj 0.42. This is a
+behaviour change: bare string patterns can select more revisions than under earlier Pyjutsu
+releases. Set that option explicitly to retain the old literal-default behaviour.
+
+History-rewriting verbs now reject every revision in `immutable_heads().ancestors()`, not only the
+root. The per-transaction `ignore_immutable=True` escape hatch deliberately bypasses configured
+immutability for an administrative operation, but it never permits rewriting the root commit.
 
 ```python
 import pyjutsu
@@ -59,6 +75,40 @@ ws.root            # Path to the working-copy root
 `init(colocate=True)` on a directory that already holds a `.git` **adopts** it: existing git
 branches become jj bookmarks, `@` becomes an empty child of the imported `HEAD`, and any
 uncommitted edits are preserved.
+
+### Add a secondary workspace
+
+`add_workspace()` returns `WorkspaceInfo`. Load its path to obtain a workspace handle.
+
+```python
+info = ws.add_workspace(
+    "../candidate",
+    name="candidate",
+    revisions="trunk()",
+)
+candidate = Workspace.load(info.path)
+```
+
+`revisions` accepts a string, a `Revset`, a sequence of either type, or `None`.
+With `None`, the new `@` uses the source `@`'s parents and becomes its sibling.
+Each explicit revset must resolve to one commit. Several revisions create a merge working-copy
+commit with Jujutsu's merged tree. Conflicts remain first-class Jujutsu conflicts.
+This rule is stricter than the pinned `jj` 0.42 CLI, which lets `jj workspace add -r 'A|B'` take
+one expression that matches two commits. To give the new `@` several parents, pass several
+revisions rather than one expression that matches several commits.
+
+Use `revisions="root()"` to request the former root-based behavior.
+The `sparse_patterns` setting accepts `"copy"` (default), `"full"`, or `"empty"`.
+Registration and initial commit creation publish two operations, as in Jujutsu 0.42.
+
+Pyjutsu validates revision expressions, the name, and the destination before registration.
+If later initialization fails, `PartialWorkspaceError` explains how to forget the registration.
+Pyjutsu leaves existing files in place.
+
+Workspace loading uses Jujutsu's secure configuration identities.
+Primary and secondary workspaces share repository configuration.
+Workspace configuration can intentionally differ for each workspace.
+Conditional configuration receives canonical repository and workspace paths, hostname, and environment context.
 
 ---
 
@@ -123,8 +173,8 @@ You may make several mutations in one block; they land as one atomic operation.
 
 ```python
 with ws.transaction("start feature") as tx:
-    trunk = ws.resolve("trunk()")
-    child = tx.new(parents=[trunk.change_id])   # new empty commit, @ moves onto it
+    base = ws.resolve("trunk()")
+    child = tx.new(parents=[base.change_id])    # new empty commit, @ moves onto it
     tx.describe(child.change_id, "Add feature")
     tx.set_bookmark("feature", child.change_id)
 
@@ -153,9 +203,11 @@ Most verbs return the rewritten `Commit` (or `Bookmark`) read back from inside t
 transaction, so you can chain on it.
 
 > **Rules of thumb.** Every `commit`/`source`/`into` argument is a **single-revision** revset
-> (errors if it matches zero or many). Rewriting or abandoning the **root** commit raises
-> `ImmutableCommitError`. Call verbs only *inside* the `with` block — using `tx` after the block
-> raises `RuntimeError`.
+> (errors if it matches zero or many). `describe`, `edit`, `abandon`, `rebase`, `squash`,
+> `restore`, and `split` reject configured immutable revisions. For a deliberate administrative
+> exception, use `with ws.transaction("…", ignore_immutable=True) as tx:`; the root commit always
+> raises `ImmutableCommitError`. Call verbs only *inside* the `with` block — using `tx` after the
+> block raises `RuntimeError`.
 
 ### One-shot working-copy operations (outside a transaction)
 
@@ -250,7 +302,7 @@ ws.log(R.author("alice") & R.description("fix"))    # (author(substring:"alice")
 ws.log(R.range(R.root(), R.working_copy()))         # root()..@
 ws.log(R.bookmark("main").descendants())            # main::
 ws.log(R.description(Pattern.glob("release-*")))     # explicit pattern kind
-ws.log(R.raw("trunk() | tags()"))                    # escape hatch: anything unbound, verbatim
+ws.log(R.raw("main | tags()"))                       # escape hatch: anything unbound, verbatim
 ```
 
 - A bare `str` passed to a filter (`author`/`description`/…) is coerced to a **substring** pattern
@@ -498,6 +550,7 @@ All in-process errors derive from `PyjutsuError` (import from `pyjutsu` or `pyju
 | `ConflictError` | a conflict blocked an operation |
 | `BackendError` | the store/backend reported an error |
 | `WorkspaceError` | a workspace couldn't be loaded or is unusable |
+| `PartialWorkspaceError` | registration succeeded, but later workspace initialization failed |
 | `WorkingCopyError` | the working copy couldn't be locked/snapshotted/checked out |
 | `StaleWorkingCopyError` (⊂ `WorkingCopyError`) | `@` is stale — call `update_stale()` |
 | `ImmutableCommitError` | you tried to rewrite/abandon an immutable commit (e.g. the root) |

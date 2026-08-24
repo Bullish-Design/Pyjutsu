@@ -1,0 +1,88 @@
+FFF                                                                      [100%]
+=================================== FAILURES ===================================
+________________ test_add_workspace_default_uses_source_parents ________________
+
+linear_repo = PosixPath('/tmp/pytest-of-andrew/pytest-11512/test_add_workspace_default_use0/linear')
+tmp_path = PosixPath('/tmp/pytest-of-andrew/pytest-11512/test_add_workspace_default_use0')
+jj = <tests.diff.jj_cli.JjCli object at 0x7c4501580ec0>
+
+    def test_add_workspace_default_uses_source_parents(
+        linear_repo: Path, tmp_path: Path, jj: JjCli
+    ) -> None:
+        other = _copy_repo(linear_repo, tmp_path / "default-copy")
+        expected_parents = jj.parent_commit_ids(linear_repo, "@")
+
+        ws = pyjutsu.Workspace.load(linear_repo)
+        info = ws.add_workspace(tmp_path / "default-second", name="second")
+        jj(other, "workspace", "add", "--name", "second", str(tmp_path / "cli-default-second"))
+
+>       assert ws.head().resolve(info.wc_commit_id).parent_ids == expected_parents
+E       AssertionError: assert ['00000000000...000000000000'] == ['8ee523356de...3ea185620000']
+E
+E         At index 0 diff: '0000000000000000000000000000000000000000' != '8ee523356dea05dd91283b4e37df3ea185620000'
+E         Use -v to get more diff
+
+tests/test_workspace_mgmt.py:107: AssertionError
+__________________ test_add_workspace_accepts_explicit_parent __________________
+
+linear_repo = PosixPath('/tmp/pytest-of-andrew/pytest-11512/test_add_workspace_accepts_exp0/linear')
+tmp_path = PosixPath('/tmp/pytest-of-andrew/pytest-11512/test_add_workspace_accepts_exp0')
+jj = <tests.diff.jj_cli.JjCli object at 0x7c44feb05810>
+
+    def test_add_workspace_accepts_explicit_parent(
+        linear_repo: Path, tmp_path: Path, jj: JjCli
+    ) -> None:
+        expected_parent = jj.commit_id(linear_repo, "@--")
+
+        ws = pyjutsu.Workspace.load(linear_repo)
+>       info = ws.add_workspace(
+            tmp_path / "explicit-second",
+            name="second",
+            revisions="@--",
+        )
+E       TypeError: Workspace.add_workspace() got an unexpected keyword argument 'revisions'
+
+tests/test_workspace_mgmt.py:117: TypeError
+_____________ test_secondary_workspace_loads_secure_repo_identity ______________
+
+tmp_path = PosixPath('/tmp/pytest-of-andrew/pytest-11512/test_secondary_workspace_loads0')
+jj = <tests.diff.jj_cli.JjCli object at 0x7c44feb05f90>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7c44feb783b0>
+
+    def test_secondary_workspace_loads_secure_repo_identity(
+        tmp_path: Path,
+        jj: JjCli,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        config_home = tmp_path / "config-home"
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+        repo = tmp_path / "repo-config"
+        repo.mkdir()
+        jj.init_colocated(repo)
+        jj(repo, "config", "set", "--repo", "user.name", "Repository Author")
+        jj(repo, "config", "set", "--repo", "user.email", "repo@example.invalid")
+
+        secondary_path = tmp_path / "secondary-config"
+        jj(repo, "workspace", "add", "--name", "secondary", "-r", "root()", str(secondary_path))
+
+        primary = pyjutsu.Workspace.load(repo)
+        with primary.transaction("primary identity") as tx:
+            primary_commit = tx.new("root()")
+
+        secondary = pyjutsu.Workspace.load(secondary_path)
+        with secondary.transaction("secondary identity") as tx:
+            secondary_commit = tx.new("root()")
+
+        expected = ("Repository Author", "repo@example.invalid")
+>       assert (primary_commit.author.name, primary_commit.author.email) == expected
+E       AssertionError: assert ('Pyjutsu Tes...utsu.invalid') == ('Repository ...mple.invalid')
+E
+E         At index 0 diff: 'Pyjutsu Test' != 'Repository Author'
+E         Use -v to get more diff
+
+tests/test_workspace_config.py:39: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_workspace_mgmt.py::test_add_workspace_default_uses_source_parents
+FAILED tests/test_workspace_mgmt.py::test_add_workspace_accepts_explicit_parent
+FAILED tests/test_workspace_config.py::test_secondary_workspace_loads_secure_repo_identity

@@ -1,0 +1,30 @@
+• Validating lock
+✓ Validating lock in 1.36s
+• Configuring cachix
+✓ Configuring cachix in 5.32ms
+• Configuring shell
+• Evaluating shell
+✓ Evaluating shell in 2.19ms (cached)
+✓ Configuring shell in 6.78ms
+• Loading tasks
+• Evaluating devenv.config.task.config
+✓ Evaluating devenv.config.task.config in 671µs (cached)
+✓ Loading tasks in 2.18ms
+• Running tasks
+• Running pyjutsu:build
+🍹 Building a mixed python/rust project
+🔗 Found pyo3 bindings with abi3 support
+🐍 Found CPython 3.13 at /home/andrew/.paseo/worktrees/39ifwuy3/hesitant-anaconda/.devenv/state/venv/bin/python
+📡 Using build options features from pyproject.toml
+Using Python 3.13.13 environment at: .devenv/state/venv
+Checked 1 package in 3ms
+Using Python 3.13.13 environment at: .devenv/state/venv
+Resolved 8 packages in 132ms
+Checked 8 packages in 0.38ms
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+🚉 Overriding platform tag from _PYTHON_HOST_PLATFORM environment variable as linux_x86_64.
+📦 Built wheel for abi3 Python ≥ 3.13 to /tmp/.tmpVVflvy/pyjutsu-0.15.0-cp313-abi3-linux_x86_64.whl
+🛠 Installed pyjutsu-0.15.0
+✓ Running pyjutsu:build in 1.27s
+✓ Running tasks in 1.27s
+{}

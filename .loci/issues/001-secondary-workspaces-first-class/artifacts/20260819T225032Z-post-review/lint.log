@@ -1,0 +1,18 @@
+• Validating lock
+✓ Validating lock in 1.40s
+• Configuring cachix
+✓ Configuring cachix in 3.63ms
+• Configuring shell
+• Evaluating shell
+✓ Evaluating shell in 2.01ms (cached)
+✓ Configuring shell in 2.85ms
+• Loading tasks
+• Evaluating devenv.config.task.config
+✓ Evaluating devenv.config.task.config in 414µs (cached)
+✓ Loading tasks in 1.35ms
+• Running tasks
+• Running pyjutsu:lint
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.17s
+✓ Running pyjutsu:lint in 292ms
+✓ Running tasks in 292ms
+{}

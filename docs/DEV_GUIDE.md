@@ -48,7 +48,8 @@ as small as possible, pin it exactly, and turn any behavioral drift into a loud 
 | `workspace.rs` | `PyWorkspace` — load/init, git interop, remotes, snapshot, stale, undo/restore, transaction factory. The biggest module. |
 | `repo_view.rs` | `PyRepoView` (all reads) + `PyCommitStream` (lazy `iter_log`). |
 | `transaction.rs` | `PyTransaction` — the mutation verbs, bound to one thread. |
-| `revset.rs` | Revset parsing/evaluation helpers used by reads. |
+| `revset.rs` | Revset parsing/evaluation helpers and the cached resolved `RevsetConfig`. |
+| `config/revsets.toml` | Vendored jj 0.42 default revset aliases; re-diff it on every jj upgrade. |
 | `diff.rs`, `diff_stat.rs` | Diff + diff-stat computation, producing the plain hunk/stat dicts. |
 | `convert.rs` | jj-lib value → plain-Python-dict converters (the shape the Pydantic models expect). |
 | `errors.rs` | The `PyjutsuError` hierarchy + `jj-lib` error → exception mapping. |
@@ -66,6 +67,13 @@ as small as possible, pin it exactly, and turn any behavioral drift into a loud 
 | `revset.py` | The `Revset`/`Pattern` builder (renders to strings; evaluates nothing). |
 | `errors.py` | Re-exports the native hierarchy + the pure-Python `JjCliError`. |
 | `_pyjutsu.pyi` | Type stub for the native extension — **keep in sync with `src/`**. |
+
+Revset aliases are loaded from resolved `UserSettings` once per workspace, then shared by views
+and transactions. Keep the vendored table at `ConfigSource::Default`: `tests/test_revset_config.py`
+compares its effective values to the pinned CLI, and user/repository/workspace configuration must
+continue to override it. Configured immutability is checked in `transaction.rs` before every
+rewrite verb; `transaction(ignore_immutable=True)` is intentionally narrow and cannot lift the
+root guard.
 
 `tests/` holds the Python test suite (differential + unit); `tests/golden/` holds golden model
 fields; `nix/pyjutsu.nix` defines the devenv tasks.
@@ -187,9 +195,30 @@ The shared fixtures live in `tests/conftest.py`:
 
 Getting **commit-id parity** with the CLI requires care (documented in memory + the M2 notes):
 pinned commit timestamp, `JJ_CONFIG` loaded in-process, and jj's trailing-newline description
-convention (`transaction.py::_complete_newline`). When adding a differential test, author commits
-from the **default** workspace — a secondary workspace's `.jj/repo` is a pointer file that skips
-the repo config layer, so its commit ids can legitimately differ from the CLI's.
+convention (`transaction.py::_complete_newline`). Differential tests can author from primary or
+secondary workspaces. Both resolve the same secure repository configuration identity.
+
+`src/config_loader.rs` is the small Jujutsu 0.42 policy adapter over jj-lib.
+It loads defaults, environment base values, user paths, secure repository configuration, secure
+workspace configuration, and environment overrides. It then resolves conditional scopes.
+The workspace loader resolves the canonical repository path before final `UserSettings` exist.
+Normal loads use `SecureConfig::maybe_load_config()` and do not create empty configuration files.
+Initialization uses the bootstrap path because repository configuration does not exist yet.
+
+Workspace creation follows the pinned CLI lifecycle. The first operation registers the workspace.
+The second operation creates and edits the requested working-copy commit. Tests must compare both
+the topology and the checked-out files. Resolve all explicit revisions before filesystem mutation.
+Treat a post-registration error as partial state and include a recovery action.
+
+Run the live secondary-workspace acceptance contract after the build gate:
+
+```bash
+devenv shell -- python scripts/verify_secondary_workspaces.py /tmp/pyjutsu-secondary-live
+```
+
+Use a path that does not exist. The verifier creates isolated user configuration and real on-disk
+workspaces. It compares Pyjutsu with the pinned `jj` CLI for topology, trees, conflicts, sparse
+patterns, operation history, validation, and authoring configuration.
 
 Other layers: Rust unit tests (`cargo test`, e.g. the diff line-counting cases in `diff_stat.rs`),
 Python unit tests for model validation/coercion, and **golden fixtures** (`tests/golden/`,

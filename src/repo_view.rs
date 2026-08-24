@@ -30,7 +30,7 @@ use crate::convert::{BookmarkData, CommitData, ConflictData, OperationData, merg
 use crate::diff::{self, DiffData, FileChangeData};
 use crate::diff_stat::{self, DiffStatData};
 use crate::errors::{PyjutsuError, RevsetError, map_backend_err};
-use crate::revset;
+use crate::revset::{self, RevsetConfig};
 
 /// Opaque handle to a `ReadonlyRepo` at a fixed operation, plus the workspace context reads
 /// need. Cheap to clone-share (the repo is `Arc`).
@@ -39,7 +39,7 @@ pub(crate) struct PyRepoView {
     repo: Arc<ReadonlyRepo>,
     workspace_name: WorkspaceNameBuf,
     workspace_root: PathBuf,
-    user_email: String,
+    revset_config: Arc<RevsetConfig>,
 }
 
 impl PyRepoView {
@@ -48,13 +48,13 @@ impl PyRepoView {
         repo: Arc<ReadonlyRepo>,
         workspace_name: WorkspaceNameBuf,
         workspace_root: PathBuf,
-        user_email: String,
+        revset_config: Arc<RevsetConfig>,
     ) -> Self {
         Self {
             repo,
             workspace_name,
             workspace_root,
-            user_email,
+            revset_config,
         }
     }
 
@@ -67,7 +67,7 @@ impl PyRepoView {
             revset_str,
             &self.workspace_name,
             &self.workspace_root,
-            &self.user_email,
+            &self.revset_config,
         )?;
         if commits.len() != 1 {
             return Err(RevsetError::new_err(format!(
@@ -93,7 +93,7 @@ impl PyRepoView {
                 revset_str,
                 &self.workspace_name,
                 &self.workspace_root,
-                &self.user_email,
+                &self.revset_config,
             )?;
             if let Some(limit) = limit {
                 commits.truncate(limit);
@@ -220,7 +220,7 @@ impl PyRepoView {
                 revset_str,
                 &self.workspace_name,
                 &self.workspace_root,
-                &self.user_email,
+                &self.revset_config,
             )?;
             if commits.len() != 1 {
                 return Err(RevsetError::new_err(format!(
@@ -286,7 +286,7 @@ impl PyRepoView {
                 revset_str,
                 &self.workspace_name,
                 &self.workspace_root,
-                &self.user_email,
+                &self.revset_config,
             )?;
             if let Some(n) = limit {
                 ids.truncate(n);

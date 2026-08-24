@@ -1,0 +1,19 @@
+• Validating lock
+✓ Validating lock in 1.29s
+• Configuring cachix
+✓ Configuring cachix in 3.62ms
+• Configuring shell
+• Evaluating shell
+✓ Evaluating shell in 1.57ms (cached)
+✓ Configuring shell in 2.71ms
+• Loading tasks
+• Evaluating devenv.config.task.config
+✓ Evaluating devenv.config.task.config in 353µs (cached)
+✓ Loading tasks in 1.38ms
+• Running tasks
+• Running pyjutsu:test
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running unittests src/lib.rs (target/debug/deps/_pyjutsu-852d91bcdfbf7ed8)
+✓ Running pyjutsu:test in 15.2s
+✓ Running tasks in 15.2s
+{}

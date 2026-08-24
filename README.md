@@ -12,21 +12,17 @@ no subprocess and no text parsing.
   [`docs/DEV_GUIDE.md`](docs/DEV_GUIDE.md) (working on it) ·
   [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md) (design spec).
 
-**Status: 0.10.0 — tracks jj-lib 0.42.0.** The reads, transactions/mutations, op-log time travel,
-workspaces, and git interop are all implemented and differential-tested against the pinned `jj`
-CLI. 0.8.0 ported the binding to jj-lib 0.42.0; 0.9.0 added native sub-file `tx.split`/`select_tree`;
-0.10.0 adds `untrack_paths` (stop tracking a path, leave it on disk), an idempotent
-`sync_colocated` (repair colocated git `HEAD` + index), and documents that `git_push` is
-force-with-lease by contract — a non-fast-forward bookmark move succeeds only while the
-remote-tracking lease holds, and is rejected (never blindly forced) otherwise. 0.14.0 adds
-pre-commit-style **hooks** — an in-process, zero-cost-when-unused callback registry
-(`ws.hooks`) plus a declarative `.pyjutsu-hooks.toml` (pre-commit-config style), wired to every
-mutation verb (`pre-commit`/`post-commit`, `pre-push`/`post-push`, `pre-fetch`, `pre-export`,
-`pre-snapshot`, `pre-undo`, …) with pre-hook veto, `tx.changed_paths` for the pending change's
-file list, and `run_prek`/`run_pre_commit` adapters — see [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)
-§11. Still flagged out of
-scope: a native async facade, two-revset `diff(from, to)`, word/inline diff, and assorted
-git/rewrite refinements (see `docs/PYJUTSU_CONCEPT.md` §12).
+**Status: 0.16.0 — tracks jj-lib 0.42.0.** The reads, transactions/mutations, op-log time travel,
+workspaces, and git interop are implemented and differential-tested against the pinned `jj` CLI.
+
+### 0.16.0 behaviour changes
+
+Pyjutsu now resolves revset configuration the same way as the pinned CLI and ships jj 0.42's
+default aliases. Consequently, unset `ui.revsets-use-glob-by-default` now means `true` (rather
+than Pyjutsu's former `false`), which can change matches for bare string patterns. Also, rewrites
+now enforce `immutable_heads().ancestors()` by default. Use
+`transaction(ignore_immutable=True)` only for a deliberate, scoped administrative rewrite; the
+root commit remains permanently protected.
 
 ## Reads
 
@@ -69,6 +65,29 @@ ws.git_push("origin", "main", allow_new=True)
 ws.undo()                        # revert the head operation
 ```
 
+## Secondary workspaces
+
+Create a workspace on the source workspace's parents, one selected revision, or several parents:
+
+```python
+info = ws.add_workspace("../candidate", name="candidate")
+info = ws.add_workspace("../candidate", revisions="trunk()")
+info = ws.add_workspace("../integration", revisions=["candidate-a", "candidate-b"])
+candidate = Workspace.load(info.path)
+```
+
+`revisions=None` matches `jj workspace add`: the new `@` is a sibling of the source `@`.
+Use `revisions="root()"` for the former Pyjutsu default. Multiple parents use Jujutsu's merged
+tree and preserve conflicts. `sparse_patterns` accepts `"copy"`, `"full"`, or `"empty"`.
+
+Each explicit revset must resolve to exactly one commit. This is stricter than the pinned `jj`
+0.42 CLI, which accepts one expression that matches several commits. To give the new `@` several
+parents, pass several revisions instead of one expression that matches several commits.
+
+Primary and secondary workspaces load the same secure repository configuration. Intentional
+workspace configuration remains workspace-specific. Configuration precedence and conditional
+path, hostname, and environment scopes match the pinned Jujutsu 0.42 behavior.
+
 ## Revset builder
 
 A typed, composable builder renders to jj revset strings (it evaluates nothing) — escaping mirrors
@@ -84,6 +103,12 @@ ws.log(R.range(R.root(), R.working_copy()))        # root()..@
 ws.log(R.bookmark("main").descendants())           # main::
 ws.log(R.description(Pattern.glob("release-*")))   # explicit pattern kind
 ```
+
+Pyjutsu evaluates jj-lib revsets without depending on the `jj` command-line crate. It vendors the
+pinned jj 0.42 default aliases (`trunk()`, `immutable_heads()`, `mutable()`, and the rest), then
+applies your resolved user, repository, and workspace `revset-aliases` configuration above them.
+Malformed configured aliases produce a warning and leave unrelated revsets usable. See
+[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) §1.
 
 ## Escape hatch: `run_jj`
 

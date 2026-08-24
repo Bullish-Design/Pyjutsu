@@ -111,6 +111,13 @@ class JjCli:
         """The description of the current head operation."""
         return self(repo, "op", "log", "--no-graph", "--limit", "1", "-T", "description").strip()
 
+    def op_log_descriptions(self, repo: Path, limit: int | None = None) -> list[str]:
+        """Operation descriptions from newest to oldest."""
+        args = ["op", "log", "--no-graph", "-T", 'description ++ "\\n"']
+        if limit is not None:
+            args += ["--limit", str(limit)]
+        return [line for line in self(repo, *args).splitlines() if line]
+
     def change_id_at_op(self, repo: Path, op: str, revset: str) -> str:
         """The change id of ``revset`` as seen at operation ``op`` (`jj --at-op`)."""
         return self(repo, "--at-op", op, "log", "--no-graph", "-r", revset, "-T", "change_id").strip()
@@ -269,6 +276,30 @@ class JjCli:
         """The set of workspace names tracked in ``repo`` (`jj workspace list -T name`)."""
         out = self(repo, "workspace", "list", "-T", 'name ++ "\\n"')
         return {line for line in out.splitlines() if line}
+
+    def add_workspace(
+        self,
+        repo: Path,
+        destination: Path,
+        *,
+        name: str | None = None,
+        revisions: list[str] | None = None,
+        sparse_patterns: str = "copy",
+    ) -> None:
+        """Create a workspace through the pinned CLI with zero or more parent revisions."""
+        args = ["workspace", "add"]
+        if name is not None:
+            args += ["--name", name]
+        for revision in revisions or []:
+            args += ["-r", revision]
+        if sparse_patterns != "copy":
+            args += ["--sparse-patterns", sparse_patterns]
+        args.append(str(destination))
+        self(repo, *args)
+
+    def config_path(self, repo: Path, level: str) -> Path:
+        """Return the config file path created by `jj config path --<level>`."""
+        return Path(self(repo, "config", "path", f"--{level}").strip())
 
     def git_fetch(self, repo: Path, remote: str) -> None:
         """``jj git fetch --remote <remote>`` in ``repo``."""

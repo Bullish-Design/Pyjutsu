@@ -13,6 +13,7 @@ import subprocess
 import warnings
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Literal
 
 from ._pyjutsu import PyWorkspace
 from .errors import HookAbort, JjCliError, PostHookError, PyjutsuError
@@ -33,6 +34,17 @@ from .revset import Revset, _revset_str
 from .transaction import Transaction
 
 __all__ = ["Workspace"]
+
+
+def _normalize_revisions(
+    revisions: str | Revset | Sequence[str | Revset] | None,
+) -> list[str] | None:
+    """Render public revision inputs into the plain list accepted by the native layer."""
+    if revisions is None:
+        return None
+    if isinstance(revisions, (str, Revset)):
+        return [_revset_str(revisions)]
+    return [_revset_str(revision) for revision in revisions]
 
 
 class Workspace:
@@ -120,25 +132,35 @@ class Workspace:
         return ws
 
     def add_workspace(
-        self, path: str | os.PathLike[str], *, name: str | None = None
+        self,
+        path: str | os.PathLike[str],
+        *,
+        name: str | None = None,
+        revisions: str | Revset | Sequence[str | Revset] | None = None,
+        sparse_patterns: Literal["copy", "full", "empty"] = "copy",
     ) -> WorkspaceInfo:
         """Add a secondary workspace at ``path`` → its :class:`WorkspaceInfo` (``jj workspace add``).
 
-        The repo's store is shared; the new workspace gets its own ``@`` — here an empty commit on
-        the **root** commit. (The CLI's default instead bases the new ``@`` on the current
-        workspace's parents; that ``-r <revs>`` placement and ``--sparse-patterns`` inheritance are
-        out-of-scope refinements.) ``name`` defaults to ``path``'s basename. One ``add workspace``
-        operation is published.
+        ``revisions`` accepts one revset, a sequence of revsets, or ``None``. Strings count as one
+        revset. With ``None`` or an empty sequence, the new ``@`` uses the source ``@``'s parents.
+        Explicit revsets must each resolve to one commit. Multiple parents use Jujutsu's merged-tree
+        semantics and preserve conflicts. Pass ``"root()"`` to request the former Pyjutsu default.
 
-        .. note::
-            Commit-id parity with the ``jj`` CLI is guaranteed when authoring from the **default**
-            workspace. A *secondary* workspace's ``.jj/repo`` is a pointer file rather than a
-            directory, so loading it skips the repo ``config.toml`` settings layer; commits authored
-            from a secondary workspace may therefore use different settings (and thus differ in
-            commit id) from the CLI's. Author commits from the default workspace if byte-exact
-            parity matters.
+        ``sparse_patterns`` matches the CLI choices. ``"copy"`` inherits the source patterns,
+        ``"full"`` includes all paths, and ``"empty"`` includes none. Workspace registration and
+        initial commit creation publish separate operations. A failure after registration raises
+        :class:`~pyjutsu.errors.PartialWorkspaceError` with a recovery action.
         """
-        return WorkspaceInfo.model_validate(self._handle.add_workspace(os.fspath(path), name))
+        if sparse_patterns not in {"copy", "full", "empty"}:
+            raise ValueError("sparse_patterns must be 'copy', 'full', or 'empty'")
+        return WorkspaceInfo.model_validate(
+            self._handle.add_workspace(
+                os.fspath(path),
+                name,
+                _normalize_revisions(revisions),
+                sparse_patterns,
+            )
+        )
 
     def forget_workspace(self, name: str) -> None:
         """Stop tracking workspace ``name``'s ``@`` in the repo (``jj workspace forget <name>``).
@@ -533,7 +555,13 @@ class Workspace:
         """The filesystem root of this workspace's working copy (canonicalized)."""
         return Path(self._handle.workspace_root())
 
-    def transaction(self, description: str, *, auto_snapshot: bool = True) -> Transaction:
+    def transaction(
+        self,
+        description: str,
+        *,
+        auto_snapshot: bool = True,
+        ignore_immutable: bool = False,
+    ) -> Transaction:
         """Open a write transaction committing as ``description`` (concept §4, M2).
 
         Use it as a context manager: the ``with`` block begins the transaction, publishes it on
@@ -546,9 +574,17 @@ class Workspace:
 
         ``auto_snapshot`` (default ``True``) snapshots a dirty ``@`` as a separate preceding
         operation on open (matching the CLI); set it ``False`` to have the mutation see ``@`` as-is.
+
+        ``ignore_immutable`` (default ``False``) temporarily bypasses configured
+        ``immutable_heads()`` protection for this transaction. It never permits rewriting the
+        root commit.
         """
         return Transaction(
-            self._handle, description, auto_snapshot=auto_snapshot, hooks=self._hooks
+            self._handle,
+            description,
+            auto_snapshot=auto_snapshot,
+            ignore_immutable=ignore_immutable,
+            hooks=self._hooks,
         )
 
     def snapshot(self) -> Operation | None:

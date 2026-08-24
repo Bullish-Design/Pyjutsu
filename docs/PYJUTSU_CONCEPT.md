@@ -149,6 +149,21 @@ ws.git_export(); ws.git_import()                   # colocated sync
 - **Escape hatch:** `run_jj` runs the external `jj` binary against the workspace (raw
   stdout/stderr/exit, no model parsing) for anything not yet bound.
 
+### Revset configuration and rewrite safety
+
+Each loaded workspace builds one `RevsetConfig` from jj's resolved settings and shares it with its
+views and transactions. Pyjutsu vendors jj 0.42's aliases at default precedence, so `trunk()` and
+the standard immutability aliases work out of the box while user, repository, and workspace
+configuration can override them. The parser also takes jj's `true` default for
+`ui.revsets-use-glob-by-default`; callers relying on literal bare patterns should set the option
+explicitly.
+
+Before a transaction rewrites history, it evaluates `immutable_heads().ancestors()`. The default
+therefore protects the configured trunk lineage as jj does. A transaction may explicitly request
+`ignore_immutable=True` for a scoped administrative rewrite, but no transaction can rewrite the
+root commit. Moving bookmarks and creating tags change refs rather than commits and are not
+rewrite operations.
+
 ### Models (Pydantic v2)
 
 All frozen with `extra="forbid"`, so a jj-lib shape drift fails loudly at the FFI boundary:
@@ -264,22 +279,32 @@ ws.workspaces()        # -> list[WorkspaceInfo]{name, path, wc_commit} for ALL w
 ws.working_copy()      # -> the @ of THIS workspace only
 ws.name                # this workspace's id (e.g. "default")
 
-# create a second working copy sharing the same repo (one jj operation)
-other = ws.add_workspace(path=Path("../repo-feat"), name="feat", at="trunk()")
-#   -> returns a Workspace handle bound to ../repo-feat with its own new @
+# create a second working copy sharing the same repo
+info = ws.add_workspace(path=Path("../repo-feat"), name="feat", revisions="trunk()")
+other = Workspace.load(info.path)
+#   -> WorkspaceInfo first, then a handle bound to ../repo-feat
 
 other.snapshot()       # snapshots ../repo-feat's working copy (that path's files)
 ws.forget_workspace("feat")   # removes the record from the shared view; does NOT delete the dir
 ```
 
-**Decision — `add_workspace` is eager.** It returns a ready-to-use `Workspace` handle, with
-the working copy **checked out inside the call**: the Rust layer performs the
-record-creation transaction (allocate the `WorkspaceId`, set its `@` in the shared view)
-**and** the working-copy checkout at `path` as one operation from the caller's view, then
-hands back a handle bound to that path. (Internally this is jj-lib's two steps — create the
-workspace record + check out files — but the binding sequences them so the caller never sees
-a half-created workspace.) If `path` already exists and is non-empty, `add_workspace` errors
-rather than clobbering it.
+**Decision — `add_workspace` is eager.** It returns `WorkspaceInfo` after the working copy matches
+the new `@`. The Rust layer resolves parents before mutation, registers the workspace, creates the
+initial working-copy commit, and checks out its tree. Registration and initial commit creation are
+separate Jujutsu operations. If failure occurs after registration, `PartialWorkspaceError` reports
+the retained path and a recovery action. If `path` exists and is non-empty, the call fails before
+registration.
+
+With no revisions, the new `@` uses the source `@`'s parents. Explicit revisions each resolve to
+one commit. This is stricter than the pinned `jj` 0.42 CLI, which accepts one expression that
+matches several commits; to give the new `@` several parents, pass several revisions rather than
+one expression that matches several commits. Multiple parents use Jujutsu's merged-tree semantics.
+Sparse patterns copy by default, with full and empty modes available explicitly.
+
+Workspace loading resolves the canonical repository identity through jj-lib before it constructs
+`UserSettings`. Secure repository configuration is shared. Secure workspace configuration remains
+workspace-specific. Conditional configuration uses repository path, workspace path, hostname, and
+environment context.
 
 Key guarantees/semantics to surface (don't hide them — Pyjutsu is faithful, gitman adds policy):
 

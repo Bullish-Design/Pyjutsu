@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use futures::TryStreamExt as _;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -49,7 +50,7 @@ use crate::errors::{
     ImmutableCommitError, PyjutsuError, RevsetError, StaleWorkingCopyError, map_backend_err,
     map_edit_err,
 };
-use crate::revset;
+use crate::revset::{self, RevsetConfig};
 use crate::workspace::PyWorkspace;
 
 /// One file's split selection: whole-file (`None`) or a set of 0-based hunk indices into that
@@ -69,12 +70,13 @@ pub(crate) struct PyTransaction {
     /// the transaction moves `@`. `Py<PyWorkspace>` is `Send`; the workspace only holds an
     /// `AtomicBool` + a `Mutex<Workspace>`, so there is no reference cycle to worry about.
     workspace: Py<PyWorkspace>,
-    /// Revset-resolution context (mirrors `PyRepoView`): the workspace's name + root + author
-    /// email, so `@`, `file()`, `mine()`, … resolve the same way reads do — but here against the
-    /// open `MutableRepo`, which sees this transaction's in-flight rewrites.
+    /// Revset-resolution context (mirrors `PyRepoView`): the workspace's name, root, and cached
+    /// settings so `@`, `file()`, `mine()`, and aliases resolve the same way reads do — but here
+    /// against the open `MutableRepo`, which sees this transaction's in-flight rewrites.
     workspace_name: WorkspaceNameBuf,
     workspace_root: PathBuf,
-    user_email: String,
+    revset_config: Arc<RevsetConfig>,
+    ignore_immutable: bool,
     /// `@`'s commit id when the transaction began. `commit` compares the post-commit `@` against
     /// this to decide whether the on-disk working copy needs a checkout.
     starting_wc_commit: Option<CommitId>,
@@ -88,7 +90,8 @@ impl PyTransaction {
         workspace: Py<PyWorkspace>,
         workspace_name: WorkspaceNameBuf,
         workspace_root: PathBuf,
-        user_email: String,
+        revset_config: Arc<RevsetConfig>,
+        ignore_immutable: bool,
         starting_wc_commit: Option<CommitId>,
     ) -> Self {
         Self {
@@ -97,7 +100,8 @@ impl PyTransaction {
             workspace,
             workspace_name,
             workspace_root,
-            user_email,
+            revset_config,
+            ignore_immutable,
             starting_wc_commit,
         }
     }
@@ -124,7 +128,7 @@ impl PyTransaction {
             revset_str,
             &self.workspace_name,
             &self.workspace_root,
-            &self.user_email,
+            &self.revset_config,
         )?;
         if commits.len() != 1 {
             return Err(RevsetError::new_err(format!(
@@ -158,9 +162,73 @@ impl PyTransaction {
             &expr,
             &self.workspace_name,
             &self.workspace_root,
-            &self.user_email,
+            &self.revset_config,
         )?;
         Ok(roots.iter().map(|c| c.id().clone()).collect())
+    }
+
+    /// Refuse a root or a configured immutable commit before a rewrite.
+    fn check_rewritable(&self, repo: &dyn Repo, commits: &[Commit]) -> PyResult<()> {
+        let root_id = repo.store().root_commit_id();
+        if commits.iter().any(|commit| commit.id() == root_id) {
+            return Err(ImmutableCommitError::new_err("cannot rewrite the root commit"));
+        }
+        if self.ignore_immutable {
+            return Ok(());
+        }
+        let immutable = self
+            .revset_config
+            .immutable_expression(&self.workspace_name, &self.workspace_root)?;
+        let no_extensions: &[Box<dyn jj_lib::revset::SymbolResolverExtension>] = &[];
+        let resolver = jj_lib::revset::SymbolResolver::new(repo, no_extensions);
+        let resolved = immutable
+            .resolve_user_expression(repo, &resolver)
+            .map_err(crate::errors::map_revset_err)?;
+        let immutable_ids: HashSet<CommitId> = pollster::block_on(
+            resolved
+                .evaluate(repo)
+                .map_err(crate::errors::map_revset_err)?
+                .stream()
+                .try_collect(),
+        )
+        .map_err(map_backend_err)?;
+        if let Some(commit) = commits.iter().find(|commit| immutable_ids.contains(commit.id())) {
+            return Err(ImmutableCommitError::new_err(format!(
+                "commit {} is immutable; change revset-aliases.immutable_heads() or use \
+                 transaction(ignore_immutable=True)",
+                commit.id().hex()
+            )));
+        }
+        Ok(())
+    }
+
+    fn check_rewritable_revset(&self, repo: &dyn Repo, revset_str: &str) -> PyResult<()> {
+        let commits = revset::evaluate(
+            repo,
+            revset_str,
+            &self.workspace_name,
+            &self.workspace_root,
+            &self.revset_config,
+        )?;
+        self.check_rewritable(repo, &commits)
+    }
+
+    fn check_rewritable_descendants(
+        &self,
+        repo: &dyn Repo,
+        roots: &[CommitId],
+    ) -> PyResult<()> {
+        let mut commits = Vec::new();
+        for root in roots {
+            commits.extend(revset::evaluate(
+                repo,
+                &format!("{}::", root.hex()),
+                &self.workspace_name,
+                &self.workspace_root,
+                &self.revset_config,
+            )?);
+        }
+        self.check_rewritable(repo, &commits)
     }
 }
 
@@ -187,6 +255,7 @@ impl PyTransaction {
         // `allow_threads`; this is in-memory graph work plus a small object write.
         let repo = tx.repo_mut();
         let commit = self.resolve_single(&*repo, revset_str)?;
+        self.check_rewritable(&*repo, std::slice::from_ref(&commit))?;
         let new_commit = pollster::block_on(
             repo.rewrite_commit(&commit)
                 .set_description(message)
@@ -257,6 +326,7 @@ impl PyTransaction {
         // On the GIL — `MutableRepo` is `!Send` (see module docs).
         let repo = tx.repo_mut();
         let target = self.resolve_single(&*repo, revset_str)?;
+        self.check_rewritable(&*repo, std::slice::from_ref(&target))?;
         pollster::block_on(repo.edit(self.workspace_name.clone(), &target))
             .map_err(map_edit_err)?;
         pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
@@ -269,10 +339,8 @@ impl PyTransaction {
     /// Returns nothing (the commit is gone). Abandoning `@` advances `@` to a fresh empty commit
     /// on top of the old parents, so `commit`'s checkout fires.
     ///
-    /// `record_abandoned_commit` `assert_ne!`s on the root commit (it would **panic**, surfacing as
-    /// a generic `PanicException` through PyO3), so we guard the root explicitly and raise
-    /// `ImmutableCommitError`. Only the root is enforced — jj's configurable `immutable_heads()`
-    /// set is CLI workflow policy, which the thin layer deliberately does not replicate.
+    /// `record_abandoned_commit` `assert_ne!`s on the root commit. `check_rewritable` prevents
+    /// that panic and also enforces the configured immutable set.
     fn abandon(&self, revset_str: &str) -> PyResult<()> {
         let mut guard = self.tx.borrow_mut();
         let tx = guard
@@ -281,9 +349,7 @@ impl PyTransaction {
         // On the GIL — `MutableRepo` is `!Send` (see module docs).
         let repo = tx.repo_mut();
         let target = self.resolve_single(&*repo, revset_str)?;
-        if target.id() == repo.store().root_commit_id() {
-            return Err(ImmutableCommitError::new_err("cannot abandon the root commit"));
-        }
+        self.check_rewritable(&*repo, std::slice::from_ref(&target))?;
         repo.record_abandoned_commit(&target);
         pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
         Ok(())
@@ -303,8 +369,8 @@ impl PyTransaction {
     /// In every mode the change id is preserved and the commit id changes; if `@` (or an ancestor of
     /// `@`) moves, `commit`'s checkout updates the on-disk working copy. `move_commits` records
     /// rewrites, so we `rebase_descendants()` before reading the result back (and `commit` re-runs it
-    /// idempotently). Rewriting the **root** panics in `record_rewritten_commit`, so we guard it and
-    /// raise `ImmutableCommitError`, like `abandon`. An unknown `mode` is a `PyjutsuError`.
+    /// idempotently). Configured immutable revisions — and the root commit unconditionally — are
+    /// rejected before any rewrite. An unknown `mode` is a `PyjutsuError`.
     #[pyo3(signature = (commit, onto, mode="source"))]
     fn rebase<'py>(
         &self,
@@ -320,17 +386,24 @@ impl PyTransaction {
         // On the GIL — `MutableRepo` is `!Send` (see module docs); in-memory graph work.
         let repo = tx.repo_mut();
         let target = self.resolve_single(&*repo, commit)?;
-        if target.id() == repo.store().root_commit_id() {
-            return Err(ImmutableCommitError::new_err("cannot rebase the root commit"));
-        }
         let new_parent_ids = onto
             .iter()
             .map(|r| Ok(self.resolve_single(&*repo, r)?.id().clone()))
             .collect::<PyResult<Vec<CommitId>>>()?;
         let target = match mode {
-            "source" => MoveCommitsTarget::Roots(vec![target.id().clone()]),
-            "revision" => MoveCommitsTarget::Commits(vec![target.id().clone()]),
-            "branch" => MoveCommitsTarget::Roots(self.branch_roots(&*repo, &target, &new_parent_ids)?),
+            "source" => {
+                self.check_rewritable_revset(&*repo, &format!("{}::", target.id().hex()))?;
+                MoveCommitsTarget::Roots(vec![target.id().clone()])
+            }
+            "revision" => {
+                self.check_rewritable(&*repo, std::slice::from_ref(&target))?;
+                MoveCommitsTarget::Commits(vec![target.id().clone()])
+            }
+            "branch" => {
+                let roots = self.branch_roots(&*repo, &target, &new_parent_ids)?;
+                self.check_rewritable_descendants(&*repo, &roots)?;
+                MoveCommitsTarget::Roots(roots)
+            }
             other => {
                 return Err(PyjutsuError::new_err(format!(
                     "rebase mode must be 'source', 'revision', or 'branch', got '{other}'"
@@ -378,10 +451,7 @@ impl PyTransaction {
         let repo = tx.repo_mut();
         let src = self.resolve_single(&*repo, source)?;
         let dst = self.resolve_single(&*repo, into)?;
-        let root_id = repo.store().root_commit_id().clone();
-        if src.id() == &root_id || dst.id() == &root_id {
-            return Err(ImmutableCommitError::new_err("cannot squash the root commit"));
-        }
+        self.check_rewritable(&*repo, &[src.clone(), dst.clone()])?;
         if src.id() == dst.id() {
             return Err(PyjutsuError::new_err("cannot squash a commit into itself"));
         }
@@ -436,9 +506,7 @@ impl PyTransaction {
         // On the GIL — `MutableRepo` is `!Send` (see module docs).
         let repo = tx.repo_mut();
         let target = self.resolve_single(&*repo, commit)?;
-        if target.id() == repo.store().root_commit_id() {
-            return Err(ImmutableCommitError::new_err("cannot restore the root commit"));
-        }
+        self.check_rewritable(&*repo, std::slice::from_ref(&target))?;
         let from = self.resolve_single(&*repo, from_)?;
         let from_tree = from.tree();
         let target_tree = target.tree();
@@ -584,11 +652,7 @@ impl PyTransaction {
         // writes (the partial-file blobs and the two commit trees).
         let repo = tx.repo_mut();
         let target = self.resolve_single(&*repo, commit)?;
-        if target.id() == repo.store().root_commit_id() {
-            return Err(ImmutableCommitError::new_err(
-                "cannot split the root commit",
-            ));
-        }
+        self.check_rewritable(&*repo, std::slice::from_ref(&target))?;
         if selection.is_empty() {
             return Err(PyjutsuError::new_err(
                 "split selection is empty; select at least one path (or hunk) to carve off",

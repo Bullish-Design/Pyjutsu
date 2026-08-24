@@ -21,7 +21,7 @@ in
     "pyjutsu:test".exec = ''cd "$DEVENV_ROOT" && ${venvBin}/pytest -q && cargo test'';
 
     # ruff for Python, clippy for Rust.
-    "pyjutsu:lint".exec = ''cd "$DEVENV_ROOT" && ${venvBin}/ruff check python tests && cargo clippy --all-targets -- -D warnings'';
+    "pyjutsu:lint".exec = ''cd "$DEVENV_ROOT" && ${venvBin}/ruff check python tests scripts && cargo clippy --all-targets -- -D warnings'';
   };
 
   # `devenv test` builds the ext, then runs both suites.
