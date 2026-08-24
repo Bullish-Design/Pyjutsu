@@ -59,7 +59,7 @@ in
   # defines. A devenv task with only `after` and no `exec` runs its dependency
   # and fails when that dependency fails, so this duplicates no command bodies.
   tasks = {
-    "base:lint".after = [ "pyjutsu:lint" ];
+    "base:check".after = [ "pyjutsu:lint" ];
     "base:test".after = [ "pyjutsu:test" ];
 
     # The native extension must exist before the Python suite imports it, and
