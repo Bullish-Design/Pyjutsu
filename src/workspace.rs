@@ -48,6 +48,7 @@ use crate::errors::{
     map_edit_err, map_fileset_err, map_git_err, map_workingcopy_err, map_workspace_err, to_py_err,
 };
 use crate::repo_view::PyRepoView;
+use crate::revset::RevsetConfig;
 use crate::transaction::PyTransaction;
 
 /// jj's string-pattern kinds (`kind:value`), as understood by `StringPattern::from_str_kind`.
@@ -402,9 +403,8 @@ impl GitSubprocessCallback for NullGitCallback {
 #[pyclass(module = "pyjutsu._pyjutsu")]
 pub(crate) struct PyWorkspace {
     inner: Mutex<Workspace>,
-    /// The authoring email from settings — carried into the revset context of any view this
-    /// workspace produces (so `author()`/`mine()` resolve consistently).
-    user_email: String,
+    /// Parsed revset configuration built once from the resolved workspace settings.
+    revset_config: Arc<RevsetConfig>,
     /// Single-open-transaction guard. The native `jj_lib::Transaction` is **not** `Send` (its
     /// `MutableRepo` holds a `Box<dyn MutableIndex>`, and `MutableIndex: Any` has no `Send`
     /// bound), so it cannot live in this `Send` handle — it lives in an `unsendable`
@@ -509,7 +509,11 @@ impl PyWorkspace {
             PyErr::warn(py, &py.get_type::<PyUserWarning>(), &message, 1)?;
         }
         let settings = resolved.settings;
-        let user_email = settings.user_email().to_owned();
+        let (revset_config, revset_warnings) = RevsetConfig::from_settings(&settings);
+        for warning in revset_warnings {
+            let message = CString::new(warning).map_err(map_workspace_err)?;
+            PyErr::warn(py, &py.get_type::<PyUserWarning>(), &message, 1)?;
+        }
         let store_factories = StoreFactories::default();
         let working_copy_factories = default_working_copy_factories();
         let inner = resolved
@@ -518,7 +522,7 @@ impl PyWorkspace {
             .map_err(map_workspace_err)?;
         Ok(Self {
             inner: Mutex::new(inner),
-            user_email,
+            revset_config: Arc::new(revset_config),
             tx_open: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -542,7 +546,7 @@ impl PyWorkspace {
         let repo = py
             .allow_threads(|| pollster::block_on(loader.load_at_head()))
             .map_err(map_backend_err)?;
-        Ok(PyRepoView::new(repo, name, root, self.user_email.clone()))
+        Ok(PyRepoView::new(repo, name, root, self.revset_config.clone()))
     }
 
     /// The id of the current head operation (what a fresh `head_view` loads at).
@@ -569,7 +573,7 @@ impl PyWorkspace {
                 .map_err(to_py_err)?;
             pollster::block_on(loader.load_at(&op)).map_err(map_backend_err)
         })?;
-        Ok(PyRepoView::new(repo, name, root, self.user_email.clone()))
+        Ok(PyRepoView::new(repo, name, root, self.revset_config.clone()))
     }
 
     /// Snapshot the working copy: record any on-disk changes to `@` as a separate
@@ -1172,7 +1176,7 @@ impl PyWorkspace {
 
         let source_name = guard.workspace_name().to_owned();
         let source_root = guard.workspace_root().to_owned();
-        let user_email = self.user_email.clone();
+        let revset_config = self.revset_config.clone();
         let loader = guard.repo_loader();
         let (wc_id, new_root) = py.allow_threads(|| -> PyResult<_> {
             let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
@@ -1211,7 +1215,7 @@ impl PyWorkspace {
                         expression,
                         &source_name,
                         &source_root,
-                        &user_email,
+                        &revset_config,
                     )?;
                     if commits.len() != 1 {
                         return Err(RevsetError::new_err(format!(
@@ -1835,8 +1839,9 @@ impl PyWorkspace {
         let ws: &mut Workspace = &mut guard;
         let ws_name = ws.workspace_name().to_owned();
         let ws_root = ws.workspace_root().to_owned();
-        let user_email = self.user_email.clone();
+        let revset_config = self.revset_config.clone();
         let user_name = ws.repo_loader().settings().user_name().to_owned();
+        let user_email = ws.repo_loader().settings().user_email().to_owned();
         let repo = {
             let loader = ws.repo_loader();
             py.allow_threads(|| pollster::block_on(loader.load_at_head()))
@@ -1854,7 +1859,7 @@ impl PyWorkspace {
                 &target_owned,
                 &ws_name,
                 &ws_root,
-                &user_email,
+                &revset_config,
             )?;
             if commits.len() != 1 {
                 return Err(RevsetError::new_err(format!(
@@ -2288,7 +2293,7 @@ impl PyWorkspace {
                 slf.clone().unbind(),
                 name,
                 root,
-                this.user_email.clone(),
+                this.revset_config.clone(),
                 starting_wc,
             )),
             Err(err) => {

@@ -49,7 +49,7 @@ use crate::errors::{
     ImmutableCommitError, PyjutsuError, RevsetError, StaleWorkingCopyError, map_backend_err,
     map_edit_err,
 };
-use crate::revset;
+use crate::revset::{self, RevsetConfig};
 use crate::workspace::PyWorkspace;
 
 /// One file's split selection: whole-file (`None`) or a set of 0-based hunk indices into that
@@ -69,12 +69,12 @@ pub(crate) struct PyTransaction {
     /// the transaction moves `@`. `Py<PyWorkspace>` is `Send`; the workspace only holds an
     /// `AtomicBool` + a `Mutex<Workspace>`, so there is no reference cycle to worry about.
     workspace: Py<PyWorkspace>,
-    /// Revset-resolution context (mirrors `PyRepoView`): the workspace's name + root + author
-    /// email, so `@`, `file()`, `mine()`, … resolve the same way reads do — but here against the
-    /// open `MutableRepo`, which sees this transaction's in-flight rewrites.
+    /// Revset-resolution context (mirrors `PyRepoView`): the workspace's name, root, and cached
+    /// settings so `@`, `file()`, `mine()`, and aliases resolve the same way reads do — but here
+    /// against the open `MutableRepo`, which sees this transaction's in-flight rewrites.
     workspace_name: WorkspaceNameBuf,
     workspace_root: PathBuf,
-    user_email: String,
+    revset_config: Arc<RevsetConfig>,
     /// `@`'s commit id when the transaction began. `commit` compares the post-commit `@` against
     /// this to decide whether the on-disk working copy needs a checkout.
     starting_wc_commit: Option<CommitId>,
@@ -88,7 +88,7 @@ impl PyTransaction {
         workspace: Py<PyWorkspace>,
         workspace_name: WorkspaceNameBuf,
         workspace_root: PathBuf,
-        user_email: String,
+        revset_config: Arc<RevsetConfig>,
         starting_wc_commit: Option<CommitId>,
     ) -> Self {
         Self {
@@ -97,7 +97,7 @@ impl PyTransaction {
             workspace,
             workspace_name,
             workspace_root,
-            user_email,
+            revset_config,
             starting_wc_commit,
         }
     }
@@ -124,7 +124,7 @@ impl PyTransaction {
             revset_str,
             &self.workspace_name,
             &self.workspace_root,
-            &self.user_email,
+            &self.revset_config,
         )?;
         if commits.len() != 1 {
             return Err(RevsetError::new_err(format!(
@@ -158,7 +158,7 @@ impl PyTransaction {
             &expr,
             &self.workspace_name,
             &self.workspace_root,
-            &self.user_email,
+            &self.revset_config,
         )?;
         Ok(roots.iter().map(|c| c.id().clone()).collect())
     }

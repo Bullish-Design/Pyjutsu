@@ -23,8 +23,61 @@ use jj_lib::revset::{
     self, Revset, RevsetAliasesMap, RevsetDiagnostics, RevsetExtensions, RevsetParseContext,
     RevsetStreamExt as _, RevsetWorkspaceContext, SymbolResolver, SymbolResolverExtension,
 };
+use jj_lib::settings::UserSettings;
 
 use crate::errors::{map_backend_err, map_revset_err};
+
+/// Parsed settings that affect every revset in one loaded workspace.
+///
+/// `Workspace::load()` creates this once from the resolved jj settings. Views and transactions
+/// clone its `Arc`, so each parse sees the same aliases, glob mode, and author email without
+/// reparsing configuration on every read.
+pub(crate) struct RevsetConfig {
+    aliases: RevsetAliasesMap,
+    use_glob_by_default: bool,
+    user_email: String,
+}
+
+impl RevsetConfig {
+    /// Build the revset context values from resolved settings.
+    ///
+    /// jj-lib exposes the parser-backed alias map, but not jj-cli's small config-table loader.
+    /// Invalid declarations therefore become warnings and do not prevent a workspace from loading.
+    pub(crate) fn from_settings(settings: &UserSettings) -> (Self, Vec<String>) {
+        let config = settings.config();
+        let mut aliases = RevsetAliasesMap::new();
+        let mut warnings = Vec::new();
+        for declaration in config.table_keys("revset-aliases") {
+            let value = match config.get::<String>(["revset-aliases", declaration]) {
+                Ok(value) => value,
+                Err(err) => {
+                    warnings.push(format!(
+                        "ignored revset alias '{declaration}': {err}; fix revset-aliases.{declaration}"
+                    ));
+                    continue;
+                }
+            };
+            if let Err(err) = aliases.insert(declaration, value, None) {
+                warnings.push(format!(
+                    "ignored revset alias '{declaration}': {err}; fix revset-aliases.{declaration}"
+                ));
+            }
+        }
+        // jj 0.42 defaults this setting to true. Pyjutsu does not yet vendor misc.toml, so retain
+        // the pinned default if a resolved configuration layer does not set it.
+        let use_glob_by_default = config
+            .get::<bool>("ui.revsets-use-glob-by-default")
+            .unwrap_or(true);
+        (
+            Self {
+                aliases,
+                use_glob_by_default,
+                user_email: settings.user_email().to_owned(),
+            },
+            warnings,
+        )
+    }
+}
 
 /// Parse → resolve symbols → evaluate `revset_str` into an evaluated `Revset` (the id iterator),
 /// borrowing `repo`. Shared prefix for [`evaluate`] (which collects commits) and [`evaluate_ids`]
@@ -35,9 +88,8 @@ fn evaluate_revset<'a>(
     revset_str: &str,
     workspace_name: &WorkspaceName,
     workspace_root: &Path,
-    user_email: &str,
+    revset_config: &RevsetConfig,
 ) -> Result<Box<dyn Revset + 'a>, PyErr> {
-    let aliases = RevsetAliasesMap::new();
     let fileset_aliases = FilesetAliasesMap::new();
     let extensions = RevsetExtensions::default();
     // `Fs { cwd, base }` lets `file(<relative>)` resolve against the workspace root, matching
@@ -51,13 +103,13 @@ fn evaluate_revset<'a>(
         workspace_name,
     };
     let ctx = RevsetParseContext {
-        aliases_map: &aliases,
+        aliases_map: &revset_config.aliases,
         local_variables: HashMap::new(),
-        user_email,
+        user_email: &revset_config.user_email,
         date_pattern_context: chrono::Local::now().into(),
         default_ignored_remote: Some("git".as_ref()), // jj hides the implicit "git" remote
         fileset_aliases_map: &fileset_aliases,
-        use_glob_by_default: false,
+        use_glob_by_default: revset_config.use_glob_by_default,
         extensions: &extensions,
         workspace: Some(ws_ctx),
     };
@@ -81,9 +133,15 @@ pub(crate) fn evaluate(
     revset_str: &str,
     workspace_name: &WorkspaceName,
     workspace_root: &Path,
-    user_email: &str,
+    revset_config: &RevsetConfig,
 ) -> Result<Vec<Commit>, PyErr> {
-    let revset = evaluate_revset(repo, revset_str, workspace_name, workspace_root, user_email)?;
+    let revset = evaluate_revset(
+        repo,
+        revset_str,
+        workspace_name,
+        workspace_root,
+        revset_config,
+    )?;
     // jj-lib 0.42 made revset evaluation stream-based: `stream()` yields commit ids and the
     // `RevsetStreamExt::commits` adaptor resolves them to `Commit`s. Drive it synchronously off
     // the GIL (the caller already wraps us in `allow_threads`).
@@ -102,9 +160,15 @@ pub(crate) fn evaluate_ids(
     revset_str: &str,
     workspace_name: &WorkspaceName,
     workspace_root: &Path,
-    user_email: &str,
+    revset_config: &RevsetConfig,
 ) -> Result<Vec<CommitId>, PyErr> {
-    let revset = evaluate_revset(repo, revset_str, workspace_name, workspace_root, user_email)?;
+    let revset = evaluate_revset(
+        repo,
+        revset_str,
+        workspace_name,
+        workspace_root,
+        revset_config,
+    )?;
     // Parse/resolve errors already surfaced in `evaluate_revset` (mapped to `RevsetError`); a
     // failure *streaming* the evaluated set is a backend/store read, so classify it like
     // `evaluate`'s per-commit error (`map_backend_err`) — the two paths must agree.

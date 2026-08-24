@@ -5,7 +5,8 @@ status: active
 loci:
   schema: 1
   id: 01a01fd4-c52a-7000-ba1a-72f77585ddf5
-  projects: []
+  projects:
+    - 01a02558-2047-7000-9372-7f439920f294
 ---
 
 # ISSUE: Revset evaluation ignores repository and workspace configuration
@@ -200,15 +201,18 @@ every revset entry point
 
 Expected shape:
 
-- extend `evaluate_revset` to accept the resolved revset configuration instead
-  of a bare `user_email`;
-- build the alias map once per loaded workspace, not once per call, if the
-  cost matters;
-- carry the built map beside `user_email` on `PyRepoView` and `PyWorkspace`;
+- extend `evaluate_revset` to accept one resolved revset configuration value
+  **in place of** the bare `user_email` parameter;
+- build the alias map once per loaded workspace, not once per call;
+- cache that value in one place, and remove the now-redundant `user_email`
+  field from `PyRepoView` and `PyWorkspace` rather than adding fields beside it;
 - keep the construction in Rust, because the values come from jj-lib types.
 
-Use jj-lib's own alias-map loading rather than parsing the configuration table
-by hand.
+jj-lib ships no loader that reads a configuration table into a
+`RevsetAliasesMap`; jj-cli owns that policy. Use jj-lib's
+`AliasesMap::insert(decl, defn, doc)` primitive so the declaration and
+definition syntax stays jj-lib's, and reproduce only the small table-walking
+step, as `src/config_loader.rs` already reproduces jj-cli's config-path policy.
 
 ---
 
@@ -315,7 +319,8 @@ with a message that names the missing function.
 - [ ] `use_glob_by_default` reads `ui.revsets-use-glob-by-default` from the
       resolved settings.
 - [ ] The default value matches the pinned CLI.
-- [ ] Alias construction uses jj-lib loading, not hand-written table parsing.
+- [ ] Alias construction uses jj-lib's `AliasesMap::insert` primitive, not a
+      hand-written parser for the declaration or definition syntax.
 
 ## Coverage
 
