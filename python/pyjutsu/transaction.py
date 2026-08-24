@@ -63,6 +63,7 @@ class Transaction:
         "_handle",
         "_description",
         "_auto_snapshot",
+        "_ignore_immutable",
         "_state",
         "_native",
         "_operation_id",
@@ -78,6 +79,7 @@ class Transaction:
         description: str,
         *,
         auto_snapshot: bool = True,
+        ignore_immutable: bool = False,
         hooks: HookRegistry | None = None,
     ) -> None:
         # Internal: construct via `Workspace.transaction(...)`.
@@ -86,6 +88,7 @@ class Transaction:
         # When set, `__enter__` snapshots a dirty `@` as a separate preceding operation before
         # beginning this transaction (matching the CLI). Disabled ⇒ the mutation sees `@` as-is.
         self._auto_snapshot = auto_snapshot
+        self._ignore_immutable = ignore_immutable
         self._state = "pending"
         # The native, unsendable transaction handle, live only between `__enter__` and `__exit__`.
         self._native: PyTransaction | None = None
@@ -100,7 +103,7 @@ class Transaction:
         # matching the CLI. A clean `@` snapshots to nothing (no op). Disabled ⇒ `@` seen as-is.
         if self._auto_snapshot:
             self._handle.snapshot()
-        self._native = self._handle.begin_transaction()
+        self._native = self._handle.begin_transaction(self._ignore_immutable)
         self._state = "open"
         return self
 

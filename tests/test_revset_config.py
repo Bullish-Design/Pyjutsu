@@ -94,6 +94,33 @@ def test_malformed_alias_warns_and_keeps_unrelated_revsets_working(
     assert [commit.change_id for commit in view.log("@-")] == _change_ids(repo, "@-")
 
 
+def test_repository_alias_reaches_every_revset_entry_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One configured alias follows every read and mutation path, including a child workspace."""
+    monkeypatch.delenv("JJ_CONFIG", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
+    repo = _make_repo(tmp_path)
+    _run_jj(repo, "config", "set", "--repo", 'revset-aliases."chosen()"', "@-")
+
+    ws = pyjutsu.Workspace.load(repo)
+    view = ws.head()
+    expected = _change_ids(repo, "chosen()")[0]
+    assert view.resolve("chosen()").change_id == expected
+    assert [commit.change_id for commit in view.log("chosen()")] == [expected]
+    assert [commit.change_id for commit in view.iter_log("chosen()")] == [expected]
+    assert view.conflicts("chosen()") == []
+    assert view.diff_stat("chosen()") is not None
+
+    with ws.transaction("configured alias", auto_snapshot=False) as tx:
+        changed = tx.describe("chosen()", "configured alias works")
+    assert changed.change_id == expected
+    assert ws.create_tag("configured-alias", "chosen()", "alias target") is not None
+
+    child = ws.add_workspace(tmp_path / "child", name="child", revisions="chosen()")
+    assert pyjutsu.Workspace.load(child.path).resolve("chosen()").change_id == expected
+
+
 def test_vendored_aliases_match_pinned_cli_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The offline pinned CLI is the staleness oracle for the vendored table."""
     monkeypatch.setenv("JJ_CONFIG", "")

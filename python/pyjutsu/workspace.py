@@ -555,7 +555,13 @@ class Workspace:
         """The filesystem root of this workspace's working copy (canonicalized)."""
         return Path(self._handle.workspace_root())
 
-    def transaction(self, description: str, *, auto_snapshot: bool = True) -> Transaction:
+    def transaction(
+        self,
+        description: str,
+        *,
+        auto_snapshot: bool = True,
+        ignore_immutable: bool = False,
+    ) -> Transaction:
         """Open a write transaction committing as ``description`` (concept §4, M2).
 
         Use it as a context manager: the ``with`` block begins the transaction, publishes it on
@@ -568,9 +574,17 @@ class Workspace:
 
         ``auto_snapshot`` (default ``True``) snapshots a dirty ``@`` as a separate preceding
         operation on open (matching the CLI); set it ``False`` to have the mutation see ``@`` as-is.
+
+        ``ignore_immutable`` (default ``False``) temporarily bypasses configured
+        ``immutable_heads()`` protection for this transaction. It never permits rewriting the
+        root commit.
         """
         return Transaction(
-            self._handle, description, auto_snapshot=auto_snapshot, hooks=self._hooks
+            self._handle,
+            description,
+            auto_snapshot=auto_snapshot,
+            ignore_immutable=ignore_immutable,
+            hooks=self._hooks,
         )
 
     def snapshot(self) -> Operation | None:

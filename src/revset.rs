@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use pyo3::PyErr;
 
@@ -22,6 +23,7 @@ use jj_lib::repo_path::RepoPathUiConverter;
 use jj_lib::revset::{
     self, Revset, RevsetAliasesMap, RevsetDiagnostics, RevsetExtensions, RevsetParseContext,
     RevsetStreamExt as _, RevsetWorkspaceContext, SymbolResolver, SymbolResolverExtension,
+    UserRevsetExpression,
 };
 use jj_lib::settings::UserSettings;
 
@@ -36,6 +38,7 @@ pub(crate) struct RevsetConfig {
     aliases: RevsetAliasesMap,
     use_glob_by_default: bool,
     user_email: String,
+    immutable_expression: OnceLock<Result<Arc<UserRevsetExpression>, String>>,
 }
 
 impl RevsetConfig {
@@ -73,27 +76,38 @@ impl RevsetConfig {
                 aliases,
                 use_glob_by_default,
                 user_email: settings.user_email().to_owned(),
+                immutable_expression: OnceLock::new(),
             },
             warnings,
         )
     }
+
+    /// Parse `immutable_heads().ancestors()` once for this transaction's workspace context.
+    pub(crate) fn immutable_expression(
+        &self,
+        workspace_name: &WorkspaceName,
+        workspace_root: &Path,
+    ) -> Result<Arc<UserRevsetExpression>, PyErr> {
+        self.immutable_expression
+            .get_or_init(|| {
+                parse_user_expression(self, "immutable_heads()", workspace_name, workspace_root)
+                    .map(|heads| heads.ancestors())
+                    .map_err(|err| err.to_string())
+            })
+            .as_ref()
+            .map(Arc::clone)
+            .map_err(map_revset_err)
+    }
 }
 
-/// Parse → resolve symbols → evaluate `revset_str` into an evaluated `Revset` (the id iterator),
-/// borrowing `repo`. Shared prefix for [`evaluate`] (which collects commits) and [`evaluate_ids`]
-/// (which collects ids), so the two never drift. `workspace_name`/`workspace_root` supply the
-/// context for workspace-relative symbols (`@`, `file(...)`).
-fn evaluate_revset<'a>(
-    repo: &'a dyn Repo,
+fn parse_user_expression(
+    revset_config: &RevsetConfig,
     revset_str: &str,
     workspace_name: &WorkspaceName,
     workspace_root: &Path,
-    revset_config: &RevsetConfig,
-) -> Result<Box<dyn Revset + 'a>, PyErr> {
+) -> Result<Arc<UserRevsetExpression>, PyErr> {
     let fileset_aliases = FilesetAliasesMap::new();
     let extensions = RevsetExtensions::default();
-    // `Fs { cwd, base }` lets `file(<relative>)` resolve against the workspace root, matching
-    // how the CLI interprets path arguments from the workspace root.
     let path_converter = RepoPathUiConverter::Fs {
         cwd: workspace_root.to_path_buf(),
         base: workspace_root.to_path_buf(),
@@ -107,15 +121,28 @@ fn evaluate_revset<'a>(
         local_variables: HashMap::new(),
         user_email: &revset_config.user_email,
         date_pattern_context: chrono::Local::now().into(),
-        default_ignored_remote: Some("git".as_ref()), // jj hides the implicit "git" remote
+        default_ignored_remote: Some("git".as_ref()),
         fileset_aliases_map: &fileset_aliases,
         use_glob_by_default: revset_config.use_glob_by_default,
         extensions: &extensions,
         workspace: Some(ws_ctx),
     };
-
     let mut diagnostics = RevsetDiagnostics::new();
-    let expr = revset::parse(&mut diagnostics, revset_str, &ctx).map_err(map_revset_err)?;
+    revset::parse(&mut diagnostics, revset_str, &ctx).map_err(map_revset_err)
+}
+
+/// Parse → resolve symbols → evaluate `revset_str` into an evaluated `Revset` (the id iterator),
+/// borrowing `repo`. Shared prefix for [`evaluate`] (which collects commits) and [`evaluate_ids`]
+/// (which collects ids), so the two never drift. `workspace_name`/`workspace_root` supply the
+/// context for workspace-relative symbols (`@`, `file(...)`).
+fn evaluate_revset<'a>(
+    repo: &'a dyn Repo,
+    revset_str: &str,
+    workspace_name: &WorkspaceName,
+    workspace_root: &Path,
+    revset_config: &RevsetConfig,
+) -> Result<Box<dyn Revset + 'a>, PyErr> {
+    let expr = parse_user_expression(revset_config, revset_str, workspace_name, workspace_root)?;
 
     let no_extensions: &[Box<dyn SymbolResolverExtension>] = &[];
     let resolver = SymbolResolver::new(repo, no_extensions);

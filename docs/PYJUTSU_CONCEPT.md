@@ -101,8 +101,8 @@ ws = Workspace.load(Path("my-repo"))            # or Workspace.init(path, coloca
 
 # --- reads (frozen Pydantic models; a RepoView never snapshots @) ---
 at = ws.working_copy()                           # Commit for @
-base = ws.resolve("main")                        # single-revision resolve → Commit
-hist: list[Commit] = ws.log("main..@", limit=50)
+trunk = ws.resolve("trunk()")                    # single-revision resolve → Commit
+hist: list[Commit] = ws.log("trunk()..@", limit=50)
 bms: list[Bookmark] = ws.bookmarks()             # local + remote tracking
 ops: list[Operation] = ws.operations(limit=20)   # op log (id, time, description, tags)
 stat = ws.diff_stat(at.commit_id)                # files / insertions / deletions
@@ -110,7 +110,7 @@ conflicts = ws.conflicts("@")                    # list[Conflict]; first-class, 
 
 # --- mutations: one transaction == one jj operation (native, atomic) ---
 with ws.transaction("start feature") as tx:
-    child = tx.new(parents=[base.change_id])
+    child = tx.new(parents=[trunk.change_id])
     tx.describe(child, "Add feature")
     tx.set_bookmark("feature", child)
 op_id = ws.head_operation()                       # the op the tx produced
@@ -148,6 +148,21 @@ ws.git_export(); ws.git_import()                   # colocated sync
   `set_remote_url`).
 - **Escape hatch:** `run_jj` runs the external `jj` binary against the workspace (raw
   stdout/stderr/exit, no model parsing) for anything not yet bound.
+
+### Revset configuration and rewrite safety
+
+Each loaded workspace builds one `RevsetConfig` from jj's resolved settings and shares it with its
+views and transactions. Pyjutsu vendors jj 0.42's aliases at default precedence, so `trunk()` and
+the standard immutability aliases work out of the box while user, repository, and workspace
+configuration can override them. The parser also takes jj's `true` default for
+`ui.revsets-use-glob-by-default`; callers relying on literal bare patterns should set the option
+explicitly.
+
+Before a transaction rewrites history, it evaluates `immutable_heads().ancestors()`. The default
+therefore protects the configured trunk lineage as jj does. A transaction may explicitly request
+`ignore_immutable=True` for a scoped administrative rewrite, but no transaction can rewrite the
+root commit. Moving bookmarks and creating tags change refs rather than commits and are not
+rewrite operations.
 
 ### Models (Pydantic v2)
 
@@ -265,7 +280,7 @@ ws.working_copy()      # -> the @ of THIS workspace only
 ws.name                # this workspace's id (e.g. "default")
 
 # create a second working copy sharing the same repo
-info = ws.add_workspace(path=Path("../repo-feat"), name="feat", revisions="main")
+info = ws.add_workspace(path=Path("../repo-feat"), name="feat", revisions="trunk()")
 other = Workspace.load(info.path)
 #   -> WorkspaceInfo first, then a handle bound to ../repo-feat
 

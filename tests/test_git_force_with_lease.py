@@ -59,7 +59,9 @@ def test_nonff_push_succeeds_when_lease_is_current(
 
     # Reword `trunk` in place: same tree (content-equal), new commit id (hash-divergent) — a sibling
     # of `sha1`, not a descendant, so pushing it over `origin/trunk` is a genuine non-fast-forward.
-    with ws.transaction("reword") as tx:
+    # `trunk()` is immutable by default in 0.16.0; this test intentionally rewrites it to
+    # exercise force-with-lease, so make that administrative exception explicit.
+    with ws.transaction("reword", ignore_immutable=True) as tx:
         tx.describe("trunk", "reworded trunk")
     sha2 = jj.commit_id(scratch_repo, "trunk")
     assert sha2 != sha1
@@ -79,7 +81,8 @@ def test_stale_lease_push_is_rejected_not_clobbered(
     ws, sha1 = _setup_pushed_trunk(scratch_repo, origin)
 
     # A first non-FF push succeeds and updates the remote-tracking lease to sha2.
-    with ws.transaction("reword") as tx:
+    # This deliberately rewrites the protected trunk to set up a non-fast-forward lease.
+    with ws.transaction("reword", ignore_immutable=True) as tx:
         tx.describe("trunk", "reworded trunk")
     sha2 = jj.commit_id(scratch_repo, "trunk")
     ws.git_push("origin", "trunk")
@@ -94,7 +97,7 @@ def test_stale_lease_push_is_rejected_not_clobbered(
     )
 
     # Another reword, then push with the stale lease → rejected (lease sha2 != actual sha1).
-    with ws.transaction("reword-again") as tx:
+    with ws.transaction("reword-again", ignore_immutable=True) as tx:
         tx.describe("trunk", "reworded again")
     with pytest.raises(GitError):
         ws.git_push("origin", "trunk")

@@ -2266,7 +2266,12 @@ impl PyWorkspace {
     /// can tell whether `@` actually moved.
     ///
     /// (Auto-snapshot of a dirty `@` is layered on in slice 5; this is the bare start.)
-    fn begin_transaction(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<PyTransaction> {
+    #[pyo3(signature = (ignore_immutable = false))]
+    fn begin_transaction(
+        slf: Bound<'_, Self>,
+        py: Python<'_>,
+        ignore_immutable: bool,
+    ) -> PyResult<PyTransaction> {
         let this = slf.borrow();
         // Claim the slot atomically; bail (without claiming) if a tx is already live.
         if this.tx_open.swap(true, Ordering::AcqRel) {
@@ -2294,6 +2299,7 @@ impl PyWorkspace {
                 name,
                 root,
                 this.revset_config.clone(),
+                ignore_immutable,
                 starting_wc,
             )),
             Err(err) => {

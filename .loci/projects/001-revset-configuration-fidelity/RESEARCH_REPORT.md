@@ -63,6 +63,23 @@ continue loading the workspace.
 Missing glob configuration falls back to jj 0.42's `true` default.
 An explicit resolved setting overrides that default.
 
+The vendored `src/config/revsets.toml` is loaded at `ConfigSource::Default`, below every resolved
+user, repository, and workspace layer. It contains only jj 0.42's `[revset-aliases]` table, not
+CLI command defaults. `tests/test_revset_config.py` uses `jj config list --include-defaults` from
+the pinned binary as the offline staleness oracle.
+
+For rewrite safety, Pyjutsu evaluates `immutable_heads().ancestors()` before `describe`, `edit`,
+`abandon`, `rebase`, `squash`, `restore`, and `split`. The parsed expression is lazy and cached on
+the workspace's shared `RevsetConfig`; a transaction that only moves refs or does no rewrite pays
+nothing. The root commit is checked first and remains immutable even when
+`transaction(ignore_immutable=True)` bypasses configured immutability. Bookmark and tag operations
+are deliberately out of scope because, like their pinned CLI counterparts, they move refs rather
+than rewrite commits.
+
+This project releases as Pyjutsu 0.16.0. The documented behavior changes are jj's `true` glob
+default and configured immutability enforcement; both are enabled by default, with the scoped
+transaction escape hatch for deliberate administrative rewrites.
+
 ## Rejected approaches
 
 Adding `jj-cli` would add a runtime dependency for a small public jj-lib
@@ -79,3 +96,12 @@ would leave the eight revset entry points vulnerable to drift.
 The focused baseline proves only the old test surface before the change.
 It does not prove configuration precedence, default aliases, or immutability.
 The subsequent strand tests and full gates must provide that evidence.
+
+## Final verification
+
+- `devenv tasks run pyjutsu:build` rebuilt and installed Pyjutsu 0.16.0.
+- `devenv tasks run pyjutsu:test` passed; its visible underlying run also passed the complete
+  pytest suite and all 7 Rust unit tests.
+- `devenv tasks run pyjutsu:lint` passed (`ruff` and `cargo clippy -D warnings`).
+- `scripts/verify_secondary_workspaces.py /tmp/pyjutsu-live` passed against `jj 0.42.0` after
+  creating a clean live workspace root.

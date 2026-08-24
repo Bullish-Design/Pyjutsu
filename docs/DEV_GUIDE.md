@@ -48,7 +48,8 @@ as small as possible, pin it exactly, and turn any behavioral drift into a loud 
 | `workspace.rs` | `PyWorkspace` — load/init, git interop, remotes, snapshot, stale, undo/restore, transaction factory. The biggest module. |
 | `repo_view.rs` | `PyRepoView` (all reads) + `PyCommitStream` (lazy `iter_log`). |
 | `transaction.rs` | `PyTransaction` — the mutation verbs, bound to one thread. |
-| `revset.rs` | Revset parsing/evaluation helpers used by reads. |
+| `revset.rs` | Revset parsing/evaluation helpers and the cached resolved `RevsetConfig`. |
+| `config/revsets.toml` | Vendored jj 0.42 default revset aliases; re-diff it on every jj upgrade. |
 | `diff.rs`, `diff_stat.rs` | Diff + diff-stat computation, producing the plain hunk/stat dicts. |
 | `convert.rs` | jj-lib value → plain-Python-dict converters (the shape the Pydantic models expect). |
 | `errors.rs` | The `PyjutsuError` hierarchy + `jj-lib` error → exception mapping. |
@@ -66,6 +67,13 @@ as small as possible, pin it exactly, and turn any behavioral drift into a loud 
 | `revset.py` | The `Revset`/`Pattern` builder (renders to strings; evaluates nothing). |
 | `errors.py` | Re-exports the native hierarchy + the pure-Python `JjCliError`. |
 | `_pyjutsu.pyi` | Type stub for the native extension — **keep in sync with `src/`**. |
+
+Revset aliases are loaded from resolved `UserSettings` once per workspace, then shared by views
+and transactions. Keep the vendored table at `ConfigSource::Default`: `tests/test_revset_config.py`
+compares its effective values to the pinned CLI, and user/repository/workspace configuration must
+continue to override it. Configured immutability is checked in `transaction.rs` before every
+rewrite verb; `transaction(ignore_immutable=True)` is intentionally narrow and cannot lift the
+root guard.
 
 `tests/` holds the Python test suite (differential + unit); `tests/golden/` holds golden model
 fields; `nix/pyjutsu.nix` defines the devenv tasks.

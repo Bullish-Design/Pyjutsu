@@ -7,7 +7,7 @@ Pyjutsu itself see [`DEV_GUIDE.md`](DEV_GUIDE.md).
 - **Import:** `import pyjutsu`
 - **Binds:** jujutsu / `jj-lib` **0.42.0** (pinned), in-process via PyO3 — no subprocess, no text
   parsing.
-- **Status:** shipping at `pyjutsu 0.10.0`.
+- **Status:** shipping at `pyjutsu 0.16.0`.
 
 ---
 
@@ -27,15 +27,24 @@ text. Four ideas carry the whole API:
 4. **The operation log is your undo history.** `ws.undo()`, `ws.restore_operation(op)`, and
    `ws.at_operation(op)` (time-travel reads) all work off it.
 
-Revisions are named with **revset strings** — jj's own query language (`"@"`, `"main..@"`,
+Revisions are named with **revset strings** — jj's own query language (`"@"`, `"trunk()..@"`,
 `"main::"`). Anywhere a revset is accepted you can pass a string or a built `Revset` (see §7).
 
-> **No CLI revset aliases.** Pyjutsu evaluates jj-lib revsets. It does not load the `jj`
-> command-line crate, which is where the alias definitions live. So `trunk()`,
-> `immutable_heads()`, `immutable()`, `mutable()`, `visible()`, and `hidden()` do not exist here —
-> they raise `RevsetError: Function ... doesn't exist`. Repository `[revset-aliases]` configuration
-> has no effect either. Name the bookmark directly (`"main"`), or use a relative form such as
-> `"@-"` or `"main..@"`.
+### 0.16.0 revset and safety changes
+
+Pyjutsu now uses the resolved jj revset configuration and vendors jj 0.42's default aliases, so
+`trunk()`, `immutable_heads()`, `immutable()`, `mutable()`, `visible()`, and `hidden()` work
+without a `jj-cli` dependency. User, repository, and workspace `[revset-aliases]` configuration
+overrides those defaults with jj precedence. An invalid configured alias emits a Python warning at
+`Workspace.load()` and does not prevent unrelated revsets from working.
+
+The unset default for `ui.revsets-use-glob-by-default` is now `true`, matching jj 0.42. This is a
+behaviour change: bare string patterns can select more revisions than under earlier Pyjutsu
+releases. Set that option explicitly to retain the old literal-default behaviour.
+
+History-rewriting verbs now reject every revision in `immutable_heads().ancestors()`, not only the
+root. The per-transaction `ignore_immutable=True` escape hatch deliberately bypasses configured
+immutability for an administrative operation, but it never permits rewriting the root commit.
 
 ```python
 import pyjutsu
@@ -75,7 +84,7 @@ uncommitted edits are preserved.
 info = ws.add_workspace(
     "../candidate",
     name="candidate",
-    revisions="main",
+    revisions="trunk()",
 )
 candidate = Workspace.load(info.path)
 ```
@@ -110,8 +119,8 @@ operation), or on a `RepoView` you hold and reuse. Reads are **side-effect-free*
 
 ```python
 ws.working_copy()                 # Commit for @
-ws.resolve("main")                # a single-revision revset -> Commit (errors if 0 or many)
-ws.log("main..@", limit=50)       # list[Commit] in revset order
+ws.resolve("trunk()")             # a single-revision revset -> Commit (errors if 0 or many)
+ws.log("trunk()..@", limit=50)    # list[Commit] in revset order
 ws.iter_log("::@")                # lazy Iterator[Commit] for huge histories
 ws.bookmarks()                    # list[Bookmark] (local + remote-tracking)
 ws.operations(limit=20)           # list[Operation] (the op log, newest first)
@@ -164,7 +173,7 @@ You may make several mutations in one block; they land as one atomic operation.
 
 ```python
 with ws.transaction("start feature") as tx:
-    base = ws.resolve("main")
+    base = ws.resolve("trunk()")
     child = tx.new(parents=[base.change_id])    # new empty commit, @ moves onto it
     tx.describe(child.change_id, "Add feature")
     tx.set_bookmark("feature", child.change_id)
@@ -194,9 +203,11 @@ Most verbs return the rewritten `Commit` (or `Bookmark`) read back from inside t
 transaction, so you can chain on it.
 
 > **Rules of thumb.** Every `commit`/`source`/`into` argument is a **single-revision** revset
-> (errors if it matches zero or many). Rewriting or abandoning the **root** commit raises
-> `ImmutableCommitError`. Call verbs only *inside* the `with` block — using `tx` after the block
-> raises `RuntimeError`.
+> (errors if it matches zero or many). `describe`, `edit`, `abandon`, `rebase`, `squash`,
+> `restore`, and `split` reject configured immutable revisions. For a deliberate administrative
+> exception, use `with ws.transaction("…", ignore_immutable=True) as tx:`; the root commit always
+> raises `ImmutableCommitError`. Call verbs only *inside* the `with` block — using `tx` after the
+> block raises `RuntimeError`.
 
 ### One-shot working-copy operations (outside a transaction)
 
