@@ -1,7 +1,7 @@
 ---
 title: Revset evaluation ignores repository and workspace configuration
 type: issue
-status: active
+status: done
 loci:
   schema: 1
   id: 01a01fd4-c52a-7000-ba1a-72f77585ddf5

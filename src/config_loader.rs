@@ -25,6 +25,7 @@ const REPO_CONFIG_DIR: &str = "repos";
 const WORKSPACE_CONFIG_DIR: &str = "workspaces";
 const OP_HOSTNAME: &str = "operation.hostname";
 const OP_USERNAME: &str = "operation.username";
+const REVSET_DEFAULTS: &str = include_str!("config/revsets.toml");
 
 /// Final settings and the loader that resolved their repository identity.
 pub(crate) struct ResolvedWorkspaceSettings {
@@ -166,6 +167,9 @@ fn environment_layers() -> (ConfigLayer, ConfigLayer) {
 
 fn base_config(config_env: &ConfigEnvironment) -> Result<StackedConfig, PyErr> {
     let mut config = StackedConfig::with_defaults();
+    let revset_defaults = ConfigLayer::parse(ConfigSource::Default, REVSET_DEFAULTS)
+        .expect("the vendored jj revset defaults must parse");
+    config.add_layer(revset_defaults);
     let (base, overrides) = environment_layers();
     config.add_layer(base);
     config.add_layer(overrides);

@@ -191,6 +191,9 @@ Pyjutsu adds those presentation surfaces separately.
 
 ## Tests, documentation, and versioning
 
+- Re-diff `src/config/revsets.toml` against the pinned CLI's
+  `cli/src/config/revsets.toml` before the upgrade. Update the vendored table
+  and its recorded upstream tag when jj changes it.
 - Update `tests/test_build.py` from 0.42 assertions to 0.44.
 - Update explicit 0.42 references in the README, user and developer guides,
   concept document, native stub, revset module, differential helper, stale

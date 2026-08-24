@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pyjutsu
@@ -91,3 +92,33 @@ def test_malformed_alias_warns_and_keeps_unrelated_revsets_working(
     with pytest.warns(UserWarning, match="ignored revset alias"):
         view = pyjutsu.Workspace.load(repo).head()
     assert [commit.change_id for commit in view.log("@-")] == _change_ids(repo, "@-")
+
+
+def test_vendored_aliases_match_pinned_cli_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The offline pinned CLI is the staleness oracle for the vendored table."""
+    monkeypatch.setenv("JJ_CONFIG", "")
+    repo = _make_repo(tmp_path)
+    vendored = tomllib.loads((Path(__file__).parents[1] / "src/config/revsets.toml").read_text())
+    effective = tomllib.loads(_run_jj(repo, "config", "list", "--include-defaults"))
+    assert effective["ui"]["revsets-use-glob-by-default"] is True
+    assert effective["revset-aliases"] == vendored["revset-aliases"]
+
+
+def test_default_aliases_and_override_match_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JJ_CONFIG", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
+    repo = _make_repo(tmp_path)
+    view = pyjutsu.Workspace.load(repo).head()
+    for expression in (
+        "trunk()",
+        "immutable_heads()",
+        "immutable()",
+        "mutable()",
+        "visible()",
+        "hidden()",
+    ):
+        assert [commit.change_id for commit in view.log(expression)] == _change_ids(repo, expression)
+
+    _run_jj(repo, "config", "set", "--repo", 'revset-aliases."trunk()"', "@-")
+    view = pyjutsu.Workspace.load(repo).head()
+    assert [commit.change_id for commit in view.log("trunk()")] == _change_ids(repo, "trunk()")
