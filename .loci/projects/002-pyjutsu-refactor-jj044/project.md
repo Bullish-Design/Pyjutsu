@@ -108,3 +108,24 @@ devenv tasks run pyjutsu:verify           PASS
 ```
 
 No test expectation or public API changed.
+
+### 2026-08-25 — Phase 2 operation-log extraction
+
+The stacked `jj044-refactor/operations` lane moved `undo` and
+`restore_operation` implementations into `src/workspace/operations.rs`.
+Python-facing wrappers remain in the single `#[pymethods]` block.
+
+`src/workspace.rs` decreased from 2,176 to 2,107 lines. The new operation-log
+module is 87 lines.
+
+Validation:
+
+```text
+cargo check                              PASS
+cargo fmt --check                        PASS
+pytest -q -n0 tests/test_undo.py          PASS: 7 tests
+devenv tasks run pyjutsu:verify           PASS
+```
+
+The full gate includes warning-free Clippy, all Python tests, and all Rust
+tests. No test expectation or public API changed.

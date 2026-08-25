@@ -5,6 +5,7 @@
 //! a `Mutex`, since it owns a `MutableRepo`). The Python `tx` object is a thin token whose methods
 //! re-enter this handle. A mutation transaction publishes exactly one jj operation on commit.
 
+mod operations;
 mod tags;
 
 use std::collections::{HashMap, HashSet};
@@ -984,52 +985,7 @@ impl PyWorkspace {
     /// so the checkout goes through `checkout_locked`, not the re-locking `checkout_wc`.
     #[pyo3(signature = (operation=None))]
     fn undo<'py>(&self, py: Python<'py>, operation: Option<&str>) -> PyResult<Bound<'py, PyDict>> {
-        let mut guard = self.locked()?;
-        let ws: &mut Workspace = &mut guard;
-        let name = ws.workspace_name().to_owned();
-        let op_spec = operation.unwrap_or("@").to_owned();
-
-        // Load head + the to-undo op's repo and its single parent's repo (backend I/O → off GIL).
-        let (repo, bad_repo, parent_repo, bad_op_hex) = {
-            let loader = ws.repo_loader();
-            py.allow_threads(|| -> PyResult<_> {
-                let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
-                // A bad/ambiguous op spec is user input → PyjutsuError base (matches `at_operation`).
-                let bad_op = pollster::block_on(op_walk::resolve_op_for_load(loader, &op_spec))
-                    .map_err(to_py_err)?;
-                // jj-lib 0.42 made `Operation::parents` an async fn returning all parents at once.
-                let parents = pollster::block_on(bad_op.parents()).map_err(map_backend_err)?;
-                if parents.len() > 1 {
-                    return Err(PyjutsuError::new_err("cannot undo a merge operation"));
-                }
-                let Some(parent_op) = parents.into_iter().next() else {
-                    return Err(PyjutsuError::new_err(
-                        "cannot undo the repo-initialization operation (it has no parent)",
-                    ));
-                };
-                let bad_repo =
-                    pollster::block_on(loader.load_at(&bad_op)).map_err(map_backend_err)?;
-                let parent_repo =
-                    pollster::block_on(loader.load_at(&parent_op)).map_err(map_backend_err)?;
-                Ok((repo, bad_repo, parent_repo, bad_op.id().hex()))
-            })?
-        };
-
-        // Build the reverse op on the GIL (Transaction is !Send). merge(base = bad, other = parent)
-        // applies (parent − bad) onto head = the reverse of the bad op. `merge` records the reverted
-        // commit as a rewrite (repo.rs:record_rewrites), so descendants must be rebased onto it
-        // before commit — both to satisfy `commit`'s `!has_rewrites()` assert (transaction.rs:136)
-        // and to faithfully move any children of the reverted commit, exactly as `jj undo` does.
-        let mut tx = repo.start_transaction();
-        {
-            let mrepo = tx.repo_mut();
-            pollster::block_on(mrepo.merge(&bad_repo, &parent_repo)).map_err(map_backend_err)?;
-            pollster::block_on(mrepo.rebase_descendants()).map_err(map_backend_err)?;
-        }
-        let new_repo = pollster::block_on(tx.commit(format!("undo operation {bad_op_hex}")))
-            .map_err(map_backend_err)?;
-
-        self.finish_op(py, ws, &name, &repo, &new_repo)
+        operations::undo(self, py, operation)
     }
 
     /// Reset the repo to the view a past operation recorded, publishing a new operation — matches
@@ -1040,32 +996,7 @@ impl PyWorkspace {
         py: Python<'py>,
         operation: &str,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let mut guard = self.locked()?;
-        let ws: &mut Workspace = &mut guard;
-        let name = ws.workspace_name().to_owned();
-        let op_spec = operation.to_owned();
-
-        let (repo, target_view) = {
-            let loader = ws.repo_loader();
-            py.allow_threads(|| -> PyResult<_> {
-                let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
-                let target_op = pollster::block_on(op_walk::resolve_op_for_load(loader, &op_spec))
-                    .map_err(to_py_err)?;
-                // Operation::view() is the high-level View; set_view wants op_store::View.
-                let view = pollster::block_on(target_op.view())
-                    .map_err(map_backend_err)?
-                    .store_view()
-                    .clone();
-                Ok((repo, view))
-            })?
-        };
-
-        let mut tx = repo.start_transaction();
-        tx.repo_mut().set_view(target_view);
-        let new_repo = pollster::block_on(tx.commit(format!("restore to operation {op_spec}")))
-            .map_err(map_backend_err)?;
-
-        self.finish_op(py, ws, &name, &repo, &new_repo)
+        operations::restore_operation(self, py, operation)
     }
 
     /// Create a jj repo + default workspace at `path`, returning a handle to it. `colocate=false`
