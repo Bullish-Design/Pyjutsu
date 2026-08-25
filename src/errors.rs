@@ -15,18 +15,63 @@ create_exception!(
     PyException,
     "Base class for errors raised by the pyjutsu native layer."
 );
-create_exception!(_pyjutsu, RevsetError, PyjutsuError, "A revset failed to parse, resolve, or evaluate.");
-create_exception!(_pyjutsu, ConflictError, PyjutsuError, "A conflict blocked an operation.");
-create_exception!(_pyjutsu, BackendError, PyjutsuError, "The underlying store/backend reported an error.");
-create_exception!(_pyjutsu, WorkspaceError, PyjutsuError, "A workspace could not be loaded or is unusable.");
-create_exception!(_pyjutsu, PartialWorkspaceError, WorkspaceError, "Workspace registration succeeded, but later initialization failed.");
-create_exception!(_pyjutsu, WorkingCopyError, PyjutsuError, "The working copy could not be locked, snapshotted, or checked out.");
+create_exception!(
+    _pyjutsu,
+    RevsetError,
+    PyjutsuError,
+    "A revset failed to parse, resolve, or evaluate."
+);
+create_exception!(
+    _pyjutsu,
+    ConflictError,
+    PyjutsuError,
+    "A conflict blocked an operation."
+);
+create_exception!(
+    _pyjutsu,
+    BackendError,
+    PyjutsuError,
+    "The underlying store/backend reported an error."
+);
+create_exception!(
+    _pyjutsu,
+    WorkspaceError,
+    PyjutsuError,
+    "A workspace could not be loaded or is unusable."
+);
+create_exception!(
+    _pyjutsu,
+    PartialWorkspaceError,
+    WorkspaceError,
+    "Workspace registration succeeded, but later initialization failed."
+);
+create_exception!(
+    _pyjutsu,
+    WorkingCopyError,
+    PyjutsuError,
+    "The working copy could not be locked, snapshotted, or checked out."
+);
 // StaleWorkingCopyError ⊂ WorkingCopyError: operating on a `@` another operation has moved past.
-create_exception!(_pyjutsu, StaleWorkingCopyError, WorkingCopyError, "The working copy is stale (another operation moved `@`).");
-create_exception!(_pyjutsu, ImmutableCommitError, PyjutsuError, "An attempt was made to rewrite or abandon an immutable commit (e.g. the root).");
+create_exception!(
+    _pyjutsu,
+    StaleWorkingCopyError,
+    WorkingCopyError,
+    "The working copy is stale (another operation moved `@`)."
+);
+create_exception!(
+    _pyjutsu,
+    ImmutableCommitError,
+    PyjutsuError,
+    "An attempt was made to rewrite or abandon an immutable commit (e.g. the root)."
+);
 // GitError ⊂ BackendError: a git import/export or remote-management operation failed (the backing
 // git repo or its config). Subclasses BackendError because git is jj's store/backend (concept §134).
-create_exception!(_pyjutsu, GitError, BackendError, "A git import/export or remote operation failed.");
+create_exception!(
+    _pyjutsu,
+    GitError,
+    BackendError,
+    "A git import/export or remote operation failed."
+);
 
 /// Register the exception types on the module (one `add` per type so Python can import them).
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -40,8 +85,14 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.py().get_type::<PartialWorkspaceError>(),
     )?;
     m.add("WorkingCopyError", m.py().get_type::<WorkingCopyError>())?;
-    m.add("StaleWorkingCopyError", m.py().get_type::<StaleWorkingCopyError>())?;
-    m.add("ImmutableCommitError", m.py().get_type::<ImmutableCommitError>())?;
+    m.add(
+        "StaleWorkingCopyError",
+        m.py().get_type::<StaleWorkingCopyError>(),
+    )?;
+    m.add(
+        "ImmutableCommitError",
+        m.py().get_type::<ImmutableCommitError>(),
+    )?;
     m.add("GitError", m.py().get_type::<GitError>())?;
     Ok(())
 }

@@ -28,7 +28,11 @@ use crate::errors::map_backend_err;
 pub(crate) fn merge_tree_id_hex(tree_ids: &Merge<TreeId>) -> String {
     match tree_ids.as_resolved() {
         Some(id) => id.hex(),
-        None => tree_ids.iter().map(ObjectId::hex).collect::<Vec<_>>().join(""),
+        None => tree_ids
+            .iter()
+            .map(ObjectId::hex)
+            .collect::<Vec<_>>()
+            .join(""),
     }
 }
 

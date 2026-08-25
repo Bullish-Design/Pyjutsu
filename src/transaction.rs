@@ -171,7 +171,9 @@ impl PyTransaction {
     fn check_rewritable(&self, repo: &dyn Repo, commits: &[Commit]) -> PyResult<()> {
         let root_id = repo.store().root_commit_id();
         if commits.iter().any(|commit| commit.id() == root_id) {
-            return Err(ImmutableCommitError::new_err("cannot rewrite the root commit"));
+            return Err(ImmutableCommitError::new_err(
+                "cannot rewrite the root commit",
+            ));
         }
         if self.ignore_immutable {
             return Ok(());
@@ -192,7 +194,10 @@ impl PyTransaction {
                 .try_collect(),
         )
         .map_err(map_backend_err)?;
-        if let Some(commit) = commits.iter().find(|commit| immutable_ids.contains(commit.id())) {
+        if let Some(commit) = commits
+            .iter()
+            .find(|commit| immutable_ids.contains(commit.id()))
+        {
             return Err(ImmutableCommitError::new_err(format!(
                 "commit {} is immutable; change revset-aliases.immutable_heads() or use \
                  transaction(ignore_immutable=True)",
@@ -213,11 +218,7 @@ impl PyTransaction {
         self.check_rewritable(repo, &commits)
     }
 
-    fn check_rewritable_descendants(
-        &self,
-        repo: &dyn Repo,
-        roots: &[CommitId],
-    ) -> PyResult<()> {
+    fn check_rewritable_descendants(&self, repo: &dyn Repo, roots: &[CommitId]) -> PyResult<()> {
         let mut commits = Vec::new();
         for root in roots {
             commits.extend(revset::evaluate(
@@ -834,7 +835,8 @@ impl PyTransaction {
                 "no such remote bookmark '{name}@{remote}'"
             )));
         }
-        repo.track_remote_bookmark(symbol).map_err(map_backend_err)?;
+        repo.track_remote_bookmark(symbol)
+            .map_err(map_backend_err)?;
         let remote_ref = repo.get_remote_bookmark(symbol);
         BookmarkData::remote(name, remote, &remote_ref).to_dict(py)
     }
@@ -893,11 +895,17 @@ impl PyTransaction {
         // From here the operation is PUBLISHED — it is in the op log regardless of what follows.
         let op_hex = new_repo.operation().id().hex();
 
-        let new_wc_commit = new_repo.view().get_wc_commit_id(&self.workspace_name).cloned();
+        let new_wc_commit = new_repo
+            .view()
+            .get_wc_commit_id(&self.workspace_name)
+            .cloned();
         if new_wc_commit != self.starting_wc_commit
             && let Some(new_id) = new_wc_commit
         {
-            let new_commit = new_repo.store().get_commit(&new_id).map_err(map_backend_err)?;
+            let new_commit = new_repo
+                .store()
+                .get_commit(&new_id)
+                .map_err(map_backend_err)?;
             let op_id = new_repo.operation().id().clone();
             // The op already landed; a checkout failure means the on-disk WC is now stale, not that
             // the commit failed. Surface it as `StaleWorkingCopyError` carrying the published op id

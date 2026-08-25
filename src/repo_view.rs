@@ -124,7 +124,10 @@ impl PyRepoView {
             })?;
         let data = py.allow_threads(|| {
             let repo = self.repo.as_ref();
-            let commit = repo.store().get_commit(&commit_id).map_err(map_backend_err)?;
+            let commit = repo
+                .store()
+                .get_commit(&commit_id)
+                .map_err(map_backend_err)?;
             CommitData::build(repo, &commit)
         })?;
         data.to_dict(py)
@@ -153,8 +156,10 @@ impl PyRepoView {
         limit: Option<usize>,
     ) -> PyResult<Bound<'py, PyList>> {
         let data = self.eval_to_data(py, revset_str, limit)?;
-        let dicts: Vec<Bound<'py, PyDict>> =
-            data.iter().map(|d| d.to_dict(py)).collect::<PyResult<_>>()?;
+        let dicts: Vec<Bound<'py, PyDict>> = data
+            .iter()
+            .map(|d| d.to_dict(py))
+            .collect::<PyResult<_>>()?;
         PyList::new(py, dicts)
     }
 
@@ -181,8 +186,10 @@ impl PyRepoView {
                 Ok(out)
             })
         })?;
-        let dicts: Vec<Bound<'py, PyDict>> =
-            data.iter().map(|d| d.to_dict(py)).collect::<PyResult<_>>()?;
+        let dicts: Vec<Bound<'py, PyDict>> = data
+            .iter()
+            .map(|d| d.to_dict(py))
+            .collect::<PyResult<_>>()?;
         PyList::new(py, dicts)
     }
 
@@ -205,8 +212,10 @@ impl PyRepoView {
             }));
             rows
         });
-        let dicts: Vec<Bound<'py, PyDict>> =
-            data.iter().map(|d| d.to_dict(py)).collect::<PyResult<_>>()?;
+        let dicts: Vec<Bound<'py, PyDict>> = data
+            .iter()
+            .map(|d| d.to_dict(py))
+            .collect::<PyResult<_>>()?;
         PyList::new(py, dicts)
     }
 
@@ -239,8 +248,10 @@ impl PyRepoView {
             }
             Ok(out)
         })?;
-        let dicts: Vec<Bound<'py, PyDict>> =
-            data.iter().map(|d| d.to_dict(py)).collect::<PyResult<_>>()?;
+        let dicts: Vec<Bound<'py, PyDict>> = data
+            .iter()
+            .map(|d| d.to_dict(py))
+            .collect::<PyResult<_>>()?;
         PyList::new(py, dicts)
     }
 

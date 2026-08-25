@@ -10,8 +10,8 @@
 //! `#[pymethods]` bodies in `catch_unwind`, so a panic surfaces as a Python exception rather
 //! than aborting the process.
 
-mod convert;
 mod config_loader;
+mod convert;
 mod diff;
 mod diff_stat;
 mod errors;

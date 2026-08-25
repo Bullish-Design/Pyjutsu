@@ -116,7 +116,10 @@ pub(crate) async fn read_text(
         Some(Some(TreeValue::File { id, .. })) => {
             let mut reader = store.read_file(path, id).await.map_err(map_backend_err)?;
             let mut buf = Vec::new();
-            reader.read_to_end(&mut buf).await.map_err(map_backend_err)?;
+            reader
+                .read_to_end(&mut buf)
+                .await
+                .map_err(map_backend_err)?;
             Ok(if buf.contains(&0) { None } else { Some(buf) })
         }
         _ => Ok(None),

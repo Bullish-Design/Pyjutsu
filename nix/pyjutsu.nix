@@ -10,24 +10,42 @@
 { config, ... }:
 
 let
+  venvRoot = "${config.devenv.state}/venv";
   venvBin = "${config.devenv.state}/venv/bin";
 in
 {
   tasks = {
     # Compile the _pyjutsu native ext and install it (editable) into the devenv venv.
-    "pyjutsu:build".exec = ''cd "$DEVENV_ROOT" && maturin develop --uv'';
+    "pyjutsu:build".exec = ''
+      cd "$DEVENV_ROOT"
+      VIRTUAL_ENV="${venvRoot}" UV_PROJECT_ENVIRONMENT="${venvRoot}" maturin develop --uv
+    '';
 
     # Python suite (models, facade, differential tests) + Rust unit tests for the thin layer.
-    "pyjutsu:test".exec = ''cd "$DEVENV_ROOT" && ${venvBin}/pytest -q && cargo test'';
+    "pyjutsu:test".exec = ''
+      cd "$DEVENV_ROOT"
+      ${venvBin}/pytest -q
+      cargo test
+    '';
 
     # ruff for Python, clippy for Rust.
-    "pyjutsu:lint".exec = ''cd "$DEVENV_ROOT" && ${venvBin}/ruff check python tests scripts && cargo clippy --all-targets -- -D warnings'';
+    "pyjutsu:lint".exec = ''
+      cd "$DEVENV_ROOT"
+      ${venvBin}/ruff check python tests scripts
+      cargo clippy --all-targets -- -D warnings
+    '';
+
+    # Canonical local gate. The task graph owns the build, test, and lint order.
+    "pyjutsu:verify".after = [
+      "pyjutsu:lint"
+      "pyjutsu:test"
+    ];
   };
 
   # `devenv test` builds the ext, then runs both suites.
   enterTest = ''
     cd "$DEVENV_ROOT"
-    maturin develop --uv
+    VIRTUAL_ENV="${venvRoot}" UV_PROJECT_ENVIRONMENT="${venvRoot}" maturin develop --uv
     ${venvBin}/pytest -q
     cargo test
   '';
