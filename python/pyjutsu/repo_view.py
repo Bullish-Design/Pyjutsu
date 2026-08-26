@@ -114,6 +114,33 @@ class RepoView:
         """
         return self._handle.conflict_sides(path, _revset_str(rev))
 
+    def file_content(self, path: str, rev: str | Revset = "@") -> bytes:
+        """Read the file at ``path`` in the single commit named by ``rev`` as raw **bytes**.
+
+        Matches ``jj file show -r <rev> <path>``. Returns ``bytes`` — the caller decodes, so
+        binary content round-trips intact. Raises :class:`~pyjutsu.errors.RevsetError` unless
+        ``rev`` names exactly one revision; :class:`~pyjutsu.errors.ConflictError` for a conflicted
+        path (read it with :meth:`conflict_content` to see the marked text); a clear error for a
+        path that is absent or not a regular file at that revision.
+        """
+        return self._handle.file_content(path, _revset_str(rev))
+
+    def file_list(
+        self,
+        rev: str | Revset = "@",
+        paths: list[str] | None = None,
+    ) -> list[str]:
+        """List the files in the single commit named by ``rev`` → repo-relative paths, sorted.
+
+        With ``paths`` given, only the files matching those **fileset** expressions are listed —
+        the same ``jj file list -r <rev> <filesets>...`` behavior: a bare name is a path prefix
+        (``"sub"`` matches everything under ``sub/``), ``glob:*.txt`` and the other jj file
+        pattern kinds work, and several patterns union. Raises
+        :class:`~pyjutsu.errors.RevsetError` unless ``rev`` names exactly one revision, or
+        :class:`~pyjutsu.errors.PyjutsuError` for a malformed fileset.
+        """
+        return self._handle.file_list(_revset_str(rev), paths)
+
     def diff_stat(self, revset: str | Revset, to: str | Revset | None = None) -> DiffStat:
         """The diff stat (per-file + total line counts) of a commit or a range.
 

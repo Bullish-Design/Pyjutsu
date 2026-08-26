@@ -30,7 +30,7 @@ use jj_lib::rewrite::merge_commit_trees;
 use crate::convert::{BookmarkData, CommitData, ConflictData, OperationData, merge_tree_id_hex};
 use crate::diff::{self, DiffData, FileChangeData};
 use crate::diff_stat::{self, DiffStatData};
-use crate::errors::{PyjutsuError, RevsetError, map_backend_err};
+use crate::errors::{ConflictError, PyjutsuError, RevsetError, map_backend_err};
 use crate::revset::{self, RevsetConfig};
 
 /// Opaque handle to a `ReadonlyRepo` at a fixed operation, plus the workspace context reads
@@ -298,6 +298,104 @@ impl PyRepoView {
         revset_str: &str,
     ) -> PyResult<Vec<String>> {
         crate::conflicts::sides(self, py, path, revset_str)
+    }
+
+    /// Read the file at `path` in the single commit named by `revset_str` as raw **bytes** (the
+    /// caller decodes; binary content round-trips intact). Matches `jj file show -r <rev> <path>`.
+    /// `RevsetError` unless `revset_str` names exactly one commit; `ConflictError` for a conflicted
+    /// path (read it with `conflict_content` instead); a clear error for a path that is absent or
+    /// not a regular file at that revision.
+    fn file_content(&self, py: Python<'_>, path: &str, revset_str: &str) -> PyResult<Vec<u8>> {
+        let path_buf = jj_lib::repo_path::RepoPathBuf::from_relative_path(path)
+            .map_err(|e| PyjutsuError::new_err(format!("invalid path '{path}': {e}")))?;
+        py.allow_threads(|| {
+            let commit = self.resolve_single(revset_str)?;
+            let repo = self.repo.as_ref();
+            let store = repo.store();
+            let tree = commit.tree();
+            let value = pollster::block_on(tree.path_value(&path_buf)).map_err(map_backend_err)?;
+            let materialized = pollster::block_on(jj_lib::conflicts::materialize_tree_value(
+                store,
+                &path_buf,
+                value,
+                tree.labels(),
+            ))
+            .map_err(map_backend_err)?;
+            match materialized {
+                jj_lib::conflicts::MaterializedTreeValue::File(mut file) => {
+                    pollster::block_on(file.read_all(&path_buf)).map_err(map_backend_err)
+                }
+                jj_lib::conflicts::MaterializedTreeValue::Symlink { target, .. } => {
+                    Ok(target.into_bytes())
+                }
+                jj_lib::conflicts::MaterializedTreeValue::FileConflict(_) => {
+                    Err(ConflictError::new_err(format!(
+                        "path '{path}' is conflicted at this revision; read it with \
+                         conflict_content() to see the marked text"
+                    )))
+                }
+                _ => Err(PyjutsuError::new_err(format!(
+                    "path '{path}' is not a regular file at this revision"
+                ))),
+            }
+        })
+    }
+
+    /// List the files in the single commit named by `revset_str` (repo-relative, sorted). With
+    /// `paths` given, only the files matching those fileset expressions are listed — the same
+    /// `jj file list -r <rev> <filesets>…` behavior (a bare name is a path prefix, `glob:`/etc.
+    /// work, and several patterns union). `RevsetError` unless `revset_str` names exactly one
+    /// commit; a malformed fileset is a `PyjutsuError`.
+    fn file_list(
+        &self,
+        py: Python<'_>,
+        revset_str: &str,
+        paths: Option<Vec<String>>,
+    ) -> PyResult<Vec<String>> {
+        let workspace_root = self.workspace_root.clone();
+        py.allow_threads(|| {
+            let commit = self.resolve_single(revset_str)?;
+            let tree = commit.tree();
+            let matcher: Box<dyn jj_lib::matchers::Matcher> = match paths {
+                None => Box::new(jj_lib::matchers::EverythingMatcher),
+                Some(patterns) => {
+                    // Reuse the fileset parsing the snapshot uses (`workspace.rs`): the same
+                    // context shape, evaluated against repo-relative tree paths.
+                    let path_converter = jj_lib::repo_path::RepoPathUiConverter::Fs {
+                        cwd: workspace_root.clone(),
+                        base: workspace_root,
+                    };
+                    let fileset_aliases = jj_lib::fileset::FilesetAliasesMap::new();
+                    let fileset_ctx = jj_lib::fileset::FilesetParseContext {
+                        aliases_map: &fileset_aliases,
+                        path_converter: &path_converter,
+                    };
+                    let mut matchers: Vec<Box<dyn jj_lib::matchers::Matcher>> = Vec::new();
+                    for expr in &patterns {
+                        let mut diagnostics = jj_lib::fileset::FilesetDiagnostics::new();
+                        let matcher = jj_lib::fileset::parse(&mut diagnostics, expr, &fileset_ctx)
+                            .map_err(crate::errors::to_py_err)?
+                            .to_matcher();
+                        matchers.push(matcher);
+                    }
+                    if matchers.is_empty() {
+                        Box::new(jj_lib::matchers::EverythingMatcher)
+                    } else {
+                        let mut iter = matchers.into_iter();
+                        let first = iter.next().expect("non-empty");
+                        iter.fold(first, |acc, m| {
+                            Box::new(jj_lib::matchers::UnionMatcher::new(acc, m))
+                        })
+                    }
+                }
+            };
+            let mut out: Vec<String> = tree
+                .entries_matching(&*matcher)
+                .map(|(path, _value)| path.as_internal_file_string().to_owned())
+                .collect();
+            out.sort();
+            Ok(out)
+        })
     }
 
     /// Diff stat (per-file + total line counts) of the single commit named by `revset_str`

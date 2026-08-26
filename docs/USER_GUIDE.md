@@ -157,6 +157,8 @@ ws.diff("@")                      # Diff (name-status + content hunks)
 ws.conflicts("@")                 # list[Conflict] (first-class, N-sided)
 view.conflict_content("file.txt")  # the marked text `jj file show` prints (style= diff/snapshot/git)
 view.conflict_sides("file.txt")    # the conflict's sides parsed back, no markers
+view.file_content("a.txt")         # bytes of one file at one revision (`jj file show`)
+view.file_list("@-", ["sub"])      # repo-relative file paths, fileset-filtered (`jj file list`)
 ```
 
 ### Reuse a view for several reads of the same state

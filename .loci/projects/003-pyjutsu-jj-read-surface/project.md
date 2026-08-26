@@ -135,3 +135,41 @@ PYJUTSU_TEST_OBJECT_HASH=sha256 pytest -q PASS: exit 0
 ```
 
 Evidence is in `artifacts/<UTC>-c1-gate/` and `artifacts/<UTC>-c1-sha256/`.
+
+### 2026-08-26 — C2 file content and listing
+
+Lane `003/c2` binds `jj file show` and `jj file list`, so a caller reads one
+file at one revision without a checkout.
+
+**Rust.** `PyRepoView::file_content` materializes the tree value at `path`
+(`materialize_tree_value`, with the tree's own labels) and returns the raw
+bytes for a regular file, the target bytes for a symlink, a `ConflictError`
+pointing at `conflict_content` for a conflicted path, and a clear error for an
+absent/non-file path. `PyRepoView::file_list` walks `tree.entries_matching`
+with either an `EverythingMatcher` (no `paths`) or a union of filesets parsed
+through the same `FilesetParseContext` shape the snapshot uses
+(`workspace.rs`), sorted like the CLI.
+
+**Python.** `RepoView.file_content(path, rev="@"  ) -> bytes` and
+`RepoView.file_list(rev="@", paths=None) -> list[str]`; `_pyjutsu.pyi` tracks
+both.
+
+**Test oracle details.** The CLI's `glob:*.txt` does not cross directory
+boundaries (a root-only glob), and the binary oracle must run the CLI in
+binary mode (the text-mode `jj` helper mangles bytes). Both are encoded in the
+tests.
+
+Validation (full gate, plus a focused SHA-256 run):
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+PYJUTSU_TEST_OBJECT_HASH=sha256 (focused) PASS
+```
+
+Evidence is in `artifacts/<UTC>-c2-gate/` (red Ruff run) and
+`artifacts/<UTC>-c2-gate-green/`.
