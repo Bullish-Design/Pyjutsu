@@ -16,6 +16,7 @@ mod diff;
 mod diff_stat;
 mod dsl;
 mod errors;
+mod git;
 mod repo_view;
 mod revset;
 mod transaction;

@@ -64,5 +64,25 @@ and the reason.
 
 ## Implementation log
 
-_Append one dated entry per lane: what changed, the validation block, and every
-decision made._
+### 2026-08-26 — baseline
+
+Pyjutsu 0.17.0 on `main` at `6d88c0ee6646`, pushed to `origin`. The working copy
+sits directly on `main` (two empty description-less commits above it were
+abandoned). jj-lib 0.44.0, gix 0.85.0 (one resolved version), devenv pins the
+jj 0.44.0 CLI.
+
+Real baseline numbers:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: 401 collected, exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+The parallel reporter suppresses pytest's summary line; exit code 0 is the
+recorded evidence. Evidence is in
+`artifacts/20260826T..Z-baseline-full/` (project 004's copy; the two projects
+share the gate run).

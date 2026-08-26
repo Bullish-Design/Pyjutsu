@@ -23,6 +23,7 @@ from .errors import (
     WorkingCopyError,
     WorkspaceError,
 )
+from .git import GitView
 from .hooks import HookRegistry, run_pre_commit, run_prek
 from .models import (
     Bookmark,
@@ -77,6 +78,7 @@ if __version__ != _EXT_PYJUTSU_VERSION:
 
 __all__ = [
     "Workspace",
+    "GitView",
     "Transaction",
     "RepoView",
     "Revset",

@@ -6,7 +6,6 @@
 //! re-enter this handle. A mutation transaction publishes exactly one jj operation on commit.
 
 mod operations;
-mod tags;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
@@ -373,7 +372,7 @@ fn absolutize_workspace_path(repo_path: &Path, path: PathBuf) -> PathBuf {
 /// No-op `GitSubprocessCallback`: the binding doesn't surface fetch/push progress or sideband
 /// output yet (a future slice could route these to a Python callback). Mirrors jj-lib's own test
 /// `NullCallback` — `needs_progress` is `false`, every sink is a silent `Ok(())`.
-struct NullGitCallback;
+pub(crate) struct NullGitCallback;
 
 impl GitSubprocessCallback for NullGitCallback {
     fn needs_progress(&self) -> bool {
@@ -402,7 +401,7 @@ impl GitSubprocessCallback for NullGitCallback {
 pub(crate) struct PyWorkspace {
     inner: Mutex<Workspace>,
     /// Parsed revset configuration built once from the resolved workspace settings.
-    revset_config: Arc<RevsetConfig>,
+    pub(crate) revset_config: Arc<RevsetConfig>,
     /// Single-open-transaction guard. The native `jj_lib::Transaction` is **not** `Send` (its
     /// `MutableRepo` holds a `Box<dyn MutableIndex>`, and `MutableIndex: Any` has no `Send`
     /// bound), so it cannot live in this `Send` handle — it lives in an `unsendable`
@@ -413,7 +412,7 @@ pub(crate) struct PyWorkspace {
 }
 
 impl PyWorkspace {
-    fn locked(&self) -> PyResult<std::sync::MutexGuard<'_, Workspace>> {
+    pub(crate) fn locked(&self) -> PyResult<std::sync::MutexGuard<'_, Workspace>> {
         self.inner
             .lock()
             .map_err(|_| PyjutsuError::new_err("workspace lock poisoned"))
@@ -461,7 +460,7 @@ impl PyWorkspace {
     /// After an op-log write commits: if `@` moved between `old_repo` and `new_repo`, check out the
     /// new `@` on disk (reusing the held lock via `checkout_locked`), then return the published
     /// operation as a plain dict. Shared tail of `undo`/`restore_operation`.
-    fn finish_op<'py>(
+    pub(crate) fn finish_op<'py>(
         &self,
         py: Python<'py>,
         ws: &mut Workspace,
@@ -491,7 +490,7 @@ impl PyWorkspace {
     /// remote added through this handle would be invisible to a later read on the same handle if both
     /// went through the cached loader (the CLI sidesteps this by being a fresh process per command).
     /// Re-opening per verb reads the current on-disk git config, matching the CLI's behaviour.
-    fn fresh_loader(ws: &Workspace) -> PyResult<RepoLoader> {
+    pub(crate) fn fresh_loader(ws: &Workspace) -> PyResult<RepoLoader> {
         let settings = ws.repo_loader().settings().clone();
         let store_factories = default_backend_factories();
         RepoLoader::init_from_file_system(&settings, ws.repo_path(), &store_factories)
@@ -1811,7 +1810,7 @@ impl PyWorkspace {
         message: Option<&str>,
         force: bool,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
-        tags::create_tag(self, py, name, target, message, force)
+        crate::git::tags::create_tag(self, py, name, target, message, force)
     }
 
     /// Push the annotated tag `name` to git `remote`, copying the annotated tag *object* (not just
@@ -1824,7 +1823,7 @@ impl PyWorkspace {
         name: &str,
         remote: &str,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
-        tags::push_tag(self, py, name, remote)
+        crate::git::tags::push_tag(self, py, name, remote)
     }
 
     /// The name of `remote`'s default branch (what `git remote show` reports as `HEAD`), or `None`

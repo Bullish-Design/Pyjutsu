@@ -18,6 +18,7 @@ from typing import Literal
 
 from ._pyjutsu import PyWorkspace
 from .errors import HookAbort, JjCliError, PostHookError, PyjutsuError
+from .git import GitView
 from .hooks import CONFIG_FILENAME, HookRegistry
 from .models import (
     Bookmark,
@@ -70,7 +71,7 @@ class Workspace:
     reuse it (``view.log(...)``, ``view.diff_stat(...)``) to load the repo once.
     """
 
-    __slots__ = ("_handle", "_hooks")
+    __slots__ = ("_handle", "_hooks", "_git")
 
     def __init__(self, handle: PyWorkspace) -> None:
         # Internal: construct via `Workspace.load(...)`, not directly.
@@ -78,6 +79,8 @@ class Workspace:
         # The workspace's hook registry — zero hooks until one is added or a config is loaded.
         # Rooted at the working copy so declarative command hooks run with the right cwd.
         self._hooks = HookRegistry(root=Path(self._handle.workspace_root()))
+        # Lazily-created `GitView` (the `ws.git` namespace); cached in a slot.
+        self._git: GitView | None = None
 
     @classmethod
     def load(cls, path: str | os.PathLike[str], *, hooks_config: str = "auto") -> Workspace:
@@ -371,12 +374,16 @@ class Workspace:
     def git_refs(self, prefix: str = "refs/heads/") -> dict[str, str]:
         """Read the colocated git refs under ``prefix`` → ``{short_name: hex_oid}`` (prefix stripped).
 
-        Reads the on-disk git refs directly — these can differ from jj's last-imported ``@git`` view,
-        and *seeing that drift* is the point (so :meth:`RepoView.bookmarks` is not a substitute).
-        Requires a colocated git backend. Values are commit oids (jj commit ids ARE the git oids in a
-        colocated repo, so they compare directly to :attr:`Commit.commit_id`).
+        .. deprecated::
+            Use :attr:`git` ``.refs(...)`` instead. This alias keeps working but emits
+            :class:`DeprecationWarning`.
         """
-        return self._handle.git_refs(prefix)
+        warnings.warn(
+            "Workspace.git_refs is deprecated; use Workspace.git.refs()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.git.refs(prefix)
 
     def git_default_branch(self, remote: str) -> str | None:
         """The name of ``remote``'s default branch (what ``git remote show`` reports as ``HEAD``).
@@ -400,17 +407,31 @@ class Workspace:
     def write_git_ref(self, name: str, target: str) -> None:
         """Force ``refs/heads/<name>`` to ``target`` (a commit oid) directly in the colocated ``.git``.
 
-        A **reconcile-only escape hatch**: bypasses the jj view to repair colocated-ref drift when
-        ``git_export`` is itself broken by a bad/leftover ref. Not a normal-path writer — for ordinary
-        bookmark moves use a transaction + ``git_export``. The caller must re-import/``sync_colocated``
-        afterward to bring the write into jj's view. Requires a colocated git backend.
+        .. deprecated::
+            Use :attr:`git` ``.write_ref(...)`` instead. This alias keeps working but emits
+            :class:`DeprecationWarning`.
         """
-        self._handle.write_git_ref(name, target)
+        warnings.warn(
+            "Workspace.write_git_ref is deprecated; use Workspace.git.write_ref()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.git.write_ref(name, target)
 
     def delete_git_ref(self, name: str) -> None:
         """Delete ``refs/heads/<name>`` directly in the colocated ``.git`` (reconcile-only escape
-        hatch; see :meth:`write_git_ref`). No-op-safe if the ref is already absent."""
-        self._handle.delete_git_ref(name)
+        hatch; see :meth:`write_git_ref`). No-op-safe if the ref is already absent.
+
+        .. deprecated::
+            Use :attr:`git` ``.delete_ref(...)`` instead. This alias keeps working but emits
+            :class:`DeprecationWarning`.
+        """
+        warnings.warn(
+            "Workspace.delete_git_ref is deprecated; use Workspace.git.delete_ref()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.git.delete_ref(name)
 
     @classmethod
     def git_clone(
@@ -463,10 +484,16 @@ class Workspace:
     def remotes(self) -> list[Remote]:
         """The configured git remotes → their :class:`Remote` rows (``jj git remote list``).
 
-        Each row carries the remote's name and **fetch** URL (``None`` if none is configured).
-        Read-only.
+        .. deprecated::
+            Use :attr:`git` ``.remotes()`` instead. This alias keeps working but emits
+            :class:`DeprecationWarning`.
         """
-        return [Remote.model_validate(row) for row in self._handle.remotes()]
+        warnings.warn(
+            "Workspace.remotes is deprecated; use Workspace.git.remotes()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.git.remotes()
 
     def add_remote(self, name: str, url: str) -> None:
         """Add a git remote ``name`` → ``url`` (``jj git remote add``), publishing one operation.
@@ -578,6 +605,22 @@ class Workspace:
     def root(self) -> Path:
         """The filesystem root of this workspace's working copy (canonicalized)."""
         return Path(self._handle.workspace_root())
+
+    @property
+    def git(self) -> GitView:
+        """The git half of this colocated repository, under one namespace.
+
+        Reads and writes the on-disk ``.git`` directly: refs (``refs()``,
+        ``write_ref()``, ``delete_ref()``), remotes (``remotes()``), and — in later
+        releases — annotated tags, configuration, ``HEAD``, worktrees, objects,
+        submodules, the reflog, and the index. The jj-side git verbs
+        (:meth:`git_import`, :meth:`git_export`, :meth:`sync_colocated`,
+        :meth:`git_fetch`, :meth:`git_push`) stay here on :class:`Workspace`,
+        because they publish jj operations.
+        """
+        if self._git is None:
+            self._git = GitView(self._handle)
+        return self._git
 
     def transaction(
         self,

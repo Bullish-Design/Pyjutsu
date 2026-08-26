@@ -1,0 +1,78 @@
+"""`GitView` — the git half of a colocated repository, under one namespace.
+
+A colocated repository has a git side jj deliberately does not model: annotated
+tags, git configuration, ``HEAD``, worktrees, submodules, the reflog, the
+index. ``Workspace.git`` exposes that half here instead of scattering verbs
+across ``Workspace``.
+
+Native layout rule (concept §4): ``#[pymethods]`` stay flat on ``PyWorkspace``;
+this class is the pure-Python namespace. Every method delegates to the same
+flat handle the workspace owns, so a ``ws.git.*`` call and a ``ws.*`` call see
+the same repo.
+
+Reads publish no jj operation. The write verbs (``create_tag``, ``write_ref``,
+``delete_ref``, and later ``config_set``/``set_head``) write git state that jj
+does not own; callers reconcile it into jj's view with
+:meth:`~pyjutsu.Workspace.git_import` / :meth:`~pyjutsu.Workspace.sync_colocated`.
+"""
+
+from __future__ import annotations
+
+from .models import Remote
+
+__all__ = ["GitView"]
+
+
+class GitView:
+    """The git half of a colocated repository: refs, remotes, and (later) tags,
+    config, HEAD, worktrees, objects, submodules, reflog, and index.
+
+    Obtain one via :attr:`~pyjutsu.Workspace.git`. Every verb here reads or
+    writes the on-disk ``.git`` directly; the jj-side verbs (``git_import``,
+    ``git_export``, ``sync_colocated``, ``git_fetch``, ``git_push``) stay on
+    :class:`~pyjutsu.Workspace`, because they publish jj operations.
+    """
+
+    __slots__ = ("_handle",)
+
+    def __init__(self, handle: object) -> None:
+        # Internal: construct via `Workspace.git`, never directly.
+        self._handle = handle
+
+    def refs(self, prefix: str = "refs/heads/") -> dict[str, str]:
+        """Read the colocated git refs under ``prefix`` → ``{short_name: hex_oid}`` (prefix
+        stripped).
+
+        Reads the on-disk git refs directly — these can differ from jj's last-imported
+        ``@git`` view, and *seeing that drift* is the point (so
+        :meth:`~pyjutsu.RepoView.bookmarks` is not a substitute). Requires a colocated
+        git backend. Values are commit oids (jj commit ids ARE the git oids in a
+        colocated repo, so they compare directly to
+        :attr:`~pyjutsu.Commit.commit_id`).
+        """
+        return self._handle.git_refs(prefix)
+
+    def write_ref(self, name: str, target: str) -> None:
+        """Force ``refs/heads/<name>`` to ``target`` (a commit oid) directly in the colocated
+        ``.git``.
+
+        A **reconcile-only escape hatch**: bypasses the jj view to repair colocated-ref
+        drift when ``git_export`` is itself broken by a bad/leftover ref. Not a normal-path
+        writer — for ordinary bookmark moves use a transaction + ``git_export``. The caller
+        must re-import/``sync_colocated`` afterward to bring the write into jj's view.
+        Requires a colocated git backend.
+        """
+        self._handle.write_git_ref(name, target)
+
+    def delete_ref(self, name: str) -> None:
+        """Delete ``refs/heads/<name>`` directly in the colocated ``.git`` (reconcile-only
+        escape hatch; see :meth:`write_ref`). No-op-safe if the ref is already absent."""
+        self._handle.delete_git_ref(name)
+
+    def remotes(self) -> list[Remote]:
+        """The configured git remotes → their :class:`~pyjutsu.Remote` rows.
+
+        Each row carries the remote's name and **fetch** URL (``None`` if none is
+        configured). Read-only; matches ``jj git remote list``.
+        """
+        return [Remote.model_validate(row) for row in self._handle.remotes()]

@@ -9,6 +9,10 @@ __pycache__/
 .scratch/*
 !.scratch/projects/
 
+# Lane run evidence stays local-only: raw gate output per lane, kept for the record
+# and referenced from .loci/projects/<id>/project.md, never committed.
+.loci/projects/*/artifacts/
+
 # C extensions
 *.so
 

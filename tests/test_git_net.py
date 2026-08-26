@@ -455,7 +455,7 @@ def test_clone_matches_cli(bookmarked_repo: Path, tmp_path: Path, jj: JjCli) -> 
 
     # The clone has `origin` configured, fetched the remote's `feature` bookmark, and a `.jj`.
     assert (dest / ".jj").is_dir()
-    assert {r.name for r in ws.remotes()} == {"origin"}
+    assert {r.name for r in ws.git.remotes()} == {"origin"}
     assert ("feature", "origin") in {(b.name, b.remote) for b in ws.bookmarks()}
 
     # The default branch (`feature`) was discovered, so `@` is a fresh empty child of its tip.

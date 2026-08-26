@@ -21,10 +21,10 @@ use jj_lib::workspace::Workspace;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use super::{NullGitCallback, PyWorkspace};
 use crate::errors::{RevsetError, map_backend_err, map_git_err};
+use crate::workspace::{NullGitCallback, PyWorkspace};
 
-pub(super) fn create_tag<'py>(
+pub(crate) fn create_tag<'py>(
     workspace: &PyWorkspace,
     py: Python<'py>,
     name: &str,
@@ -206,7 +206,7 @@ fn create_annotated_tag<'py>(
     ))
 }
 
-pub(super) fn push_tag<'py>(
+pub(crate) fn push_tag<'py>(
     workspace: &PyWorkspace,
     py: Python<'py>,
     name: &str,

@@ -360,6 +360,10 @@ ws.git_push("origin", tracked=True)           # push only bookmarks tracking thi
 ws.git_import(); ws.git_export()              # colocated <-> jj sync
 ws.sync_colocated()                           # repair colocated git HEAD + index after mutations
 
+ws.git.refs()                                 # read colocated git refs (on-disk, drift-aware)
+ws.git.write_ref(name, oid); ws.git.delete_ref(name)   # reconcile-only ref repair
+ws.git.remotes()                              # remote name + fetch url rows
+
 ws.create_tag("v1.0", "@")                    # lightweight tag through jj-lib
 ws.push_tag("v1.0", "origin")                 # push lightweight or annotated tag
 ```
@@ -368,8 +372,14 @@ ws.push_tag("v1.0", "origin")                 # push lightweight or annotated ta
   while the remote-tracking lease holds, and is rejected otherwise (never blindly force-pushed).
 - `git_fetch`'s `bookmarks` list uses jj's string patterns: glob-by-default, `kind:` prefixes
   (`exact:`/`glob:`/`substring:`/`regex:` + `-i`), and a leading `~` to negate.
-- **Remotes CRUD:** `ws.remotes()`, `ws.add_remote(name, url)`, `ws.remove_remote(name)`,
-  `ws.rename_remote(old, new)`, `ws.set_remote_url(name, url)`.
+- **Remotes CRUD:** `ws.git.remotes()`, `ws.add_remote(name, url)`, `ws.remove_remote(name)`,
+  `ws.rename_remote(old, new)`, `ws.set_remote_url(name, url)`. The read moved to
+  :attr:`pyjutsu.Workspace.git` (lane D1); `ws.remotes()` keeps working as a deprecating alias.
+- **The `ws.git` namespace** (`:class:`pyjutsu.GitView``): the git half of a colocated repo.
+  `refs(prefix)` reads on-disk refs (default `refs/heads/`), `write_ref`/`delete_ref` are the
+  reconcile-only repair escape hatch, `remotes()` lists remote name + fetch url. The pre-D1 names
+  `ws.git_refs`, `ws.write_git_ref`, `ws.delete_git_ref`, `ws.remotes` keep working as deprecating
+  aliases.
 - **Tags:** `create_tag(name, target)` now creates a lightweight tag by default. Pass a positional
   or keyword `message` to retain annotated Git tag creation. The annotated form emits a
   `DeprecationWarning` and names its future location, `ws.git.create_tag`.

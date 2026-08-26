@@ -1,6 +1,8 @@
-"""Force-write / delete colocated head refs (project 14 §P4): ``write_git_ref`` / ``delete_git_ref``.
+"""Force-write / delete colocated head refs (project 14 §P4, lane D1): ``ws.git.write_ref`` /
+``ws.git.delete_ref``.
 
 Reconcile-only escape hatch to heal colocated-ref drift. Oracle is raw git (like ``test_tags.py``).
+The pre-D1 ``Workspace.write_git_ref`` / ``Workspace.delete_git_ref`` names survive as deprecating aliases.
 """
 
 from __future__ import annotations
@@ -22,15 +24,15 @@ def _git(d: Path, *a: str) -> str:
 def test_write_and_delete_head_ref(bookmarked_repo: Path, jj: JjCli) -> None:
     ws = pyjutsu.Workspace.load(bookmarked_repo)
     tip = jj.commit_id(bookmarked_repo, "@")
-    ws.write_git_ref("healed", tip)
+    ws.git.write_ref("healed", tip)
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/healed") == tip
 
     # Force-move to a different target (no fast-forward check).
     parent = jj.commit_id(bookmarked_repo, "@-")
-    ws.write_git_ref("healed", parent)
+    ws.git.write_ref("healed", parent)
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/healed") == parent
 
-    ws.delete_git_ref("healed")
+    ws.git.delete_ref("healed")
     assert (
         subprocess.run(
             ["git", "-C", str(bookmarked_repo), "rev-parse", "refs/heads/healed"],
@@ -39,7 +41,7 @@ def test_write_and_delete_head_ref(bookmarked_repo: Path, jj: JjCli) -> None:
         != 0
     )
 
-    ws.delete_git_ref("healed")  # idempotent: deleting an absent ref is a no-op, not an error
+    ws.git.delete_ref("healed")  # idempotent: deleting an absent ref is a no-op, not an error
 
 
 def _absent(d: Path, ref: str) -> bool:
@@ -96,7 +98,7 @@ def test_write_three_level_loose_ancestor_file(bookmarked_repo: Path, jj: JjCli)
     _write_loose(gitdir, "T", tip)
     assert (gitdir / "refs/heads/T").is_file()  # genuinely loose
 
-    ws.write_git_ref("T/api", parent)
+    ws.git.write_ref("T/api", parent)
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/T/api") == parent
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/T") == tip
 
@@ -112,7 +114,7 @@ def test_write_three_level_loose_descendant_dir(bookmarked_repo: Path, jj: JjCli
     _write_loose(gitdir, "T/api/handler", tip)
     assert (gitdir / "refs/heads/T/api").is_dir()  # T/ is a directory
 
-    ws.write_git_ref("T", parent)
+    ws.git.write_ref("T", parent)
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/T") == parent
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/T/api/handler") == tip
 
@@ -130,7 +132,7 @@ def test_write_three_level_mixed_loose_and_packed(bookmarked_repo: Path, jj: JjC
     _write_loose(gitdir, "T", tip)  # loose file coexisting with packed children
     assert _ref_oid(bookmarked_repo, "refs/heads/T/api/handler") == tip
 
-    ws.write_git_ref("T/api", parent)  # bidirectional D/F
+    ws.git.write_ref("T/api", parent)  # bidirectional D/F
     assert _ref_oid(bookmarked_repo, "refs/heads/T/api") == parent
     assert _ref_oid(bookmarked_repo, "refs/heads/T") == tip
     assert _ref_oid(bookmarked_repo, "refs/heads/T/api/handler") == tip
@@ -146,17 +148,17 @@ def test_delete_three_level_refs_idempotent(bookmarked_repo: Path, jj: JjCli) ->
     _write_packed(gitdir, [("T/api", tip), ("T/api/handler", tip)])
     _write_loose(gitdir, "T", tip)
 
-    ws.delete_git_ref("T/api/handler")
+    ws.git.delete_ref("T/api/handler")
     assert _ref_oid(bookmarked_repo, "refs/heads/T/api/handler") == ""
-    ws.delete_git_ref("T/api")
+    ws.git.delete_ref("T/api")
     assert _ref_oid(bookmarked_repo, "refs/heads/T/api") == ""
-    ws.delete_git_ref("T")
+    ws.git.delete_ref("T")
     assert _ref_oid(bookmarked_repo, "refs/heads/T") == ""
 
     # Idempotent on all three (absent ⇒ no-op).
-    ws.delete_git_ref("T")
-    ws.delete_git_ref("T/api")
-    ws.delete_git_ref("T/api/handler")
+    ws.git.delete_ref("T")
+    ws.git.delete_ref("T/api")
+    ws.git.delete_ref("T/api/handler")
 
 
 def test_write_fractal_ref_flat_then_nested(bookmarked_repo: Path, jj: JjCli) -> None:
@@ -165,12 +167,12 @@ def test_write_fractal_ref_flat_then_nested(bookmarked_repo: Path, jj: JjCli) ->
     tip = jj.commit_id(bookmarked_repo, "@")
     parent = jj.commit_id(bookmarked_repo, "@-")
 
-    ws.write_git_ref("T", tip)
+    ws.git.write_ref("T", tip)
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/T") == tip
 
     # `refs/heads/T` is a file — writing the nested `refs/heads/T/api` requires it to become a
     # directory. `git update-ref` packs the conflicting ref; so must we.
-    ws.write_git_ref("T/api", parent)
+    ws.git.write_ref("T/api", parent)
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/T") == tip
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/T/api") == parent
 
@@ -181,10 +183,10 @@ def test_write_fractal_ref_nested_then_flat(bookmarked_repo: Path, jj: JjCli) ->
     tip = jj.commit_id(bookmarked_repo, "@")
     parent = jj.commit_id(bookmarked_repo, "@-")
 
-    ws.write_git_ref("T/api", parent)
+    ws.git.write_ref("T/api", parent)
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/T/api") == parent
 
-    ws.write_git_ref("T", tip)
+    ws.git.write_ref("T", tip)
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/T/api") == parent
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/T") == tip
 
@@ -195,16 +197,31 @@ def test_delete_fractal_refs(bookmarked_repo: Path, jj: JjCli) -> None:
     tip = jj.commit_id(bookmarked_repo, "@")
     parent = jj.commit_id(bookmarked_repo, "@-")
 
-    ws.write_git_ref("T", tip)
-    ws.write_git_ref("T/api", parent)
+    ws.git.write_ref("T", tip)
+    ws.git.write_ref("T/api", parent)
 
-    ws.delete_git_ref("T/api")
+    ws.git.delete_ref("T/api")
     assert _absent(bookmarked_repo, "refs/heads/T/api")
     assert _git(bookmarked_repo, "rev-parse", "refs/heads/T") == tip
 
-    ws.delete_git_ref("T")
+    ws.git.delete_ref("T")
     assert _absent(bookmarked_repo, "refs/heads/T")
 
     # Idempotent on both.
-    ws.delete_git_ref("T")
-    ws.delete_git_ref("T/api")
+    ws.git.delete_ref("T")
+    ws.git.delete_ref("T/api")
+
+
+def test_write_delete_alias_deprecated(bookmarked_repo: Path, jj: JjCli) -> None:
+    """The pre-D1 `Workspace.write_git_ref` / `Workspace.delete_git_ref` names still work and warn."""
+    import warnings
+
+    ws = pyjutsu.Workspace.load(bookmarked_repo)
+    tip = jj.commit_id(bookmarked_repo, "@")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ws.write_git_ref("alias_probe", tip)
+        ws.delete_git_ref("alias_probe")
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+    assert len(caught) == 2  # one per alias

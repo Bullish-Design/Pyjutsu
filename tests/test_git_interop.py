@@ -31,12 +31,25 @@ def _op_count(repo: Path, jj: JjCli) -> int:
     return len(jj.op_log_ids(repo))
 
 
-# --- remotes() (read) -------------------------------------------------------------------------
+# --- remotes() (read; lane D1 moved it to ws.git.remotes) ------------------------------------
 
+
+
+
+def test_remotes_alias_deprecated(bookmarked_repo: Path, jj: JjCli) -> None:
+    """The pre-D1 `Workspace.remotes` name still works and warns."""
+    import warnings
+
+    ws = pyjutsu.Workspace.load(bookmarked_repo)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        rows = ws.remotes()  # the deprecated alias under test
+    assert {r.name for r in rows} == {"origin"}
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
 
 def test_remotes_lists_origin(bookmarked_repo: Path, jj: JjCli) -> None:
     ws = pyjutsu.Workspace.load(bookmarked_repo)
-    rows = {r.name: r for r in ws.remotes()}
+    rows = {r.name: r for r in ws.git.remotes()}
 
     # The fixture configures exactly one remote, `origin`, and the binding agrees with the CLI on
     # both the name set and the fetch url.
@@ -48,7 +61,7 @@ def test_remotes_lists_origin(bookmarked_repo: Path, jj: JjCli) -> None:
 
 def test_remotes_empty_when_none(scratch_repo: Path) -> None:
     ws = pyjutsu.Workspace.load(scratch_repo)
-    assert ws.remotes() == []
+    assert ws.git.remotes() == []
 
 
 # --- add / remove / rename (one op each) ------------------------------------------------------
@@ -65,7 +78,7 @@ def test_add_remote_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli) -
     jj(other, "git", "remote", "add", "upstream", url)
 
     # `upstream` appears with the same url on both sides.
-    rows = {r.name: r.url for r in ws.remotes()}
+    rows = {r.name: r.url for r in ws.git.remotes()}
     assert rows.get("upstream") == url
     assert jj.remotes(other).get("upstream") == url
 
@@ -95,7 +108,7 @@ def test_remove_remote_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli
     jj(other, "git", "remote", "remove", "origin")
 
     # Gone on both sides; one new op each.
-    assert "origin" not in {r.name for r in ws.remotes()}
+    assert "origin" not in {r.name for r in ws.git.remotes()}
     assert "origin" not in jj.remotes(other)
     assert _op_count(scratch_repo, jj) == ops_before + 1
     assert _op_count(other, jj) == cli_ops_before + 1
@@ -120,7 +133,7 @@ def test_rename_remote_matches_cli(scratch_repo: Path, tmp_path: Path, jj: JjCli
     ws.rename_remote("origin", "upstream")
     jj(other, "git", "remote", "rename", "origin", "upstream")
 
-    rows = {r.name: r.url for r in ws.remotes()}
+    rows = {r.name: r.url for r in ws.git.remotes()}
     assert "origin" not in rows
     assert rows.get("upstream") == url
     cli = jj.remotes(other)
@@ -148,7 +161,7 @@ def test_set_remote_url_no_op(scratch_repo: Path, jj: JjCli) -> None:
     ws.set_remote_url("origin", new_url)
 
     # The url changed (binding + CLI agree)...
-    assert {r.name: r.url for r in ws.remotes()}["origin"] == new_url
+    assert {r.name: r.url for r in ws.git.remotes()}["origin"] == new_url
     assert jj.remotes(scratch_repo)["origin"] == new_url
     # ...but `set_remote_urls` is a pure git-config write through `&Store`: no jj operation.
     assert _op_count(scratch_repo, jj) == ops_before
