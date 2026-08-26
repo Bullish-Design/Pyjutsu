@@ -45,8 +45,13 @@ whoami = "=2.1.2"
 # `cargo tree -i gix` must show one version). default-features = false keeps the direct edge lean.
 #
 # `sha1` and `sha256` gate the two `gix::hash::Kind` variants that `git_object_hash` names when it
-# creates a repo (jj-lib 0.44's `init_*_git` takes the kind directly). jj-lib enables both on its
-# own edge, so declaring them here adds no build; it states what Pyjutsu itself calls instead of
-# relying on a transitive crate's feature choice. This supersedes the earlier "do not declare
-# `sha1`" decision, which assumed no Pyjutsu code would name a `gix::hash` item after lane A1.
-gix = { version = "=0.85.0", default-features = false, features = ["sha1", "sha256"] }
+# creates a repo (jj-lib 0.44's `init_*_git` takes the kind directly). `attributes` gates
+# `gix::Repository::submodules`, which `ws.git.submodules()` calls (lane D7). jj-lib enables all
+# three on its own edge, so declaring them here adds no build; it states what Pyjutsu itself calls
+# instead of relying on a transitive crate's feature choice. This supersedes the earlier "do not
+# declare `sha1`" decision, which assumed no Pyjutsu code would name a `gix::hash` item after A1.
+gix = { version = "=0.85.0", default-features = false, features = [
+  "attributes",
+  "sha1",
+  "sha256",
+] }

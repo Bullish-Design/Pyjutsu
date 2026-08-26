@@ -479,6 +479,7 @@ ws.git.worktrees()                            # list[GitWorktree] (git worktree 
 ws.git.object_type(oid)                       # "commit" | "tree" | "blob" | "tag" | None
 ws.git.exists(oid)                            # is this object in the git object database?
 ws.git.read_blob(oid)                         # raw blob bytes
+ws.git.submodules()                           # list[GitSubmodule] (read-only)
 
 ws.create_tag("v1.0", "@")                    # lightweight tag through jj-lib
 ws.push_tag("v1.0", "origin")                 # push lightweight or annotated tag
@@ -519,6 +520,14 @@ ws.push_tag("v1.0", "origin")                 # push lightweight or annotated ta
   SHA-256; a malformed id **raises** rather than reporting "absent", so a typo cannot look like a
   missing object. `read_blob` refuses a non-blob on purpose. To read a file at a revision use
   `view.file_content(path, rev)` instead: that goes through jj's model and handles conflicts.
+- **Submodules (read-only):** `ws.git.submodules()` lists what `.gitmodules` declares, as
+  `GitSubmodule` rows: `name`, `path`, `url`, `head_oid`, `index_oid`, `active`. jj has no
+  submodule support at all, so this is the only way to see them. `head_oid` is the commit checked
+  out **inside** the submodule (`None` when its worktree is not checked out — git's leading `-`);
+  `index_oid` is what the superproject's index records. Together they reconstruct
+  `git submodule status`'s flag: `-` when `head_oid is None`, `+` when the two differ, else a
+  space. Nothing here updates, initializes, or clones — that would mutate a working copy jj knows
+  nothing about.
 - **Tags:** `create_tag(name, target)` now creates a lightweight tag by default. Pass a positional
   or keyword `message` to retain annotated Git tag creation; that form emits a
   `DeprecationWarning` and delegates to `ws.git.create_tag(name, target, message)`, which now

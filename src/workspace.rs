@@ -1894,6 +1894,13 @@ impl PyWorkspace {
         crate::git::objects::read_blob(self, py, oid)
     }
 
+    /// List the submodules declared in the colocated repository's `.gitmodules` → one plain row
+    /// each (`{name, path, url, head_oid, index_oid, active}`), sorted by name. Empty when the
+    /// repository declares none. Read-only.
+    fn git_submodules<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        crate::git::submodules::read(self, py)
+    }
+
     /// The name of `remote`'s default branch (what `git remote show` reports as `HEAD`), or `None`
     /// if the remote advertises none. Used by the pure-Python `git_clone` to place the new `@` on
     /// the cloned default branch. Spawns a `git remote show` subprocess (off the GIL) inside a

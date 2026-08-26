@@ -368,3 +368,59 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 ```
 
 Evidence is in `artifacts/<UTC>-d6-gate/`.
+
+### 2026-08-26 — D7 submodules
+
+Lane `004/d7` makes a colocated repository's submodules visible. **Read-only**: listing and state
+only, as the plan requires. jj has no submodule support — its submodule store is a stub — so
+without this a superproject is invisible to Pyjutsu.
+
+**Feature declared.** `attributes` joins `sha1` and `sha256` on Pyjutsu's own gix edge. It gates
+`gix::Repository::submodules`, which this lane calls. jj-lib already enables it, so the build cost
+is zero; declaring it honours the rule that Pyjutsu never relies on a transitive crate's feature
+choice (finding F1). `cargo tree -i gix` still shows exactly one version.
+
+**Rust.** New `src/git/submodules.rs`, plus a flat `git_submodules` native method. Rows are
+`{name, path, url, head_oid, index_oid, active}`, sorted by name; no `.gitmodules` yields an empty
+list, not an error.
+
+**The two oids, and the gix trap between them.** `git submodule status` prints the commit checked
+out *inside* the submodule, flagged against what the superproject records. gix has three candidate
+calls, and only one of them means what the name suggests:
+
+- `Submodule::head_id()` is **not** the submodule's HEAD. It reports the *superproject's*
+  `HEAD^{tree}` record for that path. The first draft used it and reported the wrong oid.
+- `Submodule::index_id()` is the *superproject's index* record — the right value for `index_oid`.
+- `Submodule::open()?.head_id()` reaches the submodule's own repository. That is `head_oid`.
+
+`open()` alone is still not git's "not initialized" test: `git submodule deinit` empties the
+worktree but leaves the module repository under `.git/modules`, so `open()` keeps succeeding and
+would report a HEAD git does not show. The gate is `state().worktree_checkout`. With that,
+`head_oid is None` means exactly git's leading `-`, and the whole status line is reconstructible:
+
+```python
+flag = "-" if head_oid is None else ("+" if head_oid != index_oid else " ")
+oid = index_oid if head_oid is None else head_oid
+```
+
+A test asserts that reconstruction against `git submodule status` on a submodule whose checkout
+has moved ahead of the superproject's record.
+
+**Tests.** `tests/test_git_submodules.py`: no submodules reads as an empty list; one submodule's
+name/path/url/active and both oids; name sorting across three; a deinitialized submodule; the
+status reconstruction; and no operation published. `git submodule add` from a local path needs
+`GIT_ALLOW_PROTOCOL=file`, which the helper sets.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+cargo tree -i gix                         one version (0.85.0)
+```
+
+Evidence is in `artifacts/<UTC>-d7-gate/`.

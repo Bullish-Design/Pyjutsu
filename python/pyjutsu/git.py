@@ -18,7 +18,7 @@ does not own; callers reconcile it into jj's view with
 
 from __future__ import annotations
 
-from .models import GitHead, GitTag, GitWorktree, Operation, Remote
+from .models import GitHead, GitSubmodule, GitTag, GitWorktree, Operation, Remote
 
 __all__ = ["GitView"]
 
@@ -170,6 +170,16 @@ class GitView:
         conflicts.
         """
         return self._handle.git_read_blob(oid)
+
+    def submodules(self) -> list[GitSubmodule]:
+        """The submodules declared in ``.gitmodules`` → their :class:`~pyjutsu.GitSubmodule` rows,
+        sorted by name. Empty when the repository declares none.
+
+        **Read-only.** jj has no submodule support — its submodule store is a stub — so a
+        colocated repository with submodules is otherwise invisible to Pyjutsu. Listing and state
+        only: update, init, and clone would mutate a working copy jj knows nothing about.
+        """
+        return [GitSubmodule.model_validate(row) for row in self._handle.git_submodules()]
 
     def create_tag(
         self,

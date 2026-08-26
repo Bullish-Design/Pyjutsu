@@ -72,6 +72,14 @@
     "name",
     "oid"
   ],
+  "GitSubmodule": [
+    "active",
+    "head_oid",
+    "index_oid",
+    "name",
+    "path",
+    "url"
+  ],
   "GitTag": [
     "annotated",
     "date",

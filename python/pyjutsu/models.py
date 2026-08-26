@@ -141,6 +141,33 @@ class GitWorktree(BaseModel):
     main: bool
 
 
+class GitSubmodule(BaseModel):
+    """One submodule declared in a colocated repository's ``.gitmodules``
+    (:meth:`pyjutsu.GitView.submodules`).
+
+    ``head_oid`` is the commit checked out *inside* the submodule — the oid
+    ``git submodule status`` prints — and is ``None`` when the submodule's worktree is not
+    checked out (git's leading ``-``). ``index_oid`` is the commit the **superproject's** index
+    records for that path; the two differ exactly when the submodule's checkout has moved, which
+    git marks with a leading ``+``. So ``git submodule status``'s whole line is reconstructible::
+
+        flag = "-" if head_oid is None else ("+" if head_oid != index_oid else " ")
+        oid = index_oid if head_oid is None else head_oid
+
+    ``active`` mirrors git's own activeness rule (``submodule.<name>.active``,
+    ``submodule.active``, or a configured URL).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    path: str | None
+    url: str | None
+    head_oid: CommitId | None
+    index_oid: CommitId | None
+    active: bool
+
+
 class FileStat(BaseModel):
     """Per-file line counts within a :class:`DiffStat`."""
 
