@@ -14,6 +14,7 @@ mod config_loader;
 mod convert;
 mod diff;
 mod diff_stat;
+mod dsl;
 mod errors;
 mod repo_view;
 mod revset;
@@ -22,6 +23,7 @@ mod workspace;
 
 use pyo3::prelude::*;
 
+use dsl::escape_string;
 use repo_view::{PyCommitStream, PyRepoView};
 use transaction::PyTransaction;
 use workspace::PyWorkspace;
@@ -56,6 +58,7 @@ fn pyjutsu_version() -> &'static str {
 fn _pyjutsu(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(pyjutsu_version, m)?)?;
+    m.add_function(wrap_pyfunction!(escape_string, m)?)?;
     m.add_class::<PyWorkspace>()?;
     m.add_class::<PyRepoView>()?;
     m.add_class::<PyCommitStream>()?;

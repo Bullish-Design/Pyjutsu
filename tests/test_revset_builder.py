@@ -52,6 +52,17 @@ def test_quote_escapes() -> None:
     assert _quote("café") == '"café"'
 
 
+@pytest.mark.parametrize(
+    "value",
+    ['he said "hi"', "path\\to\\file", "line one\nline two", "a\tb", "café", ""],
+)
+def test_quote_result_is_accepted_by_jj(
+    value: str, scratch_repo: Path, jj: JjCli
+) -> None:
+    literal = _quote(value)
+    jj.change_ids(scratch_repo, f"description(exact:{literal})")
+
+
 def test_builder_equals_string_query(linear_repo: Path) -> None:
     """Feeding a builder to log() yields the same commits as the equivalent hand-written string."""
     ws = Workspace.load(linear_repo)

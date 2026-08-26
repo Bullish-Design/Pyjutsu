@@ -44,6 +44,9 @@ def version() -> str:
 def pyjutsu_version() -> str:
     """Return the compiled pyjutsu crate version (``CARGO_PKG_VERSION``), for the stale-build guard."""
 
+def escape_string(s: str) -> str:
+    """Quote a string as a jj domain-specific language literal."""
+
 class PyRepoView:
     """Opaque handle to a ReadonlyRepo at one operation, scoped to a workspace."""
 

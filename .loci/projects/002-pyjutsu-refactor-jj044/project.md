@@ -363,3 +363,32 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 Evidence is in `artifacts/20260826T173954Z-a1-prechange/`,
 `artifacts/20260826T174036Z-a1-postchange/`, and
 `artifacts/20260826T174148Z-a1-gate/`.
+
+### 2026-08-26 — A2 native string escaping
+
+Lane `jj044-refactor/escape-string` adds a native free function for
+`jj_lib::dsl_util::escape_string`. Python keeps the `_quote` name and adds the
+outer quote delimiters. The native function owns all escaping.
+
+Tests cover quotes, backslashes, newlines, tabs, non-ASCII text, and the empty
+string. Each rendered literal parses through the pinned jj CLI.
+
+The first gate found a stale editable native extension. Cargo compiled the new
+symbol, but the task runner reused the old `.so`. The direct Maturin task
+command rebuilt the extension. A focused run then confirmed that jj-lib
+escapes contents and leaves delimiters to its caller.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/20260826T174658Z-a2-focused/`,
+`artifacts/20260826T174754Z-a2-gate-recovery/`, and
+`artifacts/20260826T175012Z-a2-gate/`.

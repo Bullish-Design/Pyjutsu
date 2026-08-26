@@ -42,3 +42,26 @@ Primary sources:
 
 This evidence proves patch-id compatibility for the fixed diff.
 It does not yet prove the jj-lib 0.44 port or SHA-256 repository support.
+
+## 2026-08-26 — A2 native string escaping
+
+The local jj-lib 0.42.0 source defines `dsl_util::escape_string` at
+`src/dsl_util.rs:474`. The function escapes string contents without adding
+quote delimiters. jj-lib's revset renderer adds those delimiters separately.
+
+The first full run imported a stale editable extension and failed during test
+collection. Cargo had compiled the new symbol, but the task runner reused the
+old `.so`. Running the build task's direct `maturin develop --uv` command
+replaced the artifact. A native import then succeeded.
+
+The next focused run showed that `_quote` must retain responsibility for the
+outer quote delimiters. The minimal fix calls the native function for all
+escaping and adds only the delimiters in Python. Quotes, backslashes, newlines,
+tabs, non-ASCII text, and the empty string now parse through jj 0.42.0.
+
+The failed gate evidence is in `artifacts/20260826T174754Z-a2-gate/`.
+The recovery evidence is in `artifacts/20260826T174754Z-a2-gate-recovery/`.
+The green rerun is in `artifacts/20260826T175012Z-a2-gate/`.
+
+This evidence proves that the pinned CLI accepts every required literal class.
+It does not prove behavior against jj-lib 0.44.0 until B1 moves the pin.

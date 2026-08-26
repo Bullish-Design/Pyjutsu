@@ -21,43 +21,14 @@ matching jj's default in pyjutsu's ``use_glob_by_default=false`` context; pass a
 
 from __future__ import annotations
 
+from ._pyjutsu import escape_string
+
 __all__ = ["Revset", "Pattern"]
 
 
 def _quote(s: str) -> str:
-    """Quote ``s`` as a jj string literal, mirroring jj-lib's ``escape_string`` exactly.
-
-    **Vendored logic.** This reimplements jj-lib in Python, so nothing detects divergence at build
-    time. Re-diff it against ``dsl_util.rs::escape_string`` in the target release on every jj-lib
-    upgrade, exactly as ``src/config/revsets.toml`` is re-diffed. See the Phase 2.5 delegation audit
-    in ``.loci/projects/002-pyjutsu-refactor-jj044/project.md``.
-
-    Verified against ``dsl_util.rs::escape_string`` (jj-lib 0.42.0): ``"`` and ``\\`` are
-    backslash-escaped; ``\\t \\r \\n \\0`` use their named forms; any other ASCII control char
-    (``< 0x20`` or ``0x7f``) becomes ``\\xNN`` (Rust's ``ascii::escape_default``); everything else —
-    printable ASCII and all non-ASCII — passes through verbatim. Rendering then re-parses to the
-    identical value jj would have stored.
-    """
-    out = ['"']
-    for c in s:
-        if c == '"':
-            out.append('\\"')
-        elif c == "\\":
-            out.append("\\\\")
-        elif c == "\t":
-            out.append("\\t")
-        elif c == "\r":
-            out.append("\\r")
-        elif c == "\n":
-            out.append("\\n")
-        elif c == "\0":
-            out.append("\\0")
-        elif c.isascii() and (ord(c) < 0x20 or ord(c) == 0x7F):
-            out.append(f"\\x{ord(c):02x}")
-        else:
-            out.append(c)
-    out.append('"')
-    return "".join(out)
+    """Quote ``s`` as a jj string literal through jj-lib's ``escape_string``."""
+    return f'"{escape_string(s)}"'
 
 
 class Pattern:
