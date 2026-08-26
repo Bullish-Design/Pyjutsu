@@ -222,6 +222,24 @@ class AbsorbResult(BaseModel):
     skipped_paths: list[tuple[str, str]]
 
 
+class FixSummary(BaseModel):
+    """The outcome of :meth:`pyjutsu.Transaction.fix` (``jj fix``).
+
+    ``rewrites`` maps each old commit id to the commit id that replaced it — a commit whose
+    files a tool changed, or a descendant rebased onto one. ``num_checked_commits`` counts the
+    commits whose files were passed to a tool; ``num_fixed_commits`` counts the ones a tool
+    actually changed. ``tools`` names the configured ``fix.tools`` entries that ran, in the
+    order they ran.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rewrites: dict[str, str]
+    num_checked_commits: int
+    num_fixed_commits: int
+    tools: list[str]
+
+
 class MergeResult(BaseModel):
     """The result of :meth:`pyjutsu.RepoView.try_merge`: a 3-way merged tree and its conflict flag."""
 

@@ -245,6 +245,7 @@ op_id = ws.head_operation()      # the single operation this block produced
 | `tx.resolve_conflict(path, content)` | Resolve the conflict at `path` in `@` with `content` (`jj resolve`). |
 | `tx.duplicate(commits, onto=None)` | Duplicate commits into new changes with new change ids (`jj duplicate`). |
 | `tx.absorb(source="@", into=None)` | Distribute `source`'s hunks into the ancestors that introduced those lines (`jj absorb`). |
+| `tx.fix(revset=None, tools=None)` | Run jj's configured `fix.tools` over `revset` and its descendants (`jj fix`). |
 | `tx.split(commit, selection, mode="siblings")` | Split one commit into two by a **hunk-level** selection (§6). Returns `(first, second)`. |
 | `tx.select_tree(commit, selection)` | Lower-level: build the tree id for a hunk selection. |
 | `tx.create_bookmark(name, commit)` | Create a local bookmark (errors if it exists). |
@@ -276,6 +277,33 @@ result.skipped_paths                     # (path, reason) for paths absorb canno
 A hunk that no single ancestor owns stays in the source; only paths absorb cannot split at all
 (a symlink, a conflict, a submodule) appear in `skipped_paths`. The source is abandoned when it
 ends up empty and has no description.
+
+`tx.fix()` runs formatters in-process, using **jj's own** `fix.tools` configuration — Pyjutsu
+defines no second format. Configure it exactly as you would for the `jj fix` command (see
+`jj help -k config`, chapter "Code formatting and other file content transformations"):
+
+```toml
+[fix.tools.black]
+command = ["black", "-", "--stdin-filename=$path"]
+patterns = ["glob:'**/*.py'"]
+```
+
+```python
+with ws.transaction("fix") as tx:
+    summary = tx.fix()                       # roots: `revsets.fix`, else reachable(@, mutable())
+    summary = tx.fix("@-", tools=["black"])  # one root, one named tool
+summary.rewrites            # {old commit id: new commit id}
+summary.num_checked_commits # commits whose files reached a tool
+summary.num_fixed_commits   # commits a tool actually changed
+summary.tools               # the tools that ran, in order
+```
+
+Each root's descendants are fixed too, so a fix is never lost to a later rebase — this is why
+`num_fixed_commits` counts more commits than you named. A tool that exits non-zero changes
+nothing. `tools=` with an unknown name raises rather than silently doing nothing; so does
+calling `fix()` with no enabled tool configured. `paths=` narrows the files considered,
+`all_lines=True` formats whole files instead of only modified line ranges, and
+`include_unchanged_files=True` fixes files a commit did not touch.
 
 ### One-shot working-copy operations (outside a transaction)
 

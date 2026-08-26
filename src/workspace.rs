@@ -2104,20 +2104,23 @@ impl PyWorkspace {
             let name = ws.workspace_name().to_owned();
             let root = ws.workspace_root().to_owned();
             let loader = ws.repo_loader();
+            // `fix` reads jj's own `fix.tools` / `revsets.fix` from these settings.
+            let settings = Arc::new(loader.settings().clone());
             let repo = py
                 .allow_threads(|| pollster::block_on(loader.load_at_head()))
                 .map_err(map_backend_err)?;
             let starting_wc = repo.view().get_wc_commit_id(&name).cloned();
-            Ok((repo.start_transaction(), name, root, starting_wc))
+            Ok((repo.start_transaction(), name, root, settings, starting_wc))
         })();
         match started {
-            Ok((tx, name, root, starting_wc)) => Ok(PyTransaction::new(
+            Ok((tx, name, root, settings, starting_wc)) => Ok(PyTransaction::new(
                 tx,
                 this.tx_open.clone(),
                 slf.clone().unbind(),
                 name,
                 root,
                 this.revset_config.clone(),
+                settings,
                 ignore_immutable,
                 starting_wc,
             )),

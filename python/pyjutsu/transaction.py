@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from .errors import HookAbort, PostHookError
 from .hooks import HookRegistry
-from .models import AbsorbResult, Bookmark, Commit
+from .models import AbsorbResult, Bookmark, Commit, FixSummary
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -331,6 +331,51 @@ class Transaction:
         inside the transaction's ``with`` block.
         """
         return AbsorbResult.model_validate(self._require_open().absorb(source, into))
+
+    def fix(
+        self,
+        revset: str | Sequence[str] | None = None,
+        tools: Sequence[str] | None = None,
+        *,
+        paths: Sequence[str] | None = None,
+        include_unchanged_files: bool = False,
+        all_lines: bool = False,
+    ) -> FixSummary:
+        """Run jj's configured ``fix.tools`` over ``revset`` and its descendants → the
+        :class:`~pyjutsu.FixSummary` (``jj fix``).
+
+        Each matching file's content is piped through every matching tool, and the result
+        replaces it. jj-lib propagates the change to descendants instead of rebasing, so a fix
+        can never create a conflict. Tool configuration is jj's own ``fix.tools`` table (see
+        ``jj help -k config``); Pyjutsu defines no second format.
+
+        ``revset`` is one revset or a list of them, naming the **roots**; ``None`` uses the
+        ``revsets.fix`` setting, or jj's ``reachable(@, mutable())`` default. ``tools`` restricts
+        the run to those tool names (an unknown name raises, so a typo cannot become a silent
+        no-op). ``paths`` restricts which files are considered, like ``jj fix <filesets>``.
+        ``include_unchanged_files`` fixes unchanged files too; ``all_lines`` formats whole files
+        instead of only modified line ranges.
+
+        Raises :class:`~pyjutsu.errors.PyjutsuError` when no tool is enabled,
+        :class:`~pyjutsu.errors.RevsetError` for an empty selection or a bad revset, and
+        :class:`~pyjutsu.errors.ImmutableCommitError` when a root or one of its descendants is
+        immutable. Must be called inside the transaction's ``with`` block.
+        """
+        if revset is None:
+            revsets: list[str] = []
+        elif isinstance(revset, str):
+            revsets = [revset]
+        else:
+            revsets = [str(r) for r in revset]
+        return FixSummary.model_validate(
+            self._require_open().fix(
+                revsets,
+                None if tools is None else list(tools),
+                None if paths is None else list(paths),
+                include_unchanged_files,
+                all_lines,
+            )
+        )
 
     def changed_paths(self, commit: str = "@") -> list[str]:
         """The paths the pending transaction changed for ``commit`` (vs its merged parent tree).

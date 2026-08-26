@@ -390,3 +390,73 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 ```
 
 Evidence is in `artifacts/<UTC>-c6-gate/`.
+
+### 2026-08-26 — C7 fix
+
+Lane `003/c7` binds `jj fix`: formatters run over a revision range in-process, driven by jj's
+own `fix.tools` configuration.
+
+**The split of ownership, and the gap it exposes.** jj-lib owns the graph half
+(`fix::fix_files`): it walks the roots' descendants, deduplicates identical file content across
+commits, rewrites, and propagates each fix into descendants instead of rebasing — so a fix can
+never create a conflict. It does **not** own the tool half. `FileFixer` is a trait, and the
+schema that turns a `fix.tools` entry into a command line lives in jj-**cli**, which is not
+published to crates.io.
+
+New `// jj-lib gap:` site, `src/fix.rs`. It adds **two vendored items** to the per-upgrade
+re-verification list, alongside `src/config/revsets.toml` and the `git.object-hash` policy:
+
+1. the `fix.tools` schema — `command` (with `$root` / `$path` substitution), `patterns`,
+   `enabled`, `line-range-arg` (with `$first` / `$last`), and
+   `run-tool-if-zero-line-ranges` — read from the pinned binary's own
+   `jj help -k config`, chapter "Code formatting and other file content transformations";
+2. the `revsets.fix` default, `reachable(@, mutable())`, confirmed with
+   `jj config list --include-defaults revsets` on the pinned binary.
+
+**Rust.** New `src/fix.rs` compiles the enabled tools (patterns → matchers) and hands jj-lib a
+`ParallelFileFixer` whose closure pipes each file through every matching tool, chaining outputs.
+It computes the modified line ranges with jj-lib's own `compute_changed_ranges` against the base
+content jj-lib resolved for that file. A tool that exits non-zero changes nothing, matching jj's
+documented rule. New `src/fix.rs` free function `configured_fix_revset` reads `revsets.fix`.
+`PyTransaction::fix` resolves the roots, runs the immutable/root guard over the roots **and
+their descendants** (which `fix_files` also rewrites), then calls `fix_files`.
+
+Also new: `src/fileset.rs`, the fileset parsing `RepoView.file_list` (C2) had inline. `fix` needs
+the same parser for `fix.tools.patterns` and for `jj fix <filesets>`, so it moved to one place.
+The one behaviour difference between callers is what an *empty* pattern list means, which the
+`EmptyPatterns` enum makes explicit: every file for `file_list`, no file for a `fix.tools` entry
+(jj's documented rule).
+
+`PyTransaction` gained a `settings: Arc<UserSettings>` field, captured when the transaction
+opens. `fix` is the first verb that needs jj configuration beyond the revset aliases.
+
+**Decisions.**
+
+- *Tools run in name order.* jj documents which files a tool sees, but not the order two tools
+  matching one file run in. Sorting by name makes the answer deterministic instead of dependent
+  on configuration-layer merge order. Recorded in `load_tools`.
+- *An unknown `tools=` name is an error, and so is an empty `fix.tools`.* A silent no-op looks
+  exactly like a working fix. Both raise.
+- *`tx.fix()` takes the CLI's flags too.* The plan's surface is `fix(revset, tools=None)`; the
+  binding adds `paths`, `include_unchanged_files`, and `all_lines`, which are the three
+  `jj fix` options that change the result. No Pyjutsu-only option exists.
+
+**Test oracle details.** The tools are Python filter scripts written into the test's tmp
+directory, so the suite needs no formatter installed. They go to *files*, not `python -c`: an
+embedded script would have to survive TOML string escaping, and these contain quotes and
+newlines. Two counts surprised the first draft and are now asserted with their reason:
+`num_fixed_commits` counts descendants as well as the named roots (that is the no-lost-fix
+propagation), and fixing a root whose base is empty formats every line of that file.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: 473 collected, exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/<UTC>-c7-gate/` (red Ruff run) and the `-gate-green.txt` beside it.

@@ -41,6 +41,7 @@ use jj_lib::rewrite::{
     self, CommitWithSelection, MoveCommitsLocation, MoveCommitsTarget, RebaseOptions,
     merge_commit_trees, move_commits, restore_tree, squash_commits,
 };
+use jj_lib::settings::UserSettings;
 use jj_lib::store::Store;
 use jj_lib::transaction::Transaction;
 
@@ -77,6 +78,9 @@ pub(crate) struct PyTransaction {
     workspace_name: WorkspaceNameBuf,
     workspace_root: PathBuf,
     revset_config: Arc<RevsetConfig>,
+    /// The resolved jj settings, captured when the transaction opened. `fix` reads jj's own
+    /// `fix.tools` and `revsets.fix` from here rather than inventing a second configuration.
+    settings: Arc<UserSettings>,
     ignore_immutable: bool,
     /// `@`'s commit id when the transaction began. `commit` compares the post-commit `@` against
     /// this to decide whether the on-disk working copy needs a checkout.
@@ -92,6 +96,7 @@ impl PyTransaction {
         workspace_name: WorkspaceNameBuf,
         workspace_root: PathBuf,
         revset_config: Arc<RevsetConfig>,
+        settings: Arc<UserSettings>,
         ignore_immutable: bool,
         starting_wc_commit: Option<CommitId>,
     ) -> Self {
@@ -102,6 +107,7 @@ impl PyTransaction {
             workspace_name,
             workspace_root,
             revset_config,
+            settings,
             ignore_immutable,
             starting_wc_commit,
         }
@@ -727,7 +733,10 @@ impl PyTransaction {
 
         let dict = PyDict::new(py);
         match &stats.rewritten_source {
-            Some(commit) => dict.set_item("rewritten_source", CommitData::build(&*repo, commit)?.to_dict(py)?)?,
+            Some(commit) => dict.set_item(
+                "rewritten_source",
+                CommitData::build(&*repo, commit)?.to_dict(py)?,
+            )?,
             None => dict.set_item("rewritten_source", None::<&str>)?,
         }
         let destinations_dicts: Vec<Bound<'py, PyDict>> = stats
@@ -740,11 +749,94 @@ impl PyTransaction {
         let skipped: Vec<(String, String)> = selected
             .skipped_paths
             .into_iter()
-            .map(|(path, reason)| {
-                (path.as_internal_file_string().to_owned(), reason)
-            })
+            .map(|(path, reason)| (path.as_internal_file_string().to_owned(), reason))
             .collect();
         dict.set_item("skipped_paths", skipped)?;
+        Ok(dict)
+    }
+
+    /// Run jj's configured `fix.tools` over `revsets` and their descendants (`jj fix`), returning
+    /// a plain dict `{rewrites, num_checked_commits, num_fixed_commits, tools}`. `rewrites` maps
+    /// old commit id → new commit id.
+    ///
+    /// `revsets` empty ⇒ the `revsets.fix` setting, or jj-cli's `reachable(@, mutable())` default.
+    /// `tools` restricts the run to those `fix.tools` entries by name (an unknown name is an
+    /// error, so a typo cannot silently become a no-op). `paths` restricts which files are
+    /// considered, like `jj fix [FILESETS]`. `include_unchanged_files` and `all_lines` mirror the
+    /// CLI flags of the same names. Every root revision passes the immutable/root guard.
+    ///
+    /// jj-lib owns the graph half (`fix::fix_files`): it walks the descendants, deduplicates file
+    /// content across commits, and rewrites — this can never create a conflict. `src/fix.rs`
+    /// owns the tool half, which jj-cli would otherwise own. Runs on the GIL (`MutableRepo` is
+    /// `!Send`); the tools themselves run on rayon threads inside `ParallelFileFixer`.
+    #[pyo3(signature = (revsets, tools=None, paths=None, include_unchanged_files=false, all_lines=false))]
+    fn fix<'py>(
+        &self,
+        py: Python<'py>,
+        revsets: Vec<String>,
+        tools: Option<Vec<String>>,
+        paths: Option<Vec<String>>,
+        include_unchanged_files: bool,
+        all_lines: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let plan = crate::fix::FixPlan::build(
+            &self.settings,
+            self.workspace_root.clone(),
+            tools.as_deref(),
+            paths.as_deref(),
+            all_lines,
+        )?;
+        let default_revset;
+        let revsets: &[String] = if revsets.is_empty() {
+            default_revset = [crate::fix::configured_fix_revset(&self.settings)?];
+            &default_revset
+        } else {
+            &revsets
+        };
+
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs).
+        let repo = tx.repo_mut();
+        let mut roots: Vec<CommitId> = Vec::new();
+        let mut seen: HashSet<CommitId> = HashSet::new();
+        for revset_str in revsets {
+            for commit in self.resolve_many(&*repo, revset_str)? {
+                if seen.insert(commit.id().clone()) {
+                    roots.push(commit.id().clone());
+                }
+            }
+        }
+        if roots.is_empty() {
+            return Err(RevsetError::new_err(format!(
+                "revset {revsets:?} matched no revisions to fix"
+            )));
+        }
+        // `fix_files` rewrites the roots *and* their descendants, so the guard covers both.
+        self.check_rewritable_descendants(&*repo, &roots)?;
+
+        let mut fixer = plan.fixer();
+        let summary = pollster::block_on(jj_lib::fix::fix_files(
+            roots,
+            &*plan.matcher,
+            include_unchanged_files,
+            repo,
+            &mut fixer,
+        ))
+        .map_err(crate::errors::to_py_err)?;
+        pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
+
+        let dict = PyDict::new(py);
+        let rewrites = PyDict::new(py);
+        for (old, new) in &summary.rewrites {
+            rewrites.set_item(old.hex(), new.hex())?;
+        }
+        dict.set_item("rewrites", rewrites)?;
+        dict.set_item("num_checked_commits", summary.num_checked_commits)?;
+        dict.set_item("num_fixed_commits", summary.num_fixed_commits)?;
+        dict.set_item("tools", plan.tool_names())?;
         Ok(dict)
     }
 

@@ -381,39 +381,13 @@ impl PyRepoView {
         py.allow_threads(|| {
             let commit = self.resolve_single(revset_str)?;
             let tree = commit.tree();
-            let matcher: Box<dyn jj_lib::matchers::Matcher> = match paths {
-                None => Box::new(jj_lib::matchers::EverythingMatcher),
-                Some(patterns) => {
-                    // Reuse the fileset parsing the snapshot uses (`workspace.rs`): the same
-                    // context shape, evaluated against repo-relative tree paths.
-                    let path_converter = jj_lib::repo_path::RepoPathUiConverter::Fs {
-                        cwd: workspace_root.clone(),
-                        base: workspace_root,
-                    };
-                    let fileset_aliases = jj_lib::fileset::FilesetAliasesMap::new();
-                    let fileset_ctx = jj_lib::fileset::FilesetParseContext {
-                        aliases_map: &fileset_aliases,
-                        path_converter: &path_converter,
-                    };
-                    let mut matchers: Vec<Box<dyn jj_lib::matchers::Matcher>> = Vec::new();
-                    for expr in &patterns {
-                        let mut diagnostics = jj_lib::fileset::FilesetDiagnostics::new();
-                        let matcher = jj_lib::fileset::parse(&mut diagnostics, expr, &fileset_ctx)
-                            .map_err(crate::errors::to_py_err)?
-                            .to_matcher();
-                        matchers.push(matcher);
-                    }
-                    if matchers.is_empty() {
-                        Box::new(jj_lib::matchers::EverythingMatcher)
-                    } else {
-                        let mut iter = matchers.into_iter();
-                        let first = iter.next().expect("non-empty");
-                        iter.fold(first, |acc, m| {
-                            Box::new(jj_lib::matchers::UnionMatcher::new(acc, m))
-                        })
-                    }
-                }
-            };
+            // The same fileset parsing the snapshot and `fix` use (`src/fileset.rs`), evaluated
+            // against repo-relative tree paths. No patterns ⇒ every file, like bare `jj file list`.
+            let matcher = crate::fileset::union_matcher(
+                paths.as_deref().unwrap_or_default(),
+                workspace_root,
+                crate::fileset::EmptyPatterns::MatchEverything,
+            )?;
             let mut out: Vec<String> = tree
                 .entries_matching(&*matcher)
                 .map(|(path, _value)| path.as_internal_file_string().to_owned())
