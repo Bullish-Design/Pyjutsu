@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime};
 
 use gix::remote::{Direction, fetch::Tags};
 use pyo3::exceptions::PyUserWarning;
@@ -128,12 +129,6 @@ fn adopt_existing_git(workspace: &mut Workspace, repo: Arc<ReadonlyRepo>) -> PyR
         record_synthetic_predecessors: true,
         remote_auto_track_bookmarks: HashMap::new(),
     };
-    // Drop any orphaned `refs/jj/keep/*` left in `.git` by a *previous* `.jj` that was deleted out
-    // of band (the re-adopt recovery path; project 10 §P1). This fresh `init_external_git` store has
-    // authored none of its own keep-refs yet, so every keep-ref present is stale bookkeeping from the
-    // dead workspace — see `prune_orphaned_keep_refs`. Run it **before** import so the import starts
-    // from the real git refs (branches + tags) only.
-    prune_orphaned_keep_refs(&repo)?;
     pollster::block_on(git::import_head(tx.repo_mut())).map_err(map_git_err)?;
     pollster::block_on(git::import_refs(tx.repo_mut(), &options)).map_err(map_git_err)?;
 
@@ -174,26 +169,6 @@ fn adopt_existing_git(workspace: &mut Workspace, repo: Arc<ReadonlyRepo>) -> PyR
     Ok(())
 }
 
-/// Delete every `refs/jj/keep/*` ref from the colocated `.git`. jj-lib writes these "no-GC" refs
-/// to keep its commits alive against `git gc`; they live in **`.git`**, not `.jj`, and jj's own
-/// lifecycle (`recreate_no_gc_refs`, run only during `jj util gc`) is what refreshes/prunes the
-/// stale ones. A `.jj` removed out of band (the re-adopt recovery in project 10 §P1) never runs that
-/// pruning, so the dead workspace's keep-refs — observed at ~50 in the gitman recovery — survive in
-/// `.git`, anchoring otherwise-unreachable commit *objects* against GC indefinitely.
-///
-/// Pruning them on adopt is safe because this runs against a **freshly** `init_external_git`'d store
-/// that has authored none of its own keep-refs yet (jj writes them lazily, via `import_head_commits`
-/// /`write_commit`, for the heads it is about to import) — so at this point every `refs/jj/keep/*`
-/// present is necessarily orphaned bookkeeping from the prior `.jj`. jj re-creates exactly the
-/// keep-refs it needs as it imports HEAD + refs immediately after.
-///
-/// Note this is **hygiene**, not the cure for the off-canonical "stray" divergence that motivated
-/// project 10: `git::import_refs`/`import_head` only scan `refs/heads/**`, `refs/remotes/**`,
-/// `refs/tags/**` and `HEAD` (`diff_refs_to_import`) — never `refs/jj/keep/**` — so a keep-ref does
-/// not itself resurrect a commit *as a visible head*. The visible off-main commit in that incident
-/// was anchored by a **tag** (project 10 §P2, fixed consumer-side in gitman). What this prune fixes
-/// is the orphaned-ref accumulation that forced the hand-purge (`git update-ref -d`) during recovery.
-///
 /// jj-lib gap (checked 0.42.0 and 0.44.0): the string `info/exclude` appears nowhere in jj-lib.
 /// Writing this exclude is jj-**cli** policy, applied by `jj git init --colocate`. jj-lib's
 /// `init_colocated_git` does not do it, so the binding must.
@@ -233,42 +208,6 @@ fn ensure_jj_git_excluded(git_dir: &Path) -> PyResult<()> {
     std::fs::write(&exclude_path, merged).map_err(|e| {
         map_workspace_err(format!("failed to write {}: {e}", exclude_path.display()))
     })?;
-    Ok(())
-}
-
-/// Delete orphaned no-gc refs left behind by a dead workspace.
-///
-/// jj-lib gap (checked 0.42.0 and 0.44.0), partial: jj-lib **owns** this namespace. It enforces the
-/// policy in `git_backend.rs::recreate_no_gc_refs` and exposes `Store::gc` (`store.rs:254`). We do
-/// not call `Store::gc`: it runs a *full* backend collection, while this is a narrow purge on every
-/// load. Its cost and its object-pruning side effect are both wrong here.
-///
-/// The constant below is **vendored**: jj-lib declares `NO_GC_REF_NAMESPACE` privately
-/// (0.42 `git_backend.rs:100`, 0.44 `git_backend.rs:99`), so it cannot be imported. Re-verify the
-/// literal against the target release on every jj-lib upgrade.
-fn prune_orphaned_keep_refs(repo: &ReadonlyRepo) -> PyResult<()> {
-    // Vendored from jj-lib `git_backend.rs` (private there). See the doc comment above.
-    const NO_GC_REF_NAMESPACE: &str = "refs/jj/keep/";
-    let git_repo = git::get_git_repo(repo.store()).map_err(map_git_err)?;
-    let refs = git_repo.references().map_err(map_git_err)?;
-    let mut edits = Vec::new();
-    for git_ref in refs.prefixed(NO_GC_REF_NAMESPACE).map_err(map_git_err)? {
-        // A detached, owned `gix::refs::Reference` so its `name`/`target` can move into the edit.
-        let git_ref = git_ref.map_err(map_git_err)?.detach();
-        edits.push(gix::refs::transaction::RefEdit {
-            change: gix::refs::transaction::Change::Delete {
-                // Guard against a concurrent mutation: only delete if the ref still points where we
-                // read it (mirrors jj-lib's own `to_ref_deletion`).
-                expected: gix::refs::transaction::PreviousValue::ExistingMustMatch(git_ref.target),
-                log: gix::refs::transaction::RefLog::AndReference,
-            },
-            name: git_ref.name,
-            deref: false,
-        });
-    }
-    if !edits.is_empty() {
-        git_repo.edit_references(edits).map_err(map_git_err)?;
-    }
     Ok(())
 }
 
@@ -596,6 +535,22 @@ impl PyWorkspace {
             .allow_threads(|| pollster::block_on(loader.load_at_head()))
             .map_err(map_backend_err)?;
         Ok(repo.operation().id().hex())
+    }
+
+    /// Run jj-lib backend garbage collection, preserving objects created after the Unix timestamp
+    /// `keep_newer_epoch`. This is a store maintenance action and publishes no jj operation.
+    fn gc(&self, py: Python<'_>, keep_newer_epoch: f64) -> PyResult<()> {
+        let keep_newer = Duration::try_from_secs_f64(keep_newer_epoch)
+            .ok()
+            .and_then(|duration| SystemTime::UNIX_EPOCH.checked_add(duration))
+            .ok_or_else(|| PyjutsuError::new_err("keep_newer must be a valid Unix timestamp"))?;
+        let ws = self.locked()?;
+        let loader = ws.repo_loader();
+        let repo = py
+            .allow_threads(|| pollster::block_on(loader.load_at_head()))
+            .map_err(map_backend_err)?;
+        py.allow_threads(move || repo.store().gc(repo.index(), keep_newer))
+            .map_err(map_backend_err)
     }
 
     /// A historical `PyRepoView` of the repo at the operation named by `op_str` (an op id,
@@ -1031,10 +986,6 @@ impl PyWorkspace {
     /// `@` lands as an empty child of the imported HEAD — matching `jj git init --colocate` on an
     /// existing repo. Uncommitted working-tree edits are preserved (the next snapshot captures them
     /// into `@`). A repo with no commits yet leaves the empty `@` on `root()`.
-    ///
-    /// Adopt also **prunes orphaned `refs/jj/keep/*`** from the `.git` before importing: a `.jj`
-    /// removed out of band leaves its GC-anchor refs behind, and carrying them into the new
-    /// workspace just accumulates dead bookkeeping (project 10 §P1; see `prune_orphaned_keep_refs`).
     ///
     /// I/O-heavy and `Send` → the constructor runs **off the GIL**. Creation itself uses bootstrap
     /// settings, because no repository or workspace configuration identity exists yet. The handle

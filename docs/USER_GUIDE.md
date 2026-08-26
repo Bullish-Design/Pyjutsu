@@ -76,6 +76,16 @@ ws.root            # Path to the working-copy root
 branches become jj bookmarks, `@` becomes an empty child of the imported `HEAD`, and any
 uncommitted edits are preserved.
 
+Internal Git keep-refs left behind when a `.jj` directory is deleted are not imported or shown.
+They remain in `.git` after re-adoption until explicit backend garbage collection:
+
+```python
+ws.gc()  # mirrors `jj util gc`; no operation is published
+```
+
+The default preserves objects newer than two weeks, matching jj 0.42. Pass a timezone-aware
+`datetime` as `keep_newer` to select another safety cutoff.
+
 ### Add a secondary workspace
 
 `add_workspace()` returns `WorkspaceInfo`. Load its path to obtain a workspace handle.
@@ -217,6 +227,8 @@ These live on the `Workspace` directly (each publishes its own operation):
 ws.snapshot()          # snapshot a dirty @ as a "snapshot working copy" op (or None if clean)
 ws.untrack_paths([p])  # stop tracking paths (file stays on disk); gitignore them to make it stick
 ```
+
+`ws.gc()` is different: it performs store maintenance and publishes no operation.
 
 ---
 

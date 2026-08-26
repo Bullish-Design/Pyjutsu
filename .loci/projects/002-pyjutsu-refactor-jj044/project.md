@@ -422,3 +422,40 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 
 Evidence is in `artifacts/20260826T175754Z-a3-focused/` and
 `artifacts/20260826T180027Z-a3-gate/`.
+
+### 2026-08-26 — A4 native garbage collection
+
+Lane `jj044-refactor/native-gc` deletes the adopt-time keep-ref purge and its
+vendored namespace constant. `Workspace.gc(keep_newer=None)` now delegates to
+`Store::gc`, publishes no operation, and releases the GIL during store work.
+
+The default cutoff is two weeks, taken from the pinned `jj util gc --help`.
+Callers can pass a timezone-aware `datetime` to choose another cutoff. After a
+colocated repo is re-adopted, obsolete keep-refs remain invisible in `.git`
+until this explicit maintenance method runs.
+
+Focused validation:
+
+```text
+cargo fmt --check                         PASS
+cargo check                               PASS
+maturin develop --uv                      PASS
+pytest -q -n0 tests/test_gc.py            PASS: 3 passed
+```
+
+Evidence is in `artifacts/20260826T182000Z-a4-focused/`.
+
+Full validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: 395 passed
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+The first full run stopped on Ruff import ordering after Rust passed. The two
+imports were reordered and the whole gate restarted. Green evidence is in
+`artifacts/20260826T183000Z-a4-final/`.

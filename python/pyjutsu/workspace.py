@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import warnings
 from collections.abc import Iterator, Sequence
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -114,9 +115,8 @@ class Workspace:
         empty child of the imported HEAD, with any uncommitted working-tree edits preserved. A repo
         with no commits yet leaves the empty ``@`` on the root commit.
 
-        Adopt first prunes any orphaned ``refs/jj/keep/*`` from the ``.git`` — the GC-anchor refs a
-        ``.jj`` deleted out of band leaves behind — so re-adopting a recovered repo starts from its
-        real git refs (branches + tags) instead of carrying the dead workspace's bookkeeping forward.
+        Re-adopting does not import or display the prior workspace's internal GC-anchor refs. Those
+        refs remain in ``.git`` until :meth:`gc` performs Jujutsu's normal backend cleanup.
 
         ``trunk`` is an optional branch name for the colocated ``.git``'s initial HEAD symref when
         colocating onto a directory with no pre-existing ``.git`` — so there is no leftover default
@@ -130,6 +130,24 @@ class Workspace:
         ws = cls(PyWorkspace.init(os.fspath(path), colocate, trunk))
         ws._load_hooks_config(hooks_config)
         return ws
+
+    def gc(self, keep_newer: datetime | None = None) -> None:
+        """Run Jujutsu backend garbage collection without publishing an operation.
+
+        Objects created after ``keep_newer`` are preserved as protection against concurrent
+        writers. ``None`` mirrors ``jj util gc`` from the pinned jj 0.42.0 CLI: preserve objects
+        newer than two weeks. Pass an aware :class:`datetime.datetime` to choose another cutoff;
+        ``datetime.now(timezone.utc)`` is equivalent to the CLI's ``--expire now``.
+
+        Garbage collection also refreshes Jujutsu's internal Git keep-refs. After re-adopting a
+        colocated repository whose ``.jj`` was deleted out of band, obsolete keep-refs remain
+        invisible until this method removes them.
+        """
+        if keep_newer is None:
+            keep_newer = datetime.now(timezone.utc) - timedelta(weeks=2)
+        if keep_newer.tzinfo is None or keep_newer.utcoffset() is None:
+            raise ValueError("keep_newer must be timezone-aware")
+        self._handle.gc(keep_newer.timestamp())
 
     def add_workspace(
         self,

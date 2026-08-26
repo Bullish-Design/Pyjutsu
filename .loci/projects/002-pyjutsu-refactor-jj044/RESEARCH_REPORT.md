@@ -96,3 +96,40 @@ The minimal import correction compiled without other API changes.
 
 Focused evidence is in `artifacts/20260826T175754Z-a3-focused/`.
 The green gate is in `artifacts/20260826T180027Z-a3-gate/`.
+
+## 2026-08-26 — A4 native garbage collection
+
+The pinned `jj util gc --help` says that obsolete objects and operations older
+than two weeks are pruned by default. The Python facade mirrors that policy by
+passing `now - 2 weeks` as `keep_newer` when the caller supplies no cutoff.
+
+The local jj-lib 0.42.0 source exposes `Store::gc(&dyn Index, SystemTime)` at
+`store.rs:254`. Its Git backend first calls `recreate_no_gc_refs`: indexed heads
+remain anchored, obsolete keep-refs older than the cutoff are deleted, and then
+Git backend collection runs with the same cutoff. This is the correct owner of
+the namespace and replaces Pyjutsu's vendored ref-transaction purge.
+
+The focused tests age a deliberately unreachable loose keep-ref to 2000. A
+no-argument `gc()` preserves the reachable head ref, removes that orphan, and
+leaves the head operation unchanged. The re-adopt test proves the behavior
+change: deleting `.jj` and initializing again leaves the old ref in `.git`
+until `gc()` removes it. The refs are never imported into the jj view.
+
+Focused evidence is in `artifacts/20260826T182000Z-a4-focused/`.
+
+The first full gate stopped at Ruff after both Rust checks passed because the
+new test's third-party imports were not sorted. Reordering those two imports is
+the complete correction; the full gate was restarted rather than resumed.
+
+Primary sources:
+
+- [Jujutsu v0.42.0 source](https://github.com/jj-vcs/jj/tree/v0.42.0) — pinned CLI and library release.
+- [jj-lib Git backend GC](https://github.com/jj-vcs/jj/blob/v0.42.0/lib/src/git_backend.rs) — keep-ref refresh and backend collection.
+- [Jujutsu GC behavior discussion](https://github.com/jj-vcs/jj/discussions/4709) — maintainer explanation that `jj util gc` removes unused keep-refs and runs Git GC.
+
+This evidence proves the 0.42 default, native lifecycle ownership, and no-op-log
+contract. The same anchors must be rechecked once B1 moves the pin to 0.44.0.
+
+The restarted full gate is green in `artifacts/20260826T183000Z-a4-final/`:
+7 Rust tests passed, all 395 Python tests passed, and the aggregate verification
+task exited successfully.

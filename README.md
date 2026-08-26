@@ -65,11 +65,17 @@ ws.git_push("origin", "main", allow_new=True)
 ws.create_tag("v1.0", "@")       # lightweight jj tag (the default)
 ws.push_tag("v1.0", "origin")
 ws.undo()                        # revert the head operation
+ws.gc()                          # backend GC; publishes no jj operation
 ```
 
 Pass `message="..."` to retain the annotated Git tag path. That form emits a
 `DeprecationWarning` and will move to `ws.git.create_tag` in a later release.
 Existing positional message arguments continue to work.
+
+`ws.gc()` mirrors `jj util gc`: it refreshes internal Git keep-refs and preserves objects newer
+than two weeks by default. Pass a timezone-aware `datetime` to select another cutoff. Re-adopting
+a colocated repository after its `.jj` was deleted leaves obsolete keep-refs in `.git` until this
+explicit maintenance call; they are neither imported nor displayed by Pyjutsu.
 
 ## Secondary workspaces
 

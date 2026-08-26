@@ -125,12 +125,13 @@ ws.git_fetch(remote="origin")
 ws.git_push(bookmark="feature", remote="origin", allow_new=True)
 ws.git_export(); ws.git_import()                   # colocated sync
 ws.create_tag("v1.0", "@")                        # lightweight jj tag
+ws.gc()                                             # store maintenance; no operation
 ```
 
 ### Surface (v1)
 
 - **Workspace lifecycle:** `init`, `load`, `git_clone`, `workspaces()`, `add_workspace`,
-  `forget_workspace`.
+  `forget_workspace`, plus explicit backend maintenance through `gc`.
 - **Reads:** `working_copy`, `resolve`, `log`/`iter_log` (revset + limit), `bookmarks`,
   `operations`, `diff_stat`, `diff`, `conflicts` — all on a `Workspace` shortcut or a reusable
   `RepoView` (`ws.head()` / `ws.at_operation(op)`).
@@ -150,6 +151,10 @@ ws.create_tag("v1.0", "@")                        # lightweight jj tag
   `message` form writes an annotated Git tag and warns about its future `ws.git.create_tag` home.
 - **Escape hatch:** `run_jj` runs the external `jj` binary against the workspace (raw
   stdout/stderr/exit, no model parsing) for anything not yet bound.
+
+`gc()` delegates to jj-lib's store collection and publishes no operation. Its default two-week
+safety cutoff mirrors jj 0.42. A re-adopted colocated repo can retain the dead workspace's internal
+Git keep-refs until `gc()`; those refs are not part of jj's imported or user-visible ref surface.
 
 ### Revset configuration and rewrite safety
 
