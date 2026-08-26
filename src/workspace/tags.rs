@@ -1,4 +1,10 @@
 //! Annotated Git tag creation and push helpers.
+//!
+//! jj-lib gap (checked 0.42.0 and 0.44.0): jj-lib cannot **create** an annotated tag.
+//! It only copies an existing annotated tag ref during export (`git.rs:1410`), and
+//! `MutableRepo::set_local_tag_target` (0.44 `repo.rs:1850`) writes a *lightweight* tag.
+//! Tag object creation therefore goes straight to `gix`. Re-check this on every jj-lib
+//! upgrade; drop the workaround as soon as jj-lib exposes an annotated-tag writer.
 
 use std::collections::HashMap;
 use std::sync::Arc;

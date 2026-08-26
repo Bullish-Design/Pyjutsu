@@ -415,6 +415,14 @@ impl PyRepoView {
 /// text files — its added/removed line contents **without** line numbers, so the digest tracks
 /// *what* changed, not where (a rebase that only shifts line positions keeps the same id). Binary or
 /// typeless changes contribute path + kind only (their bytes aren't line-diffable).
+///
+/// The digest is **always SHA-1**, in every repository, including a SHA-256 one. A patch id is a
+/// pyjutsu content digest, not a Git object id: nothing resolves it against the object database, so
+/// a stable width is the useful contract. Do not "fix" this to follow the repository object hash —
+/// that would make the same change produce different ids in different repos.
+///
+/// jj-lib gap: patch ids are a pyjutsu concept. jj-lib has no equivalent, so `gix` supplies the
+/// hasher. This is the only site that needs the `gix` `sha1` feature directly.
 fn patch_id_hex(data: &DiffData) -> String {
     let mut files: Vec<&FileChangeData> = data.files.iter().collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));

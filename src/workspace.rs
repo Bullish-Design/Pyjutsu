@@ -193,6 +193,11 @@ fn adopt_existing_git(workspace: &mut Workspace, repo: Arc<ReadonlyRepo>) -> PyR
 /// not itself resurrect a commit *as a visible head*. The visible off-main commit in that incident
 /// was anchored by a **tag** (project 10 §P2, fixed consumer-side in gitman). What this prune fixes
 /// is the orphaned-ref accumulation that forced the hand-purge (`git update-ref -d`) during recovery.
+///
+/// jj-lib gap (checked 0.42.0 and 0.44.0): the string `info/exclude` appears nowhere in jj-lib.
+/// Writing this exclude is jj-**cli** policy, applied by `jj git init --colocate`. jj-lib's
+/// `init_colocated_git` does not do it, so the binding must.
+///
 /// Ensure the colocated `.git/info/exclude` contains a `/.jj/` line so git ignores jj's metadata
 /// directory (matching `jj git init --colocate`, which writes this exclude as part of colocation).
 /// Idempotent: a no-op if the line is already present, so re-colocating never duplicates it. `git_dir`
@@ -231,7 +236,18 @@ fn ensure_jj_git_excluded(git_dir: &Path) -> PyResult<()> {
     Ok(())
 }
 
+/// Delete orphaned no-gc refs left behind by a dead workspace.
+///
+/// jj-lib gap (checked 0.42.0 and 0.44.0), partial: jj-lib **owns** this namespace. It enforces the
+/// policy in `git_backend.rs::recreate_no_gc_refs` and exposes `Store::gc` (`store.rs:254`). We do
+/// not call `Store::gc`: it runs a *full* backend collection, while this is a narrow purge on every
+/// load. Its cost and its object-pruning side effect are both wrong here.
+///
+/// The constant below is **vendored**: jj-lib declares `NO_GC_REF_NAMESPACE` privately
+/// (0.42 `git_backend.rs:100`, 0.44 `git_backend.rs:99`), so it cannot be imported. Re-verify the
+/// literal against the target release on every jj-lib upgrade.
 fn prune_orphaned_keep_refs(repo: &ReadonlyRepo) -> PyResult<()> {
+    // Vendored from jj-lib `git_backend.rs` (private there). See the doc comment above.
     const NO_GC_REF_NAMESPACE: &str = "refs/jj/keep/";
     let git_repo = git::get_git_repo(repo.store()).map_err(map_git_err)?;
     let refs = git_repo.references().map_err(map_git_err)?;
@@ -265,6 +281,11 @@ enum HeadRefOp {
 /// D/F-safe force-write/delete of a single `refs/heads/<name>` directly in the colocated `.git`,
 /// bypassing jj's view. The engine behind `write_git_ref`/`delete_git_ref` (reconcile-only escape
 /// hatches to heal colocated-ref drift when `git_export` is itself broken by a bad/leftover ref).
+///
+/// jj-lib gap (checked 0.42.0 and 0.44.0): jj-lib exposes no ref-repair API, and bypassing jj's
+/// view is the whole point here — `git_export` is the broken path this heals. This is the deepest
+/// `gix` coupling in the crate: it drives the low-level file-store transaction directly. Treat it
+/// as its own port task on every `gix` bump, with its own compile check.
 ///
 /// The hard part is **fractal lane names** — a loose file `refs/heads/T` and a `refs/heads/T/api`
 /// (or `T/api/handler`) below it are a directory/file (D/F) conflict on disk. gix chokes on these
@@ -1056,6 +1077,9 @@ impl PyWorkspace {
                 // If a trunk name is given, set HEAD in the colocated .git to point at that
                 // branch so no leftover default-branch ref (e.g. refs/heads/master) survives.
                 // Best-effort plain-file write — HEAD is guaranteed a loose file, never packed.
+                //
+                // jj-lib gap (checked 0.42.0 and 0.44.0): jj-lib's `git.rs` only *reads* HEAD.
+                // It exposes no `set_head`, `reset_head`, or `export_head`.
                 if let Some(trunk) = &trunk {
                     if trunk.contains('\n') || trunk.contains('\r') {
                         return Err(PyjutsuError::new_err(format!(
