@@ -607,3 +607,68 @@ Evidence is in `artifacts/20260826T194500Z-b3-focused/`,
 mismatched bare remotes), `artifacts/20260826T200500Z-b3-sha256-matrix/` (green),
 `artifacts/20260826T201000Z-b3-gate/` (the red Ruff run), and
 `artifacts/20260826T201500Z-b3-gate/` (green).
+
+### 2026-08-26 — B4 release 0.17.0
+
+`Cargo.toml`, `pyproject.toml`, and `pyjutsu.__version__` move to `0.17.0`, and
+`tests/test_build.py` asserts that the compiled crate agrees. The release note
+lives in `README.md` under "0.17.0 behaviour changes", beside the existing 0.16.0
+section. It names the two user-visible changes the prompt requires — the
+`create_tag` default and the keep-ref prune removal — and records that positional
+`message` callers keep working. It also mentions the new object-format setting
+and the removal of `ui.revsets-use-glob-by-default`.
+
+**A documentation sweep came with the release.** Nineteen places still claimed
+the binding tracked jj 0.42. Each was read in context and sorted into two kinds:
+
+- A statement about what the *pinned* version does, or what the current API
+  looks like, is now false. Those were retargeted to 0.44, and each retarget was
+  checked against the pinned CLI or the 0.44 source first. The two-week `gc`
+  default, the bulk-push deletion rule, and the `MutableIndex: Any` `Send` bound
+  (`index.rs:186`, moved from `:178`) were all re-verified this way.
+- A statement about *when* a change happened — "jj-lib 0.42 dropped
+  `auto_local_bookmark`", "jj-lib 0.42 replaced `GitBranchPushTargets`" — is
+  history and stays accurate. Those were left alone, as were the release notes
+  for 0.16.0 and the `// jj-lib gap:` comments that name both releases checked.
+
+**The wheel.** `maturin build --release` produces one abi3 wheel,
+`pyjutsu-0.17.0-cp313-abi3-linux_x86_64.whl`, good for CPython 3.13 and later.
+The devenv sets `_PYTHON_HOST_PLATFORM`, so the tag is `linux_x86_64` rather than
+a `manylinux` tag. Producing the full platform matrix needs a CI build per
+target and is outside this project.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+maturin develop --uv                      PASS: pyjutsu-0.17.0
+pytest -q                                 PASS: 401 passed
+devenv tasks run pyjutsu:verify           PASS: exit 0
+maturin build --release                   PASS: one abi3 wheel
+```
+
+Evidence is in `artifacts/20260826T203000Z-b4-gate/` and
+`artifacts/20260826T203500Z-b4-wheels/`.
+
+### 2026-08-26 — Phase B complete
+
+Phase B is four changes on three commits. B1 and B2 share one commit because the
+pin move alone does not compile.
+
+| Lane | Commit | What it changed |
+|---|---|---|
+| B1 + B2 | `Move the jj-lib pin to 0.44.0` | the two pins, the devenv CLI, seven ported API sites, the vendored revset table |
+| B3 | `Create SHA-256 repositories from git.object-hash` | `git_object_hash`, the gix feature declaration, the object-format test matrix |
+| B4 | `Release 0.17.0` | the version bump, the release note, the 0.42-to-0.44 documentation sweep |
+
+The re-verification list is now two entries, not one: `src/config/revsets.toml`
+and the `git.object-hash` policy in `git_object_hash`. Phase A retired
+`python/pyjutsu/revset.py::_quote` and `NO_GC_REF_NAMESPACE`; B3 added the
+object-format mapping, because jj-lib owns neither the key nor its default.
+
+`refs/jj/keep/` and `gix::hash::hasher` appear nowhere in `src/`. `gix::hash`
+does appear, in `git_object_hash`, which names the two `Kind` variants — the
+reason Pyjutsu now declares the `sha1` and `sha256` gix features itself.

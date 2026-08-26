@@ -5,15 +5,38 @@ PyO3/maturin — native graph, op-log, working-copy, and conflict access **in-pr
 no subprocess and no text parsing.
 
 - **Import:** `import pyjutsu`
-- **Binds:** jujutsu / `jj-lib` **0.42.0** (pinned in `Cargo.toml` + `devenv.nix`). Pyjutsu is
+- **Binds:** jujutsu / `jj-lib` **0.44.0** (pinned in `Cargo.toml` + `devenv.nix`). Pyjutsu is
   versioned on its own cadence, independent of the jj version it binds; `pyjutsu.JJ_VERSION`
   reports the linked jj-lib at runtime.
 - **Docs:** [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) (using the library) ·
   [`docs/DEV_GUIDE.md`](docs/DEV_GUIDE.md) (working on it) ·
   [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md) (design spec).
 
-**Status: 0.16.0 — tracks jj-lib 0.42.0.** The reads, transactions/mutations, op-log time travel,
+**Status: 0.17.0 — tracks jj-lib 0.44.0.** The reads, transactions/mutations, op-log time travel,
 workspaces, and git interop are implemented and differential-tested against the pinned `jj` CLI.
+
+### 0.17.0 behaviour changes
+
+Pyjutsu now binds jj-lib 0.44.0 (was 0.42.0). Two user-visible changes ship with it.
+
+**`create_tag` writes a lightweight jj tag by default.** `ws.create_tag(name, target)` now goes
+through jj-lib (`set_local_tag_target` + `export_refs`) and publishes one operation, so the tag is
+a jj tag that the CLI lists. Pass `message=` to keep the old annotated Git tag; that form still
+works, still takes the message positionally, and now emits a `DeprecationWarning` naming
+`ws.git.create_tag`, where the verb moves in a later release. Creating a tag that already exists
+raises `GitError` unless you pass `force=True`. A fetched annotated tag is never degraded.
+
+**Adopt no longer prunes keep-refs; `ws.gc()` does.** Re-adopting a colocated repo used to delete
+orphaned `refs/jj/keep/` entries with a raw Git ref transaction. That workaround is gone. Use the
+new `ws.gc(keep_newer=None)`, which delegates to jj-lib's `Store::gc` and mirrors `jj util gc`
+(default: keep everything newer than two weeks; no operation is published). Between a re-adopt and
+the next `gc()`, stale keep-refs stay in `.git`; nothing imports or displays them.
+
+Also new: a repo created by `init` follows the `git.object-hash` setting, so `"sha256"` gives a
+SHA-256 repository, exactly as `jj git init` does. `patch_id` is unaffected — it is a Pyjutsu
+content digest, stays SHA-1, and returns the same value in both formats.
+
+Note for callers who read jj configuration: jj 0.44 removed `ui.revsets-use-glob-by-default`.
 
 ### 0.16.0 behaviour changes
 
@@ -93,12 +116,12 @@ Use `revisions="root()"` for the former Pyjutsu default. Multiple parents use Ju
 tree and preserve conflicts. `sparse_patterns` accepts `"copy"`, `"full"`, or `"empty"`.
 
 Each explicit revset must resolve to exactly one commit. This is stricter than the pinned `jj`
-0.42 CLI, which accepts one expression that matches several commits. To give the new `@` several
+0.44 CLI, which accepts one expression that matches several commits. To give the new `@` several
 parents, pass several revisions instead of one expression that matches several commits.
 
 Primary and secondary workspaces load the same secure repository configuration. Intentional
 workspace configuration remains workspace-specific. Configuration precedence and conditional
-path, hostname, and environment scopes match the pinned Jujutsu 0.42 behavior.
+path, hostname, and environment scopes match the pinned Jujutsu 0.44 behavior.
 
 ## Revset builder
 
@@ -117,7 +140,7 @@ ws.log(R.description(Pattern.glob("release-*")))   # explicit pattern kind
 ```
 
 Pyjutsu evaluates jj-lib revsets without depending on the `jj` command-line crate. It vendors the
-pinned jj 0.42 default aliases (`trunk()`, `immutable_heads()`, `mutable()`, and the rest), then
+pinned jj 0.44 default aliases (`trunk()`, `immutable_heads()`, `mutable()`, and the rest), then
 applies your resolved user, repository, and workspace `revset-aliases` configuration above them.
 Malformed configured aliases produce a warning and leave unrelated revsets usable. See
 [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) §1.
@@ -169,7 +192,7 @@ costly for little gain over `to_thread`.
 ## Development
 
 Everything runs inside the [devenv](https://devenv.sh) shell, which pins the Rust toolchain,
-`maturin`, and the matching `jj` 0.42.0 CLI used for differential tests:
+`maturin`, and the matching `jj` 0.44.0 CLI used for differential tests:
 
 ```sh
 devenv shell -- devenv tasks run pyjutsu:build   # maturin develop

@@ -135,7 +135,7 @@ class Workspace:
         """Run Jujutsu backend garbage collection without publishing an operation.
 
         Objects created after ``keep_newer`` are preserved as protection against concurrent
-        writers. ``None`` mirrors ``jj util gc`` from the pinned jj 0.42.0 CLI: preserve objects
+        writers. ``None`` mirrors ``jj util gc`` from the pinned jj 0.44.0 CLI: preserve objects
         newer than two weeks. Pass an aware :class:`datetime.datetime` to choose another cutoff;
         ``datetime.now(timezone.utc)`` is equivalent to the CLI's ``--expire now``.
 
@@ -301,7 +301,7 @@ class Workspace:
         fast-forwarding existing ones; ``tracked=True`` (``--tracked``) pushes only bookmarks already
         **tracking** this remote. These bulk modes ignore ``bookmark`` (which must be ``None``/empty)
         and are mutually exclusive. Neither deletes: a locally-absent bookmark is skipped, matching
-        jj 0.42 (deletions need ``delete=True``).
+        jj 0.44 (deletions need ``delete=True``).
 
         Raises :class:`~pyjutsu.errors.GitError` if no bookmark is given without a bulk mode (or one
         is given with a bulk mode), both ``all`` and ``tracked`` are set, ``delete`` is combined with

@@ -154,7 +154,7 @@ fn create_annotated_tag<'py>(
         let target_oid = gix::ObjectId::try_from(commits[0].id().as_bytes())
             .map_err(|e| map_git_err(format!("invalid target commit id: {e}")))?;
 
-        // Write the annotated object and ref directly because jj-lib 0.42 cannot create it.
+        // Write the annotated object and ref directly because jj-lib 0.44 cannot create it.
         let git_repo = git::get_git_repo(repo.store()).map_err(map_git_err)?;
         let time = format!("{} +0000", chrono::Utc::now().timestamp());
         let name_bstr: &gix::bstr::BStr = user_name.as_str().into();

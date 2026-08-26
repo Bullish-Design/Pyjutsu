@@ -1,4 +1,4 @@
-//! Jujutsu 0.42 configuration policy for workspace authoring.
+//! Jujutsu 0.44 configuration policy for workspace authoring.
 //!
 //! jj-lib provides configuration layers, secure configuration, and conditional resolution.
 //! jj-cli provides environment and user-path policy. Pyjutsu reproduces the small relevant policy

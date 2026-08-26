@@ -5,9 +5,9 @@ Python code. For the design rationale see [`PYJUTSU_CONCEPT.md`](PYJUTSU_CONCEPT
 Pyjutsu itself see [`DEV_GUIDE.md`](DEV_GUIDE.md).
 
 - **Import:** `import pyjutsu`
-- **Binds:** jujutsu / `jj-lib` **0.42.0** (pinned), in-process via PyO3 — no subprocess, no text
+- **Binds:** jujutsu / `jj-lib` **0.44.0** (pinned), in-process via PyO3 — no subprocess, no text
   parsing.
-- **Status:** shipping at `pyjutsu 0.16.0`.
+- **Status:** shipping at `pyjutsu 0.17.0`.
 
 ---
 
@@ -41,6 +41,7 @@ overrides those defaults with jj precedence. An invalid configured alias emits a
 The unset default for `ui.revsets-use-glob-by-default` is now `true`, matching jj 0.42. This is a
 behaviour change: bare string patterns can select more revisions than under earlier Pyjutsu
 releases. Set that option explicitly to retain the old literal-default behaviour.
+(jj 0.44 removed this setting; from Pyjutsu 0.17.0 it has no effect.)
 
 History-rewriting verbs now reject every revision in `immutable_heads().ancestors()`, not only the
 root. The per-transaction `ignore_immutable=True` escape hatch deliberately bypasses configured
@@ -120,13 +121,13 @@ candidate = Workspace.load(info.path)
 With `None`, the new `@` uses the source `@`'s parents and becomes its sibling.
 Each explicit revset must resolve to one commit. Several revisions create a merge working-copy
 commit with Jujutsu's merged tree. Conflicts remain first-class Jujutsu conflicts.
-This rule is stricter than the pinned `jj` 0.42 CLI, which lets `jj workspace add -r 'A|B'` take
+This rule is stricter than the pinned `jj` 0.44 CLI, which lets `jj workspace add -r 'A|B'` take
 one expression that matches two commits. To give the new `@` several parents, pass several
 revisions rather than one expression that matches several commits.
 
 Use `revisions="root()"` to request the former root-based behavior.
 The `sparse_patterns` setting accepts `"copy"` (default), `"full"`, or `"empty"`.
-Registration and initial commit creation publish two operations, as in Jujutsu 0.42.
+Registration and initial commit creation publish two operations, as in Jujutsu 0.44.
 
 Pyjutsu validates revision expressions, the name, and the destination before registration.
 If later initialization fails, `PartialWorkspaceError` explains how to forget the registration.

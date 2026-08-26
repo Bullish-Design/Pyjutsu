@@ -214,3 +214,35 @@ Primary sources:
 
 This evidence proves repository creation, the full read and write surface, and
 patch-id stability under SHA-256.
+
+## 2026-08-26 — B4 release 0.17.0
+
+The release itself needs no new research. The documentation sweep does, because
+a version number in a comment is a claim that can be wrong in two different ways.
+
+Nineteen references still named jj 0.42. Each was classified before it was
+touched. A claim about what the pinned version *does* — "the default preserves
+two weeks", "bulk push never deletes", "`MutableIndex` carries no `Send` bound" —
+is false once the pin moves, so each was re-checked against the pinned 0.44 CLI
+or the 0.44 source, then retargeted. A claim about *when* something changed —
+"jj-lib 0.42 dropped `auto_local_bookmark`" — stays true and was left alone.
+
+Three anchors moved or were confirmed:
+
+- `jj util gc --help` under 0.44 still says two weeks. The `keep_newer=None`
+  default needs no change.
+- `jj git push --help` under 0.44 still separates `--all` / `--tracked` from
+  `--deleted`, so the "bulk push never deletes" contract holds.
+- `MutableIndex: Any` is at `index.rs:186` in jj-lib 0.44, not `:178`. The trait
+  still carries no `Send` bound, so `PyTransaction` stays `unsendable`.
+
+The re-verification list changed size during this project rather than only
+shrinking. Phase A retired `_quote` and `NO_GC_REF_NAMESPACE` as planned, but B3
+added one: jj-lib defines neither the `git.object-hash` key nor its `"sha1"`
+default, so that mapping is vendored jj-cli policy and must be re-diffed at each
+upgrade alongside `src/config/revsets.toml`.
+
+Primary sources:
+
+- Pinned CLI binary, jj 0.44.0 — `jj util gc --help`, `jj git push --help`.
+- jj-lib 0.44.0 `src/index.rs:186` — the `MutableIndex: Any` declaration.

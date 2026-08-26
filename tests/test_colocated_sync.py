@@ -1,6 +1,6 @@
 """Project 13 / P3: `Workspace.sync_colocated` — reset colocated git HEAD **and** index.
 
-jj-lib 0.42's `git::reset_head` (which `git_export` already calls) resets the colocated git HEAD
+jj-lib 0.44's `git::reset_head` (which `git_export` already calls) resets the colocated git HEAD
 *and* rebuilds the git index from `@`'s parent tree. This surfaces that repair as a standalone,
 idempotent verb so callers can run it without needing a refs change to trigger `git_export`. The
 regression it locks in is gitman field report 15-RC6: after a trunk move dropped a tracked file, the

@@ -22,7 +22,7 @@ Pyjutsu is two layers with a hard boundary between them (concept §4):
 │  Opaque handles + PLAIN Python data (dict/list/str) only.    │
 │  Never exposes a jj-lib type. Holds no business logic.       │
 ├─────────────────────────────────────────────────────────────┤
-│  jj-lib 0.42.0   (hard-pinned in Cargo.toml)                 │
+│  jj-lib 0.44.0   (hard-pinned in Cargo.toml)                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -49,7 +49,7 @@ as small as possible, pin it exactly, and turn any behavioral drift into a loud 
 | `repo_view.rs` | `PyRepoView` (all reads) + `PyCommitStream` (lazy `iter_log`). |
 | `transaction.rs` | `PyTransaction` — the mutation verbs, bound to one thread. |
 | `revset.rs` | Revset parsing/evaluation helpers and the cached resolved `RevsetConfig`. |
-| `config/revsets.toml` | Vendored jj 0.42 default revset aliases; re-diff it on every jj upgrade. |
+| `config/revsets.toml` | Vendored jj 0.44 default revset aliases; re-diff it on every jj upgrade. |
 | `diff.rs`, `diff_stat.rs` | Diff + diff-stat computation, producing the plain hunk/stat dicts. |
 | `convert.rs` | jj-lib value → plain-Python-dict converters (the shape the Pydantic models expect). |
 | `errors.rs` | The `PyjutsuError` hierarchy + `jj-lib` error → exception mapping. |
@@ -83,7 +83,7 @@ fields; `nix/pyjutsu.nix` defines the devenv tasks.
 ## 3. Environment & the build/test/lint loop
 
 **Everything runs inside the devenv shell** — it pins the Rust toolchain, `maturin`, and the
-matching `jj` 0.42.0 CLI used for differential tests. Never invoke bare `cargo`/`maturin`/`pytest`/
+matching `jj` 0.44.0 CLI used for differential tests. Never invoke bare `cargo`/`maturin`/`pytest`/
 `ruff`; the ambient shell has none of the pinned toolchain.
 
 ```sh
@@ -135,7 +135,7 @@ fallback, a shape choice), that belongs in Python.
 
 ### Handling jj-lib's `!Send` transaction
 
-`Transaction`/`MutableRepo` are **`!Send`** in jj-lib 0.42. `PyTransaction` is therefore
+`Transaction`/`MutableRepo` are **`!Send`** in jj-lib 0.44. `PyTransaction` is therefore
 thread-affine and unsendable: the native transaction lives inside the `PyWorkspace` handle (behind
 its `Mutex`) and the Python `Transaction` is just a token that drives it between `__enter__` and
 `__exit__`. This is *why* there's no native async facade — see the concept doc.
@@ -198,7 +198,7 @@ pinned commit timestamp, `JJ_CONFIG` loaded in-process, and jj's trailing-newlin
 convention (`transaction.py::_complete_newline`). Differential tests can author from primary or
 secondary workspaces. Both resolve the same secure repository configuration identity.
 
-`src/config_loader.rs` is the small Jujutsu 0.42 policy adapter over jj-lib.
+`src/config_loader.rs` is the small Jujutsu 0.44 policy adapter over jj-lib.
 It loads defaults, environment base values, user paths, secure repository configuration, secure
 workspace configuration, and environment overrides. It then resolves conditional scopes.
 The workspace loader resolves the canonical repository path before final `UserSettings` exist.
@@ -234,15 +234,17 @@ Two version numbers, kept deliberately separate:
 - **`pyjutsu.__version__`** (e.g. `0.10.0`) — Pyjutsu's own semver, moving on its own cadence.
   Hand-maintained in `Cargo.toml` **and** `python/pyjutsu/__init__.py` (both must match; the
   stale-build guard enforces the Python↔native side).
-- **`JJ_VERSION` / `JJ_LIB_TARGET`** (e.g. `0.42.0`) — the linked jj-lib. **Build-derived**:
+- **`JJ_VERSION` / `JJ_LIB_TARGET`** (e.g. `0.44.0`) — the linked jj-lib. **Build-derived**:
   `build.rs` reads the resolved `Cargo.lock` and emits `PYJUTSU_JJ_LIB_VERSION`, so it *cannot*
   drift from the actual dependency (project 10 §P3 killed the second hand-maintained copy —
   `JJ_LIB_TARGET` is now just an alias of `JJ_VERSION`).
 
-The jj-lib pin itself is `jj-lib = "=0.42.0"` in `Cargo.toml` (the real API contract, with
+The jj-lib pin itself is `jj-lib = "=0.44.0"` in `Cargo.toml` (the real API contract, with
 `Cargo.lock` committed), and the **matching `jj` CLI** is pinned in `devenv.nix` so differential
-tests compare against the exact CLI of the bound library. `gix` is pinned to jj-lib 0.42.0's own
-locked `=0.84.0` so the types unify (`cargo tree -i gix` must show a single version).
+tests compare against the exact CLI of the bound library. `gix` is pinned to jj-lib 0.44.0's own
+locked `=0.85.0` so the types unify (`cargo tree -i gix` must show a single version). Pyjutsu
+declares the gix `sha1` and `sha256` features itself, because it names both `gix::hash::Kind`
+variants when it creates a repository.
 
 A **normal feature/fix** is an ordinary minor/patch bump of `__version__` — nothing jj-related
 moves. Bumping jj-lib is a separate, deliberate act (§8).

@@ -1,6 +1,6 @@
 # Pyjutsu — Concept (PyO3 / jj-lib binding)
 
-**Status:** Shipping at `pyjutsu 0.10.0`, binding jj-lib 0.42.0. M1 (read layer) and M2 (write
+**Status:** Shipping at `pyjutsu 0.17.0`, binding jj-lib 0.44.0. M1 (read layer) and M2 (write
 layer — mutations, transactions, op-log, workspaces, git interop incl. network fetch/push/clone)
 are complete; the power surface has since grown a revset builder, streaming log, `run_jj` escape
 hatch, native sub-file `tx.split`/`select_tree`, and — in 0.10.0 — `untrack_paths` plus an
@@ -153,13 +153,13 @@ ws.gc()                                             # store maintenance; no oper
   stdout/stderr/exit, no model parsing) for anything not yet bound.
 
 `gc()` delegates to jj-lib's store collection and publishes no operation. Its default two-week
-safety cutoff mirrors jj 0.42. A re-adopted colocated repo can retain the dead workspace's internal
+safety cutoff mirrors jj 0.44. A re-adopted colocated repo can retain the dead workspace's internal
 Git keep-refs until `gc()`; those refs are not part of jj's imported or user-visible ref surface.
 
 ### Revset configuration and rewrite safety
 
 Each loaded workspace builds one `RevsetConfig` from jj's resolved settings and shares it with its
-views and transactions. Pyjutsu vendors jj 0.42's aliases at default precedence, so `trunk()` and
+views and transactions. Pyjutsu vendors jj 0.44's aliases at default precedence, so `trunk()` and
 the standard immutability aliases work out of the box while user, repository, and workspace
 configuration can override them. The parser also takes jj's `true` default for
 `ui.revsets-use-glob-by-default`; callers relying on literal bare patterns should set the option
@@ -303,7 +303,7 @@ the retained path and a recovery action. If `path` exists and is non-empty, the 
 registration.
 
 With no revisions, the new `@` uses the source `@`'s parents. Explicit revisions each resolve to
-one commit. This is stricter than the pinned `jj` 0.42 CLI, which accepts one expression that
+one commit. This is stricter than the pinned `jj` 0.44 CLI, which accepts one expression that
 matches several commits; to give the new `@` several parents, pass several revisions rather than
 one expression that matches several commits. Multiple parents use Jujutsu's merged-tree semantics.
 Sparse patterns copy by default, with full and empty modes available explicitly.

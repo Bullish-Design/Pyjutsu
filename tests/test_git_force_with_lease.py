@@ -1,6 +1,6 @@
 """Project 13 / P1: force-with-lease is the push contract (a probe, not a new API).
 
-jj-lib 0.42 has no fast-forward guard: `git::push_updates` always force-pushes with
+jj-lib 0.44 has no fast-forward guard: `git::push_updates` always force-pushes with
 `--force-with-lease`, the lease being each bookmark's remote-tracking target (the `before` of the
 `Diff` `git_push` builds). So a *non-fast-forward* bookmark move — pushing a content-equal but
 hash-divergent trunk over `origin/<trunk>` — succeeds when the remote-tracking ref is current, and
