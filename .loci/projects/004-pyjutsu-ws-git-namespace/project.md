@@ -181,3 +181,52 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 
 Evidence is in `artifacts/<UTC>-d2-focused/`, `artifacts/<UTC>-d2-gate/` (red
 Ruff run), and `artifacts/<UTC>-d2-gate-green/`.
+
+### 2026-08-26 — D3 git config
+
+Lane `004/d3` gives a colocated caller a route to `core.hooksPath`, `user.signingkey`, and every
+other git configuration key.
+
+**Rust.** New `src/git/config.rs` with `get`, `set`, and `unset`, plus three flat native methods
+(`git_config_get` / `git_config_set` / `git_config_unset`) delegating to them. A key is split the
+way git splits it: the first component is the section, the last is the value name, and everything
+between is the subsection — so `remote.my.remote.url` works. A key with no section is an error.
+
+**Decision: reads are effective, writes are local.** `config_get` reads the merged snapshot —
+system, then global, then repository-local — because that is the value git itself would use, and
+"what is `core.hooksPath` in this repo" is the question the verb exists to answer. `config_set`
+and `config_unset` write the repository-local file only; writing the user's global file is a
+stated non-goal. The asymmetry is in both docstrings and in the user guide.
+
+**Depth note.** `Repository::config_snapshot` is the shallow read. The write goes one level down,
+to `gix::config::File::set_raw_value_filter_by`, because gix's typed `SnapshotMut::set_value`
+accepts only the statically-known keys in gix's own config tree and this verb takes any key. The
+filter is the same metadata test jj-lib's own `save_git_config` applies, so a new section is
+created in the local file and a global section is never edited. Persisting is jj-lib's
+`git::save_git_config` — no hand-rolled file write.
+
+**Two API details that cost time.** The resolved gix-config is **0.58.0**, not the 0.59.0 also
+present in the local registry; its `set_raw_value_filter_by` takes `subsection_name: Option<&BStr>`
+directly, not `impl AsBStrOpt`. And the value name must be passed **by value** as a `String`:
+`ValueName: TryFrom<String>` yields an owned `'static` name, which is what a `File<'static>`
+requires. Passing `&str` fails to compile with a `'static` borrow error pointing at the wrong line.
+
+**Tests.** `tests/test_git_config.py` against the `git` binary: `git config --local --get` for
+the write path, `git config --get` for the effective read. Covered: set-then-get; reading a value
+`git` wrote; `None` for an unset key; two- and three-part keys, including a dotted subsection;
+overwrite produces one value, not a multivar; unset removes it; unset of an absent key is a no-op;
+the writes publish no operation; a section-less key raises; and an existing local key survives a
+write (the file is not truncated).
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/<UTC>-d3-gate/`.

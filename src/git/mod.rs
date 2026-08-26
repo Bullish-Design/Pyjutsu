@@ -10,4 +10,5 @@
 //! with its own test; today that is exactly `apply_head_ref_packed`
 //! (`src/workspace.rs`).
 
+pub(crate) mod config;
 pub(crate) mod tags;

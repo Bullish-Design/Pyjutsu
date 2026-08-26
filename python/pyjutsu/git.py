@@ -77,6 +77,39 @@ class GitView:
         """
         return [Remote.model_validate(row) for row in self._handle.remotes()]
 
+    def config_get(self, key: str) -> str | None:
+        """The **effective** value of the git configuration ``key``, or ``None`` if nothing sets it.
+
+        ``key`` is ``"section.key"`` or ``"section.subsection.key"`` (the subsection may itself
+        contain dots, as in ``"remote.my.remote.url"``). The read is *effective*: it sees the
+        merged configuration git itself would use — system, then global, then repository-local.
+        That is the answer to "what is ``core.hooksPath`` in this repo". A key with no section
+        raises :class:`~pyjutsu.errors.PyjutsuError`.
+
+        Note the asymmetry with :meth:`config_set` and :meth:`config_unset`, which write the
+        **repository-local** file only.
+        """
+        return self._handle.git_config_get(key)
+
+    def config_set(self, key: str, value: str) -> None:
+        """Set the git configuration ``key`` to ``value`` in the **repository-local** file.
+
+        Never writes the user's global configuration. Publishes no jj operation — this is git
+        state, not jj state. A key with no section raises
+        :class:`~pyjutsu.errors.PyjutsuError`; a git-side failure raises
+        :class:`~pyjutsu.errors.GitError`.
+        """
+        self._handle.git_config_set(key, value)
+
+    def config_unset(self, key: str) -> None:
+        """Remove the git configuration ``key`` from the **repository-local** file.
+
+        A key that is not set locally is left alone rather than raising: "already absent" is
+        what the caller asked for. A value inherited from the global or system configuration is
+        untouched, so :meth:`config_get` may still return it afterwards.
+        """
+        self._handle.git_config_unset(key)
+
     def create_tag(
         self,
         name: str,

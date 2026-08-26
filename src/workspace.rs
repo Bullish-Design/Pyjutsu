@@ -1847,6 +1847,25 @@ impl PyWorkspace {
         crate::git::tags::read_tags(self, py)
     }
 
+    /// The **effective** value of a git configuration `key` (`section.key` or
+    /// `section.subsection.key`), or `None` if nothing sets it. Reads the merged configuration git
+    /// itself would use — system, global, then repository-local. A key with no section is an error.
+    fn git_config_get(&self, py: Python<'_>, key: &str) -> PyResult<Option<String>> {
+        crate::git::config::get(self, py, key)
+    }
+
+    /// Set a git configuration `key` to `value` in the **repository-local** configuration file
+    /// only, never the user's global one. Publishes no jj operation.
+    fn git_config_set(&self, py: Python<'_>, key: &str, value: &str) -> PyResult<()> {
+        crate::git::config::set(self, py, key, value)
+    }
+
+    /// Remove a git configuration `key` from the **repository-local** configuration file. A key
+    /// that is not set locally is left alone (no error). Publishes no jj operation.
+    fn git_config_unset(&self, py: Python<'_>, key: &str) -> PyResult<()> {
+        crate::git::config::unset(self, py, key)
+    }
+
     /// The name of `remote`'s default branch (what `git remote show` reports as `HEAD`), or `None`
     /// if the remote advertises none. Used by the pure-Python `git_clone` to place the new `@` on
     /// the cloned default branch. Spawns a `git remote show` subprocess (off the GIL) inside a

@@ -468,6 +468,10 @@ ws.git.refs()                                 # read colocated git refs (on-disk
 ws.git.write_ref(name, oid); ws.git.delete_ref(name)   # reconcile-only ref repair
 ws.git.remotes()                              # remote name + fetch url rows
 
+ws.git.config_get("core.hooksPath")           # effective git config value (or None)
+ws.git.config_set("core.hooksPath", ".hooks") # write the repository-local config
+ws.git.config_unset("core.hooksPath")         # remove it from the repository-local config
+
 ws.create_tag("v1.0", "@")                    # lightweight tag through jj-lib
 ws.push_tag("v1.0", "origin")                 # push lightweight or annotated tag
 ```
@@ -484,6 +488,12 @@ ws.push_tag("v1.0", "origin")                 # push lightweight or annotated ta
   reconcile-only repair escape hatch, `remotes()` lists remote name + fetch url. The pre-D1 names
   `ws.git_refs`, `ws.write_git_ref`, `ws.delete_git_ref`, `ws.remotes` keep working as deprecating
   aliases.
+- **Git configuration:** `ws.git.config_get(key)` returns the **effective** value — the merged
+  system, global, and repository-local configuration git itself would use, so it answers "what is
+  `core.hooksPath` here". `ws.git.config_set` and `ws.git.config_unset` write the
+  **repository-local** file only, never your global one; that asymmetry is deliberate. `key` is
+  `"section.key"` or `"section.subsection.key"` (the subsection may itself contain dots).
+  Unsetting an absent key is a no-op, and neither write publishes a jj operation.
 - **Tags:** `create_tag(name, target)` now creates a lightweight tag by default. Pass a positional
   or keyword `message` to retain annotated Git tag creation; that form emits a
   `DeprecationWarning` and delegates to `ws.git.create_tag(name, target, message)`, which now
