@@ -464,3 +464,37 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 ```
 
 Evidence is in `artifacts/<UTC>-d8-gate/`.
+
+### 2026-08-26 — D9 git index read
+
+Lane `004/d9` reads the colocated repository's git index. **Read-only**, as the plan requires:
+writing the index behind jj's back is a trap, because jj-lib's `reset_head` owns index updates and
+a hand-written index is silently overwritten by the next colocated sync.
+
+**Feature declared.** `index` joins `attributes`, `sha1`, and `sha256` on Pyjutsu's own gix edge.
+It gates `gix::Repository::try_index`, which this lane calls. jj-lib already enables it, so the
+build cost is zero. `cargo tree -i gix` still shows exactly one version.
+
+**Rust.** New `src/git/index.rs`, plus a flat `git_index_entries` native method. Rows are
+`{path, oid, stage, mode}` in the index's own order — by path, then stage, which is the order
+`git ls-files --stage` prints. `mode` is the raw octal mode as an integer (`0o100644`,
+`0o100755`, `0o120000`, `0o160000`); `stage` is `stage_raw()`, so a git merge conflict shows its
+1/2/3 sides rather than collapsing them. An absent index file yields an empty list, not an error.
+
+**Tests.** `tests/test_git_index.py` against `git ls-files --stage`: every field of every entry
+compared as a tuple list; the file/executable/symlink modes; git's entry order; a real `git merge`
+conflict producing stages 1, 2, and 3 for one path; and no operation published.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+cargo tree -i gix                         one version (0.85.0)
+```
+
+Evidence is in `artifacts/<UTC>-d9-gate/`.

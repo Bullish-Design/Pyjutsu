@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from .models import (
     GitHead,
+    GitIndexEntry,
     GitSubmodule,
     GitTag,
     GitWorktree,
@@ -203,6 +204,16 @@ class GitView:
         :class:`~pyjutsu.errors.PyjutsuError`.
         """
         return [ReflogEntry.model_validate(row) for row in self._handle.git_reflog(ref, limit)]
+
+    def index_entries(self) -> list[GitIndexEntry]:
+        """The on-disk git index → its :class:`~pyjutsu.GitIndexEntry` rows, in
+        ``git ls-files --stage`` order (by path, then stage).
+
+        **Read-only.** Writing the index behind jj's back is a trap: jj-lib's ``reset_head`` owns
+        index updates, and a hand-written index is silently overwritten by the next colocated
+        sync. A repository with nothing staged has no index file yet and yields an empty list.
+        """
+        return [GitIndexEntry.model_validate(row) for row in self._handle.git_index_entries()]
 
     def create_tag(
         self,

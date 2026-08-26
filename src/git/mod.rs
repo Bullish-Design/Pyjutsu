@@ -12,6 +12,7 @@
 
 pub(crate) mod config;
 pub(crate) mod head;
+pub(crate) mod index;
 pub(crate) mod objects;
 pub(crate) mod reflog;
 pub(crate) mod submodules;

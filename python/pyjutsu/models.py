@@ -184,6 +184,22 @@ class ReflogEntry(BaseModel):
     message: str
 
 
+class GitIndexEntry(BaseModel):
+    """One entry of the on-disk git index (:meth:`pyjutsu.GitView.index_entries`).
+
+    ``stage`` is 0 for an unconflicted path, and 1/2/3 for the base/ours/theirs sides of a git
+    merge conflict. ``mode`` is the raw octal file mode as an integer — ``0o100644`` for a
+    regular file, ``0o100755`` executable, ``0o120000`` a symlink, ``0o160000`` a submodule.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str
+    oid: CommitId
+    stage: int
+    mode: int
+
+
 class FileStat(BaseModel):
     """Per-file line counts within a :class:`DiffStat`."""
 

@@ -72,6 +72,12 @@
     "name",
     "oid"
   ],
+  "GitIndexEntry": [
+    "mode",
+    "oid",
+    "path",
+    "stage"
+  ],
   "GitSubmodule": [
     "active",
     "head_oid",

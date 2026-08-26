@@ -481,6 +481,7 @@ ws.git.exists(oid)                            # is this object in the git object
 ws.git.read_blob(oid)                         # raw blob bytes
 ws.git.submodules()                           # list[GitSubmodule] (read-only)
 ws.git.reflog("HEAD", limit=20)               # list[ReflogEntry], newest first
+ws.git.index_entries()                        # list[GitIndexEntry] (read-only)
 
 ws.create_tag("v1.0", "@")                    # lightweight tag through jj-lib
 ws.push_tag("v1.0", "origin")                 # push lightweight or annotated tag
@@ -534,6 +535,11 @@ ws.push_tag("v1.0", "origin")                 # push lightweight or annotated ta
   covers what jj did; it does **not** cover a `git reset` or `git checkout` run outside jj, which
   is exactly when a colocated recovery tool is needed. A bare `ref` means `refs/heads/<name>`. A
   ref with no reflog yields an empty list; an unknown ref raises.
+- **Index (read-only):** `ws.git.index_entries()` returns `GitIndexEntry` rows — `path`, `oid`,
+  `stage`, `mode` — in `git ls-files --stage` order. `stage` is 0 normally and 1/2/3 for the
+  base/ours/theirs sides of a git merge conflict; `mode` is the raw octal mode as an integer.
+  Pyjutsu never **writes** the index: jj-lib's `reset_head` owns index updates, and a
+  hand-written index is silently overwritten by the next colocated sync.
 - **Tags:** `create_tag(name, target)` now creates a lightweight tag by default. Pass a positional
   or keyword `message` to retain annotated Git tag creation; that form emits a
   `DeprecationWarning` and delegates to `ws.git.create_tag(name, target, message)`, which now
