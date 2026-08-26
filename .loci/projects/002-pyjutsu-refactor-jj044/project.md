@@ -392,3 +392,33 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 Evidence is in `artifacts/20260826T174658Z-a2-focused/`,
 `artifacts/20260826T174754Z-a2-gate-recovery/`, and
 `artifacts/20260826T175012Z-a2-gate/`.
+
+### 2026-08-26 — A3 lightweight tags
+
+Lane `jj044-refactor/lightweight-tags` changes `Workspace.create_tag` to
+create a lightweight jj tag when `message` is `None`. It uses
+`set_local_tag_target` and `git::export_refs`, then publishes one operation.
+An existing tag raises `GitError` unless `force=True`.
+
+The annotated gix path remains available when callers pass a message. That
+form emits `DeprecationWarning` and names `ws.git.create_tag`. Positional
+message callers remain compatible.
+
+The tests now separate the jj and Git paths. The jj oracle is `jj tag list`
+plus Git object type `commit`. The annotated oracle keeps every prior object,
+message, tagger, force, push, and idempotence assertion. A fetched annotated
+tag also survives a local export without an object-ID change.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/20260826T175754Z-a3-focused/` and
+`artifacts/20260826T180027Z-a3-gate/`.

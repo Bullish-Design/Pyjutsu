@@ -115,7 +115,8 @@ def test_repository_alias_reaches_every_revset_entry_point(
     with ws.transaction("configured alias", auto_snapshot=False) as tx:
         changed = tx.describe("chosen()", "configured alias works")
     assert changed.change_id == expected
-    assert ws.create_tag("configured-alias", "chosen()", "alias target") is not None
+    with pytest.warns(DeprecationWarning, match=r"ws\.git\.create_tag"):
+        assert ws.create_tag("configured-alias", "chosen()", "alias target") is not None
 
     child = ws.add_workspace(tmp_path / "child", name="child", revisions="chosen()")
     assert pyjutsu.Workspace.load(child.path).resolve("chosen()").change_id == expected

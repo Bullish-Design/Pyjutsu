@@ -1,4 +1,4 @@
-//! Annotated Git tag creation and push helpers.
+//! Lightweight jj tag and annotated Git tag helpers.
 //!
 //! jj-lib gap (checked 0.42.0 and 0.44.0): jj-lib cannot **create** an annotated tag.
 //! It only copies an existing annotated tag ref during export (`git.rs:1410`), and
@@ -14,6 +14,7 @@ use jj_lib::git::{
 };
 use jj_lib::merge::Diff;
 use jj_lib::object_id::ObjectId;
+use jj_lib::op_store::RefTarget;
 use jj_lib::ref_name::{RefName, RefNameBuf, RemoteName};
 use jj_lib::repo::{ReadonlyRepo, Repo};
 use jj_lib::workspace::Workspace;
@@ -24,6 +25,93 @@ use super::{NullGitCallback, PyWorkspace};
 use crate::errors::{RevsetError, map_backend_err, map_git_err};
 
 pub(super) fn create_tag<'py>(
+    workspace: &PyWorkspace,
+    py: Python<'py>,
+    name: &str,
+    target: &str,
+    message: Option<&str>,
+    force: bool,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    match message {
+        Some(message) => create_annotated_tag(workspace, py, name, target, message, force),
+        None => create_lightweight_tag(workspace, py, name, target, force),
+    }
+}
+
+fn create_lightweight_tag<'py>(
+    workspace: &PyWorkspace,
+    py: Python<'py>,
+    name: &str,
+    target: &str,
+    force: bool,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let mut guard = workspace.locked()?;
+    let ws: &mut Workspace = &mut guard;
+    let ws_name = ws.workspace_name().to_owned();
+    let ws_root = ws.workspace_root().to_owned();
+    let revset_config = workspace.revset_config.clone();
+    let repo = {
+        let loader = ws.repo_loader();
+        py.allow_threads(|| pollster::block_on(loader.load_at_head()))
+            .map_err(map_backend_err)?
+    };
+
+    let name_owned = name.to_owned();
+    let target_owned = target.to_owned();
+    let new_repo = py.allow_threads(|| -> PyResult<Option<Arc<ReadonlyRepo>>> {
+        let commits = crate::revset::evaluate(
+            repo.as_ref(),
+            &target_owned,
+            &ws_name,
+            &ws_root,
+            &revset_config,
+        )?;
+        if commits.len() != 1 {
+            return Err(RevsetError::new_err(format!(
+                "revset '{target_owned}' resolved to {} revisions, expected exactly 1",
+                commits.len()
+            )));
+        }
+
+        let tag_name: &RefName = name_owned.as_str().as_ref();
+        if !force && !repo.view().get_local_tag(tag_name).is_absent() {
+            return Err(map_git_err(format!(
+                "tag '{name_owned}' already exists; pass force=True to replace it"
+            )));
+        }
+
+        let mut tx = repo.start_transaction();
+        tx.repo_mut()
+            .set_local_tag_target(tag_name, RefTarget::normal(commits[0].id().clone()));
+        let stats = git::export_refs(tx.repo_mut()).map_err(map_git_err)?;
+        if !stats.failed_tags.is_empty() {
+            let names = stats
+                .failed_tags
+                .iter()
+                .map(|(symbol, _reason)| symbol.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(map_git_err(format!("failed to export tag: {names}")));
+        }
+        pollster::block_on(tx.repo_mut().rebase_descendants()).map_err(map_backend_err)?;
+        if !tx.repo_mut().has_changes() {
+            return Ok(None);
+        }
+        Ok(Some(
+            pollster::block_on(tx.commit(format!("create tag {name_owned}")))
+                .map_err(map_backend_err)?,
+        ))
+    })?;
+
+    let Some(new_repo) = new_repo else {
+        return Ok(None);
+    };
+    Ok(Some(
+        workspace.finish_op(py, ws, &ws_name, &repo, &new_repo)?,
+    ))
+}
+
+fn create_annotated_tag<'py>(
     workspace: &PyWorkspace,
     py: Python<'py>,
     name: &str,

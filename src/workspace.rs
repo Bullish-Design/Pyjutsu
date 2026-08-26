@@ -1805,22 +1805,18 @@ impl PyWorkspace {
         Ok(Some(self.finish_op(py, ws, &name, &repo, &new_repo)?))
     }
 
-    /// Create an **annotated** git tag `name` at the single commit named by `target`, carrying
-    /// `message`, then import it into jj's view (publishing one operation — or `None` if the tag
-    /// already pointed there). jj-lib is read-only on tags, so the tag *object* is written directly
-    /// to the colocated `.git` via `gix` — tagger = this workspace's `user.name`/`user.email` at the
-    /// current time — the `refs/tags/<name>` ref is created, and `jj git import` brings it into the
-    /// jj view so a later [`push_tag`](Self::push_tag) can copy the annotated object to a remote.
-    /// With `force=false` a pre-existing tag of the same name is a `GitError`; `force=true`
-    /// overwrites it. Requires a colocated git backend. Raises `RevsetError` unless `target` names
-    /// exactly one commit.
-    #[pyo3(signature = (name, target, message, force=false))]
+    /// Create tag `name` at the single commit named by `target`. Without `message`, jj-lib writes a
+    /// lightweight tag and exports it to Git. With `message`, the retained gix path writes an
+    /// annotated Git tag. Both paths publish one operation. With `force=false`, an existing tag is
+    /// a `GitError`; `force=true` replaces it. Raises `RevsetError` unless `target` names exactly one
+    /// commit.
+    #[pyo3(signature = (name, target, message=None, force=false))]
     fn create_tag<'py>(
         &self,
         py: Python<'py>,
         name: &str,
         target: &str,
-        message: &str,
+        message: Option<&str>,
         force: bool,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
         tags::create_tag(self, py, name, target, message, force)

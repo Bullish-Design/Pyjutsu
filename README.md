@@ -62,8 +62,14 @@ with ws.transaction("describe @") as tx:
 
 ws.git_fetch("origin")           # fetch + import remote-tracking refs
 ws.git_push("origin", "main", allow_new=True)
+ws.create_tag("v1.0", "@")       # lightweight jj tag (the default)
+ws.push_tag("v1.0", "origin")
 ws.undo()                        # revert the head operation
 ```
+
+Pass `message="..."` to retain the annotated Git tag path. That form emits a
+`DeprecationWarning` and will move to `ws.git.create_tag` in a later release.
+Existing positional message arguments continue to work.
 
 ## Secondary workspaces
 

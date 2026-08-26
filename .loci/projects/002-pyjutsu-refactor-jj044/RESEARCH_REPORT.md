@@ -65,3 +65,34 @@ The green rerun is in `artifacts/20260826T175012Z-a2-gate/`.
 
 This evidence proves that the pinned CLI accepts every required literal class.
 It does not prove behavior against jj-lib 0.44.0 until B1 moves the pin.
+
+## 2026-08-26 — A3 lightweight tags
+
+jj-lib 0.42.0 exposes `MutableRepo::set_local_tag_target` in `repo.rs:1817`.
+It exposes `git::export_refs` in `git.rs:1231`. The export API writes new and
+updated tags as lightweight Git refs.
+
+The jj path resolves one commit, refuses an existing local tag unless
+`force=True`, sets the local target, exports refs, rebases descendants, and
+commits one operation. The refusal restores the old gix
+`PreviousValue::MustNotExist` contract explicitly.
+
+The default call now creates a lightweight tag. The pinned jj CLI lists it,
+and Git reports object type `commit`. A lightweight tag also reaches a bare
+remote through the unchanged `push_tag` path.
+
+The message form still writes an annotated object. It emits a
+`DeprecationWarning` that names `ws.git.create_tag`. Existing positional
+message callers continue to work. Git still reports object type `tag`, the
+message body, and the tagger line.
+
+A fetched annotated tag keeps its object ID, type, and message across a local
+lightweight-tag export. This confirms that the jj path does not degrade an
+incoming annotated tag.
+
+The first compile attempt found only Rustfmt drift. The second found that
+jj-lib 0.42 exports `RefTarget` from `op_store`, not a `ref_target` module.
+The minimal import correction compiled without other API changes.
+
+Focused evidence is in `artifacts/20260826T175754Z-a3-focused/`.
+The green gate is in `artifacts/20260826T180027Z-a3-gate/`.

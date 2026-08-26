@@ -312,34 +312,40 @@ class Workspace:
         self,
         name: str,
         target: str | Revset,
-        message: str,
+        message: str | None = None,
         *,
         force: bool = False,
     ) -> Operation | None:
-        """Create an **annotated** git tag ``name`` at the single commit named by ``target``,
-        carrying ``message`` → the published :class:`Operation` (or ``None`` if the tag already
-        pointed there).
+        """Create tag ``name`` at the single commit named by ``target``.
 
-        jj-lib is read-only on tags, so pyjutsu writes the annotated tag *object* straight to the
-        colocated ``.git`` (tagger = this workspace's ``user.name``/``user.email`` at the current
-        time), creates ``refs/tags/<name>``, and imports it into the jj view so a later
-        :meth:`push_tag` copies the annotated object to a remote. ``force=False`` (the default)
-        refuses to overwrite an existing tag of the same name; ``force=True`` overwrites it.
+        The default ``message=None`` creates a lightweight tag through jj-lib. A string ``message``
+        keeps the annotated Git path available and emits :class:`DeprecationWarning`; use
+        ``ws.git.create_tag`` when that namespace becomes available. Existing positional message
+        arguments continue to work.
+
+        ``force=False`` refuses to overwrite an existing tag. ``force=True`` replaces it.
 
         Requires a colocated git backend. Raises :class:`~pyjutsu.errors.RevsetError` unless
         ``target`` names exactly one revision, or :class:`~pyjutsu.errors.GitError` on a git-side
         failure (including a name clash when ``force=False``).
         """
+        if message is not None:
+            warnings.warn(
+                "Workspace.create_tag(..., message=...) is deprecated; "
+                "use ws.git.create_tag(...) when available",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         row = self._handle.create_tag(name, _revset_str(target), message, force)
         return Operation.model_validate(row) if row is not None else None
 
     def push_tag(self, name: str, remote: str) -> Operation | None:
-        """Push the annotated tag ``name`` to git ``remote`` → the published :class:`Operation`, or
-        ``None`` if the remote already has the tag at that target.
+        """Push tag ``name`` to git ``remote`` → the published :class:`Operation`, or ``None`` if
+        the remote already has the tag at that target.
 
-        Copies the annotated tag *object* written by :meth:`create_tag` (not just the pointed-at
-        commit). Raises :class:`~pyjutsu.errors.GitError` if there is no local tag ``name``, the
-        push is rejected, or the remote/tag is conflicted.
+        An annotated tag retains its tag object. A lightweight tag points at the commit. Raises
+        :class:`~pyjutsu.errors.GitError` if there is no local tag ``name``, the push is rejected,
+        or the remote/tag is conflicted.
         """
         row = self._handle.push_tag(name, remote)
         return Operation.model_validate(row) if row is not None else None

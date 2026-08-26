@@ -124,6 +124,7 @@ repo_then = ws.at_operation(op_id)                 # read a historical state
 ws.git_fetch(remote="origin")
 ws.git_push(bookmark="feature", remote="origin", allow_new=True)
 ws.git_export(); ws.git_import()                   # colocated sync
+ws.create_tag("v1.0", "@")                        # lightweight jj tag
 ```
 
 ### Surface (v1)
@@ -145,7 +146,8 @@ ws.git_export(); ws.git_import()                   # colocated sync
 - **Operations:** `undo`, `restore_operation`, `at_operation`, `head_operation`, `operations`.
 - **Git:** `git_fetch`, `git_push` (force-with-lease by contract), `git_import`, `git_export`,
   `sync_colocated`, and remotes CRUD (`remotes`/`add_remote`/`remove_remote`/`rename_remote`/
-  `set_remote_url`).
+  `set_remote_url`). `create_tag(name, target)` writes a lightweight jj tag. The retained
+  `message` form writes an annotated Git tag and warns about its future `ws.git.create_tag` home.
 - **Escape hatch:** `run_jj` runs the external `jj` binary against the workspace (raw
   stdout/stderr/exit, no model parsing) for anything not yet bound.
 

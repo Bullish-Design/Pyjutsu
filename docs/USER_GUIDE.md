@@ -329,6 +329,9 @@ ws.git_push("origin", tracked=True)           # push only bookmarks tracking thi
 
 ws.git_import(); ws.git_export()              # colocated <-> jj sync
 ws.sync_colocated()                           # repair colocated git HEAD + index after mutations
+
+ws.create_tag("v1.0", "@")                    # lightweight tag through jj-lib
+ws.push_tag("v1.0", "origin")                 # push lightweight or annotated tag
 ```
 
 - **`git_push` is force-with-lease by contract.** A non-fast-forward bookmark move succeeds only
@@ -337,6 +340,9 @@ ws.sync_colocated()                           # repair colocated git HEAD + inde
   (`exact:`/`glob:`/`substring:`/`regex:` + `-i`), and a leading `~` to negate.
 - **Remotes CRUD:** `ws.remotes()`, `ws.add_remote(name, url)`, `ws.remove_remote(name)`,
   `ws.rename_remote(old, new)`, `ws.set_remote_url(name, url)`.
+- **Tags:** `create_tag(name, target)` now creates a lightweight tag by default. Pass a positional
+  or keyword `message` to retain annotated Git tag creation. The annotated form emits a
+  `DeprecationWarning` and names its future location, `ws.git.create_tag`.
 
 Each `git_*`/mutation method returns the published `Operation`, or `None` when nothing changed.
 
