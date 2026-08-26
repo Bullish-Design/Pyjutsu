@@ -341,8 +341,7 @@ class Workspace:
 
         The default ``message=None`` creates a lightweight tag through jj-lib. A string ``message``
         keeps the annotated Git path available and emits :class:`DeprecationWarning`; use
-        ``ws.git.create_tag`` when that namespace becomes available. Existing positional message
-        arguments continue to work.
+        ``ws.git.create_tag``. Existing positional message arguments continue to work.
 
         ``force=False`` refuses to overwrite an existing tag. ``force=True`` replaces it.
 
@@ -353,11 +352,12 @@ class Workspace:
         if message is not None:
             warnings.warn(
                 "Workspace.create_tag(..., message=...) is deprecated; "
-                "use ws.git.create_tag(...) when available",
+                "use ws.git.create_tag(...)",
                 DeprecationWarning,
                 stacklevel=2,
             )
-        row = self._handle.create_tag(name, _revset_str(target), message, force)
+            return self.git.create_tag(name, _revset_str(target), message, force=force)
+        row = self._handle.create_tag(name, _revset_str(target), None, force)
         return Operation.model_validate(row) if row is not None else None
 
     def push_tag(self, name: str, remote: str) -> Operation | None:

@@ -236,6 +236,45 @@ class Remote(BaseModel):
     url: str | None
 
 
+class GitTag(BaseModel):
+    """A tag read from the on-disk git refs (``ws.git.tag`` / ``ws.git.tags``).
+
+    ``annotated`` is true when the ref points at a git tag object; then ``message``,
+    ``tagger``, and ``date`` are populated. A lightweight tag (ref → commit) has
+    ``annotated`` false and those fields null. ``target`` is the commit the tag points
+    at (fully peeled).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    #: The commit the tag points at (fully peeled; a commit oid).
+    target: CommitId
+    #: True if the tag is an annotated git tag object (has a message/tagger).
+    annotated: bool
+    #: The tag message; ``None`` for a lightweight tag.
+    message: str | None
+    #: The tagger signature; ``None`` for a lightweight tag.
+    tagger: Signature | None
+    #: The tagger's timestamp (tz-aware); ``None`` for a lightweight tag.
+    date: datetime | None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _build_tagger(cls, data: object) -> object:
+        # The native layer's raw `{name, email, timestamp_ms, tz_offset_minutes}` dict becomes a
+        # `Signature`; the tagger's timestamp is also surfaced as `date`.
+        if isinstance(data, dict) and "tagger" in data:
+            data = dict(data)
+            tagger = data["tagger"]
+            if tagger is None:
+                data["date"] = None
+            else:
+                data["date"] = Signature.model_validate(tagger).timestamp
+                data["tagger"] = Signature.model_validate(tagger)
+        return data
+
+
 class JjResult(BaseModel):
     """The captured result of a ``jj`` subprocess run by :meth:`pyjutsu.Workspace.run_jj`.
 

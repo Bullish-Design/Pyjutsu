@@ -381,8 +381,11 @@ ws.push_tag("v1.0", "origin")                 # push lightweight or annotated ta
   `ws.git_refs`, `ws.write_git_ref`, `ws.delete_git_ref`, `ws.remotes` keep working as deprecating
   aliases.
 - **Tags:** `create_tag(name, target)` now creates a lightweight tag by default. Pass a positional
-  or keyword `message` to retain annotated Git tag creation. The annotated form emits a
-  `DeprecationWarning` and names its future location, `ws.git.create_tag`.
+  or keyword `message` to retain annotated Git tag creation; that form emits a
+  `DeprecationWarning` and delegates to `ws.git.create_tag(name, target, message)`, which now
+  exists. `ws.git.tag(name)` reads one tag back (annotated or lightweight), `ws.git.tags()` lists
+  all tags: each row is a `GitTag` with `name`, `target` (the peeled commit), `annotated`,
+  `message`, `tagger`, and `date`.
 
 Each `git_*`/mutation method returns the published `Operation`, or `None` when nothing changed.
 

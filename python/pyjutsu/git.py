@@ -18,7 +18,7 @@ does not own; callers reconcile it into jj's view with
 
 from __future__ import annotations
 
-from .models import Remote
+from .models import GitTag, Operation, Remote
 
 __all__ = ["GitView"]
 
@@ -76,3 +76,46 @@ class GitView:
         configured). Read-only; matches ``jj git remote list``.
         """
         return [Remote.model_validate(row) for row in self._handle.remotes()]
+
+    def create_tag(
+        self,
+        name: str,
+        target: str,
+        message: str,
+        *,
+        force: bool = False,
+    ) -> Operation | None:
+        """Create an **annotated** git tag ``name`` at the single commit named by ``target``.
+
+        Writes a git tag object plus the ``refs/tags/<name>`` ref directly in the
+        colocated ``.git``, then imports the new ref into jj's view, publishing one
+        operation. ``force=False`` refuses to overwrite an existing tag;
+        ``force=True`` replaces it. ``target`` must name exactly one revision
+        (:class:`~pyjutsu.errors.RevsetError` otherwise); a git-side failure raises
+        :class:`~pyjutsu.errors.GitError`.
+
+        This is the annotated path of the old ``Workspace.create_tag(...,
+        message=...)``. For a lightweight jj tag use
+        :meth:`~pyjutsu.Workspace.create_tag` without a message.
+        """
+        row = self._handle.create_tag(name, target, message, force)
+        return Operation.model_validate(row) if row is not None else None
+
+    def tag(self, name: str) -> GitTag | None:
+        """Read one tag by name from the on-disk git refs → its :class:`~pyjutsu.GitTag`, or
+        ``None`` if no such ref exists.
+
+        Reads ``refs/tags/<name>`` directly; the tag need not be imported into jj's
+        view. ``annotated`` distinguishes a git tag object (message/tagger/date
+        populated) from a lightweight tag (all null).
+        """
+        row = self._handle.git_tag(name)
+        return GitTag.model_validate(row) if row is not None else None
+
+    def tags(self) -> list[GitTag]:
+        """Every tag in the on-disk git refs → its :class:`~pyjutsu.GitTag` rows, sorted by name.
+
+        Read-only; equivalent to ``git for-each-ref refs/tags``. Requires a colocated
+        git backend.
+        """
+        return [GitTag.model_validate(row) for row in self._handle.git_tags()]

@@ -301,3 +301,167 @@ pub(crate) fn push_tag<'py>(
         workspace.finish_op(py, ws, &ws_name, &repo, &new_repo)?,
     ))
 }
+
+/// One tag row read from the on-disk git refs, for `ws.git.tag(name)` /
+/// `ws.git.tags()`. Plain data: no `gix` type crosses the FFI.
+pub(crate) struct GitTagData {
+    name: String,
+    /// The commit the tag points at (fully peeled). For an annotated tag this
+    /// is the tag object's target commit; for a lightweight tag the direct
+    /// target.
+    target: String,
+    annotated: bool,
+    message: Option<String>,
+    tagger_name: Option<String>,
+    tagger_email: Option<String>,
+    tagger_timestamp_ms: Option<i64>,
+    tagger_tz_offset_minutes: Option<i32>,
+}
+
+impl GitTagData {
+    /// Build a row from one `refs/tags/*` reference. The reference's direct
+    /// target decides the kind: a tag object ⇒ annotated (decode message +
+    /// tagger), anything else ⇒ lightweight (no message, no tagger).
+    fn build(git_repo: &gix::Repository, git_ref: &mut gix::Reference<'_>) -> PyResult<Self> {
+        let direct_id = match git_ref.target() {
+            gix::refs::TargetRef::Object(id) => id.to_owned(),
+            _ => {
+                return Err(map_git_err(format!(
+                    "tag ref '{}' is symbolic; expected a direct object target",
+                    git_ref.name()
+                )));
+            }
+        };
+        // Fully-peeled target: the commit (or other object) the tag chain ends at.
+        let target = git_ref
+            .peel_to_id()
+            .map_err(map_git_err)?
+            .detach()
+            .to_hex()
+            .to_string();
+        let full_name = git_ref.name().as_bstr();
+        let name = String::from_utf8_lossy(
+            full_name
+                .strip_prefix(b"refs/tags/")
+                .unwrap_or(full_name.as_ref()),
+        )
+        .into_owned();
+        match git_repo.find_tag(direct_id.to_owned()) {
+            // The direct target is a tag object → annotated tag.
+            Ok(tag) => {
+                let tag_ref = tag.decode().map_err(map_git_err)?;
+                // Git stores the tag message with a trailing newline; surface the clean message.
+                let message = Some(
+                    String::from_utf8_lossy(tag_ref.message)
+                        .trim_end_matches(['\n', '\r'])
+                        .to_owned(),
+                );
+                let mut tagger_name = None;
+                let mut tagger_email = None;
+                let mut tagger_timestamp_ms = None;
+                let mut tagger_tz_offset_minutes = None;
+                if let Some(tagger) = tag.tagger().map_err(map_git_err)? {
+                    let time = tagger.time().map_err(map_git_err)?;
+                    tagger_name = Some(String::from_utf8_lossy(tagger.name).into_owned());
+                    tagger_email = Some(String::from_utf8_lossy(tagger.email).into_owned());
+                    tagger_timestamp_ms = Some(time.seconds * 1000);
+                    tagger_tz_offset_minutes = Some(time.offset / 60);
+                }
+                Ok(Self {
+                    name,
+                    target,
+                    annotated: true,
+                    message,
+                    tagger_name,
+                    tagger_email,
+                    tagger_timestamp_ms,
+                    tagger_tz_offset_minutes,
+                })
+            }
+            // Not a tag object → lightweight tag (the direct target is the commit).
+            Err(_) => Ok(Self {
+                name,
+                target,
+                annotated: false,
+                message: None,
+                tagger_name: None,
+                tagger_email: None,
+                tagger_timestamp_ms: None,
+                tagger_tz_offset_minutes: None,
+            }),
+        }
+    }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        dict.set_item("name", &self.name)?;
+        dict.set_item("target", &self.target)?;
+        dict.set_item("annotated", self.annotated)?;
+        dict.set_item("message", self.message.as_deref())?;
+        if let Some(name) = &self.tagger_name {
+            let tagger = PyDict::new(py);
+            tagger.set_item("name", name)?;
+            tagger.set_item("email", self.tagger_email.as_deref())?;
+            tagger.set_item("timestamp_ms", self.tagger_timestamp_ms)?;
+            tagger.set_item("tz_offset_minutes", self.tagger_tz_offset_minutes)?;
+            dict.set_item("tagger", tagger)?;
+        } else {
+            dict.set_item("tagger", None::<&str>)?;
+        }
+        Ok(dict)
+    }
+}
+
+/// Read one tag by name from the on-disk git refs → its plain row, or `None`
+/// if no such ref exists. Reads `refs/tags/<name>` directly; the tag need not
+/// be imported into jj's view.
+pub(crate) fn read_tag<'py>(
+    workspace: &PyWorkspace,
+    py: Python<'py>,
+    name: &str,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let guard = workspace.locked()?;
+    let loader = PyWorkspace::fresh_loader(&guard)?;
+    let full_name: gix::refs::FullName = format!("refs/tags/{name}")
+        .try_into()
+        .map_err(|e| map_git_err(format!("bad tag name '{name}': {e}")))?;
+    let row = py.allow_threads(move || -> PyResult<Option<GitTagData>> {
+        let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
+        let git_repo = git::get_git_repo(repo.store()).map_err(map_git_err)?;
+        let mut git_ref = match git_repo.find_reference(&full_name) {
+            Ok(git_ref) => git_ref,
+            Err(gix::reference::find::existing::Error::NotFound { .. }) => return Ok(None),
+            Err(err) => return Err(map_git_err(err.to_string())),
+        };
+        Ok(Some(GitTagData::build(&git_repo, &mut git_ref)?))
+    })?;
+    row.as_ref().map(|r| r.to_dict(py)).transpose()
+}
+
+/// List every tag in the on-disk git refs (``refs/tags/*``) → one plain row
+/// each, sorted by tag name. Reads the refs directly, like `git for-each-ref
+/// refs/tags`.
+pub(crate) fn read_tags<'py>(
+    workspace: &PyWorkspace,
+    py: Python<'py>,
+) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    let guard = workspace.locked()?;
+    let loader = PyWorkspace::fresh_loader(&guard)?;
+    let rows = py.allow_threads(|| -> PyResult<Vec<GitTagData>> {
+        let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
+        let git_repo = git::get_git_repo(repo.store()).map_err(map_git_err)?;
+        let mut out = Vec::new();
+        for git_ref in git_repo
+            .references()
+            .map_err(map_git_err)?
+            .prefixed("refs/tags/")
+            .map_err(map_git_err)?
+        {
+            let mut git_ref = git_ref.map_err(map_git_err)?;
+            out.push(GitTagData::build(&git_repo, &mut git_ref)?);
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    })?;
+    rows.iter().map(|r| r.to_dict(py)).collect()
+}

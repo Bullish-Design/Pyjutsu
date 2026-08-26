@@ -1826,6 +1826,20 @@ impl PyWorkspace {
         crate::git::tags::push_tag(self, py, name, remote)
     }
 
+    /// Read one tag by name from the on-disk git refs (`refs/tags/<name>`) → its plain row, or
+    /// `None` if no such ref exists. Reads the ref directly; the tag need not be imported into jj's
+    /// view. The row is `{name, target, annotated, message, tagger}`; `annotated` is false (and
+    /// `message`/`tagger` null) for a lightweight tag. Requires a colocated git backend.
+    fn git_tag<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Option<Bound<'py, PyDict>>> {
+        crate::git::tags::read_tag(self, py, name)
+    }
+
+    /// List every tag in the on-disk git refs (`refs/tags/*`) → one plain row each, sorted by tag
+    /// name (see [`git_tag`](Self::git_tag) for the row shape). Requires a colocated git backend.
+    fn git_tags<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        crate::git::tags::read_tags(self, py)
+    }
+
     /// The name of `remote`'s default branch (what `git remote show` reports as `HEAD`), or `None`
     /// if the remote advertises none. Used by the pure-Python `git_clone` to place the new `@` on
     /// the cloned default branch. Spawns a `git remote show` subprocess (off the GIL) inside a

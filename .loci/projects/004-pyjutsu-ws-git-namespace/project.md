@@ -135,3 +135,49 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 ```
 
 Evidence is in `artifacts/<UTC>-d1-focused/` and `artifacts/<UTC>-d1-gate/`.
+
+### 2026-08-26 — D2 annotated tags
+
+Lane `004/d2` lands the verb A3's `DeprecationWarning` already names. The
+warning now points at a path that exists, and `Workspace.create_tag(
+message=...)` delegates to it instead of calling the native handle directly.
+
+**Rust.** `src/git/tags.rs` gains the reader: `GitTagData` (plain rows; no
+`gix` type crosses the FFI), `read_tag` (one ref by name, `None` if absent),
+and `read_tags` (all `refs/tags/*`, sorted). A ref whose direct target is a
+git tag object is annotated (message, tagger name/email, and timestamp
+decoded); anything else is lightweight. `target` is always the fully-peeled
+commit. The tag message's trailing newline is stripped. Two flat native
+methods on `PyWorkspace`, `git_tag` and `git_tags`, delegate here — the
+namespace stays pure Python.
+
+**Python.** `GitView.create_tag` (annotated-only, message required), `tag`,
+and `tags`; the `GitTag` Pydantic model (name, target, annotated, message,
+tagger as a `Signature`, date as a tz-aware datetime). `Workspace.create_tag`
+with a message warns and delegates to `self.git.create_tag`; its warning text
+drops "when available". `_pyjutsu.pyi` tracks the two new native methods.
+
+**Tests.** New `tests/test_git_tags.py`: read back a tag created by
+`git tag -a` (message/tagger/date/peeled target), a lightweight tag
+(`annotated is False`, `message is None`), a tag fetched from a bare remote,
+`ws.git.create_tag` writing a real tag object, the duplicate/force rule, and
+the workspace alias delegating with a `DeprecationWarning`. The existing
+`test_tags_annotated.py` and `test_tags.py` suites pass unchanged.
+
+The first full gate stopped on a Ruff import-order finding in the new test
+file (an in-function import block). Imports were moved to the top and the
+whole gate restarted; both the red and green runs are preserved.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/<UTC>-d2-focused/`, `artifacts/<UTC>-d2-gate/` (red
+Ruff run), and `artifacts/<UTC>-d2-gate-green/`.
