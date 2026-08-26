@@ -277,6 +277,21 @@ class Transaction:
         """
         return Commit.model_validate(self._require_open().restore(commit, from_, paths))
 
+    def resolve_conflict(self, path: str, content: str) -> Commit:
+        """Resolve the conflict at ``path`` in ``@`` with ``content`` → the rewritten
+        :class:`Commit` (matches ``jj resolve`` on the working-copy commit).
+
+        jj-lib's ``update_from_content`` parses ``content`` (conflict markers still present are
+        honored, so a partial resolution works) and writes the result into ``@``'s tree, preserving
+        the executable bit and copy id. The change id is preserved; the commit id changes, and the
+        on-disk working copy is checked out to the new ``@`` when the transaction commits. ``content``
+        is UTF-8; non-UTF-8 file content is out of scope for this release. Raises
+        :class:`~pyjutsu.errors.ConflictError` if ``path`` is not a conflicted file at ``@``, or
+        :class:`~pyjutsu.errors.ImmutableCommitError` if ``@`` is immutable. Must be called inside
+        the transaction's ``with`` block.
+        """
+        return Commit.model_validate(self._require_open().resolve_conflict(path, content))
+
     def changed_paths(self, commit: str = "@") -> list[str]:
         """The paths the pending transaction changed for ``commit`` (vs its merged parent tree).
 

@@ -155,6 +155,8 @@ ws.operations(limit=20)           # list[Operation] (the op log, newest first)
 ws.diff_stat("@")                 # DiffStat (per-file + total line counts)
 ws.diff("@")                      # Diff (name-status + content hunks)
 ws.conflicts("@")                 # list[Conflict] (first-class, N-sided)
+view.conflict_content("file.txt")  # the marked text `jj file show` prints (style= diff/snapshot/git)
+view.conflict_sides("file.txt")    # the conflict's sides parsed back, no markers
 ```
 
 ### Reuse a view for several reads of the same state
@@ -183,6 +185,18 @@ loudly rather than pass silently).
 - **`Operation`** — `id`, `parent_ids`, `description`, `hostname`/`username`, `is_snapshot`,
   `tags`, `start_time`/`end_time`.
 - **`Conflict`** — `path`, `num_sides`, `num_bases` (a plain 3-way conflict is 2 sides / 1 base).
+
+### Reading and resolving conflicts
+
+`view.conflict_content(path, rev="@", style="diff")` materializes a file's content the way
+`jj file show` does — a conflicted file carries jj's conflict markers (``"diff"``, ``"snapshot"``,
+or ``"git"`` style), a plain file yields its raw content. `view.conflict_sides(path, rev="@")`
+parses the markers back into the conflict's terms, one string per term in jj's order — a regular
+3-way conflict yields ``[side_a, base, side_b]``. Inside a transaction,
+`tx.resolve_conflict(path, content)` writes `content` into the conflicted path of `@` and returns
+the rewritten `Commit` (conflict markers still present in `content` are honored, so partial
+resolutions work); when the transaction commits, the working copy is checked out to the resolved
+state.
 - **`DiffStat`** / **`FileStat`** — per-file and total insertions/deletions.
 - **`Diff`** / **`FileChange`** / **`Hunk`** / **`HunkLine`** — the structured diff (§6).
 - **`WorkspaceInfo`**, **`Remote`**, **`JjResult`** — workspace, git-remote, and `run_jj` rows.
@@ -220,6 +234,7 @@ op_id = ws.head_operation()      # the single operation this block produced
 | `tx.rebase(commit, onto=..., mode=...)` | Rebase. `mode`: `"source"` (default, `-s`: commit + descendants), `"revision"` (`-r`: only this commit), `"branch"` (`-b`). |
 | `tx.squash(source, into, message=None)` | Move `source`'s changes into `into`; `source` is abandoned. |
 | `tx.restore(commit, from_=..., paths=None)` | Replace a commit's content (or just `paths`) with another commit's. |
+| `tx.resolve_conflict(path, content)` | Resolve the conflict at `path` in `@` with `content` (`jj resolve`). |
 | `tx.split(commit, selection, mode="siblings")` | Split one commit into two by a **hunk-level** selection (§6). Returns `(first, second)`. |
 | `tx.select_tree(commit, selection)` | Lower-level: build the tree id for a hunk selection. |
 | `tx.create_bookmark(name, commit)` | Create a local bookmark (errors if it exists). |

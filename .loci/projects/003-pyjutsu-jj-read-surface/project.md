@@ -86,3 +86,52 @@ The parallel reporter suppresses pytest's summary line; exit code 0 is the
 recorded evidence. Evidence is in
 `artifacts/20260826T..Z-baseline-full/` (project 004's copy; the two projects
 share the gate run).
+
+### 2026-08-26 — C1 conflict content and resolution
+
+Lane `003/c1` binds jj-lib's whole conflict read/resolve path, so callers stop
+shelling out to `jj resolve` / reading the working copy by hand.
+
+**Rust.** New `src/conflicts.rs`. `conflict_content` reads the tree value at
+`path`, materializes it via `conflicts::materialize_tree_value` (with the
+tree's own conflict labels, so the marked text is byte-identical to the CLI's),
+and renders with `materialize_merge_result_to_bytes` in the requested
+`ConflictMarkerStyle`; a plain file yields its raw content. `conflict_sides`
+round-trips through `materialize_merge_result_to_bytes` + `parse_conflict`
+with an explicit marker length, exactly like `update_from_content` does, and
+returns one string per merge term in jj's conflict term order — each add with
+its preceding base, so a regular 3-way conflict is `[side_a, base, side_b]`.
+`resolve_conflict` (in `transaction.rs`) runs `update_from_content` with the
+**unsimplified** file ids (preserving the tree-conflict shape) inside the open
+transaction, rewrites `@`, and returns the new commit. The resolved-value
+branch mirrors jj-lib's own working-copy snapshot: a fully resolved result
+replaces the whole merge with one normal file value (resolved executable bit
+and copy id preserved), a still-conflicted result keeps the merge shape via
+`with_new_file_ids`.
+
+Flat native methods: `PyRepoView::conflict_content` /
+`PyRepoView::conflict_sides` (both in `repo_view.rs`) and
+`PyTransaction::resolve_conflict`. Python: `RepoView.conflict_content(path,
+rev, style)`, `RepoView.conflict_sides(path, rev)`, `Transaction.resolve_conflict(path,
+content)`. `_pyjutsu.pyi` tracks all three.
+
+**Observation that shaped the resolve test.** After a resolve, `jj status`
+still lists the path as modified and `jj resolve --list` exits 2 with "No
+conflicts found at this revision" — and the pinned CLI does exactly the same
+thing after `jj resolve --tool :ours`. The oracle assertions therefore check
+the real contract: the commit has no conflict, `jj file show -r @` holds the
+resolution, and `jj resolve --list` reports no conflicts (as a non-zero exit).
+
+Validation (full gate, then the SHA-256 matrix):
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+PYJUTSU_TEST_OBJECT_HASH=sha256 pytest -q PASS: exit 0
+```
+
+Evidence is in `artifacts/<UTC>-c1-gate/` and `artifacts/<UTC>-c1-sha256/`.

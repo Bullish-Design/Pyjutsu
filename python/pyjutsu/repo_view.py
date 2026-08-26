@@ -9,6 +9,7 @@ and never snapshots the working copy (M1).
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import Literal
 
 from ._pyjutsu import PyRepoView
 from .models import Bookmark, Commit, Conflict, Diff, DiffStat, MergeResult, Operation
@@ -80,6 +81,38 @@ class RepoView:
         return [
             Conflict.model_validate(row) for row in self._handle.conflicts(_revset_str(revset))
         ]
+
+    def conflict_content(
+        self,
+        path: str,
+        rev: str | Revset = "@",
+        style: Literal["diff", "snapshot", "git"] = "diff",
+    ) -> str:
+        """Materialize the file at ``path`` in the single commit named by ``rev`` → its marked text.
+
+        This is the content ``jj file show -r <rev> <path>`` prints: a conflicted file carries
+        jj's conflict markers in the chosen ``style`` (``"diff"`` — the CLI default —,
+        ``"snapshot"``, or ``"git"``), and a plain file yields its raw content. Raises
+        :class:`~pyjutsu.errors.RevsetError` unless ``rev`` names exactly one revision, or
+        :class:`~pyjutsu.errors.ConflictError` for a path that is not a readable file at that
+        revision (absent, a directory, a submodule, …).
+        """
+        if style not in {"diff", "snapshot", "git"}:
+            raise ValueError("style must be 'diff', 'snapshot', or 'git'")
+        return self._handle.conflict_content(path, _revset_str(rev), style)
+
+    def conflict_sides(self, path: str, rev: str | Revset = "@") -> list[str]:
+        """Parse the conflicted file at ``path`` in the single commit named by ``rev`` back into
+        its sides (no markers).
+
+        Returns one string per merge term in jj's conflict term order — each add with its
+        preceding base, starting with the first add — so a regular 3-way conflict yields
+        ``[side_a, base, side_b]`` (matching :attr:`Conflict.num_sides`/:attr:`Conflict.num_bases`).
+        Each side is the full content of that term. Raises
+        :class:`~pyjutsu.errors.RevsetError` unless ``rev`` names exactly one revision, or
+        :class:`~pyjutsu.errors.ConflictError` if ``path`` is not a conflicted file.
+        """
+        return self._handle.conflict_sides(path, _revset_str(rev))
 
     def diff_stat(self, revset: str | Revset, to: str | Revset | None = None) -> DiffStat:
         """The diff stat (per-file + total line counts) of a commit or a range.

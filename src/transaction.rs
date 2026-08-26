@@ -47,8 +47,8 @@ use crate::convert::{BookmarkData, CommitData};
 use crate::diff;
 use crate::diff_stat::read_text;
 use crate::errors::{
-    ImmutableCommitError, PyjutsuError, RevsetError, StaleWorkingCopyError, map_backend_err,
-    map_edit_err,
+    ConflictError, ImmutableCommitError, PyjutsuError, RevsetError, StaleWorkingCopyError,
+    map_backend_err, map_edit_err,
 };
 use crate::revset::{self, RevsetConfig};
 use crate::workspace::PyWorkspace;
@@ -566,6 +566,55 @@ impl PyTransaction {
         let commit = self.resolve_single(&*repo, revset_str)?;
         let data = diff::compute(&*repo, &commit)?;
         Ok(data.files.into_iter().map(|file| file.path).collect())
+    }
+
+    /// Resolve the conflict at `path` in `@` with the caller's `content`, returning the rewritten
+    /// `@` as a plain dict. Matches `jj resolve` on the working-copy commit: jj-lib's
+    /// `update_from_content` parses `content` (conflict markers still present are honored) and
+    /// writes the new file ids into `@`'s tree, preserving the executable-bit/copy-id shape.
+    /// The change id is preserved; the commit id changes, and the working copy is checked out to
+    /// the new `@` when the transaction commits.
+    ///
+    /// `content` is decoded as UTF-8 on the Python side; non-UTF-8 file content is out of scope
+    /// for this first release. Raises `ConflictError` if `path` is not a conflicted file at `@`,
+    /// or `RevsetError`/`ImmutableCommitError` per the usual single-revision/immutability rules.
+    fn resolve_conflict<'py>(
+        &self,
+        py: Python<'py>,
+        path: &str,
+        content: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs); in-memory graph work.
+        let repo = tx.repo_mut();
+        let path_buf = RepoPathBuf::from_relative_path(path)
+            .map_err(|e| PyjutsuError::new_err(format!("invalid path '{path}': {e}")))?;
+        let wc_id = repo
+            .view()
+            .get_wc_commit_id(&self.workspace_name)
+            .cloned()
+            .ok_or_else(|| {
+                ConflictError::new_err("workspace has no working-copy commit to resolve")
+            })?;
+        let wc_commit = repo.store().get_commit(&wc_id).map_err(map_backend_err)?;
+        self.check_rewritable(&*repo, std::slice::from_ref(&wc_commit))?;
+        let tree = wc_commit.tree();
+        let value = pollster::block_on(tree.path_value(&path_buf)).map_err(map_backend_err)?;
+        let new_tree = pollster::block_on(crate::conflicts::resolved_tree(
+            tree,
+            &path_buf,
+            value,
+            content.as_bytes(),
+        ))?;
+        let new_commit =
+            pollster::block_on(repo.rewrite_commit(&wc_commit).set_tree(new_tree).write())
+                .map_err(map_backend_err)?;
+        pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
+        let data = CommitData::build(&*repo, &new_commit)?;
+        data.to_dict(py)
     }
 
     /// Build the **partial tree** for a hunk-level selection of `commit`'s diff and return its

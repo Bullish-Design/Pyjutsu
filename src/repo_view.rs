@@ -37,7 +37,7 @@ use crate::revset::{self, RevsetConfig};
 /// need. Cheap to clone-share (the repo is `Arc`).
 #[pyclass(module = "pyjutsu._pyjutsu")]
 pub(crate) struct PyRepoView {
-    repo: Arc<ReadonlyRepo>,
+    pub(crate) repo: Arc<ReadonlyRepo>,
     workspace_name: WorkspaceNameBuf,
     workspace_root: PathBuf,
     revset_config: Arc<RevsetConfig>,
@@ -62,7 +62,7 @@ impl PyRepoView {
     /// Resolve `revset_str` to **exactly one** commit, or raise `RevsetError`. Shared by the
     /// single-commit reads (`diff`/`diff_stat`, and the two ends of their `*_between` overloads).
     /// Call inside `allow_threads` — it touches the backend.
-    fn resolve_single(&self, revset_str: &str) -> PyResult<Commit> {
+    pub(crate) fn resolve_single(&self, revset_str: &str) -> PyResult<Commit> {
         let commits = revset::evaluate(
             self.repo.as_ref(),
             revset_str,
@@ -254,6 +254,50 @@ impl PyRepoView {
             .map(|d| d.to_dict(py))
             .collect::<PyResult<_>>()?;
         PyList::new(py, dicts)
+    }
+
+    /// Materialize the file at `path` in the single commit named by `revset_str` into marked text
+    /// (the content `jj file show` prints, conflict markers included), in the requested
+    /// `style` (`"diff"`/`"snapshot"`/`"git"`). A plain (non-conflicted) file yields its raw
+    /// content. `RevsetError` unless `revset_str` names exactly one commit; `ConflictError` for a
+    /// path that is not a readable file at that revision.
+    fn conflict_content<'py>(
+        &self,
+        py: Python<'py>,
+        path: &str,
+        revset_str: &str,
+        style: &str,
+    ) -> PyResult<String> {
+        let style = crate::conflicts::style_from_str(style)?;
+        let path_buf = jj_lib::repo_path::RepoPathBuf::from_relative_path(path)
+            .map_err(|e| PyjutsuError::new_err(format!("invalid path '{path}': {e}")))?;
+        py.allow_threads(|| {
+            let commit = self.resolve_single(revset_str)?;
+            let repo = self.repo.as_ref();
+            let store = repo.store();
+            let tree = commit.tree();
+            let value = pollster::block_on(tree.path_value(&path_buf)).map_err(map_backend_err)?;
+            pollster::block_on(crate::conflicts::materialize_to_string(
+                store,
+                &path_buf,
+                value,
+                tree.labels(),
+                style,
+            ))
+        })
+    }
+
+    /// Parse the conflicted file at `path` in the single commit named by `revset_str` back into
+    /// its sides (no markers): one string per merge term, adds first then removes (a regular 3-way
+    /// conflict yields `[side_a, base, side_b]`). `RevsetError` unless `revset_str` names exactly
+    /// one commit; `ConflictError` if the path is not a conflicted file.
+    fn conflict_sides(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        revset_str: &str,
+    ) -> PyResult<Vec<String>> {
+        crate::conflicts::sides(self, py, path, revset_str)
     }
 
     /// Diff stat (per-file + total line counts) of the single commit named by `revset_str`
