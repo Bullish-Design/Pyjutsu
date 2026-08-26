@@ -145,6 +145,32 @@ class GitView:
         """
         return [GitWorktree.model_validate(row) for row in self._handle.git_worktrees()]
 
+    def object_type(self, oid: str) -> str | None:
+        """The git object kind at ``oid`` — ``"commit"``, ``"tree"``, ``"blob"``, or ``"tag"`` —
+        or ``None`` when no such object exists (``git cat-file -t``).
+
+        ``oid`` is a full hex id in the repository's own object format: 40 characters for SHA-1,
+        64 for SHA-256. A malformed or wrong-width id raises
+        :class:`~pyjutsu.errors.PyjutsuError` rather than reporting ``None``, so a typo cannot
+        look like a missing object.
+        """
+        return self._handle.git_object_type(oid)
+
+    def exists(self, oid: str) -> bool:
+        """Whether an object with ``oid`` is in the git object database."""
+        return self._handle.git_object_exists(oid)
+
+    def read_blob(self, oid: str) -> bytes:
+        """The raw bytes of the blob at ``oid`` (``git cat-file -p`` on a blob).
+
+        Deliberately narrow: a missing object, or one that is not a blob, raises
+        :class:`~pyjutsu.errors.PyjutsuError`, so a caller cannot silently read a commit's
+        serialized form. To read a file at a revision, use
+        :meth:`~pyjutsu.RepoView.file_content` — that goes through jj's model and handles
+        conflicts.
+        """
+        return self._handle.git_read_blob(oid)
+
     def create_tag(
         self,
         name: str,

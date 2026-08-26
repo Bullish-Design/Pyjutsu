@@ -12,5 +12,6 @@
 
 pub(crate) mod config;
 pub(crate) mod head;
+pub(crate) mod objects;
 pub(crate) mod tags;
 pub(crate) mod worktrees;

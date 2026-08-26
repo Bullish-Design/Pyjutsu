@@ -328,3 +328,43 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 ```
 
 Evidence is in `artifacts/<UTC>-d5-gate/` and `-d5-gate-final/`.
+
+### 2026-08-26 — D6 object access
+
+Lane `004/d6` reads the git object database underneath jj's store: what kind of object is this
+oid, does it exist, what bytes does this blob hold.
+
+**Rust.** New `src/git/objects.rs` with `object_type`, `exists`, and `read_blob`, plus three flat
+native methods. `try_find_object` and `has_object` are the shallow gix calls; the module is
+read-only.
+
+**Two decisions.**
+
+- *A malformed oid raises; an absent one reports `None`/`False`.* `parse_oid` checks the id
+  against the repository's **own** object format, so a SHA-256 repo takes 64 hex characters and a
+  SHA-1 one does not. A typo must not look like a missing object, which is exactly what a bare
+  "not found" would say.
+- *`read_blob` refuses a non-blob.* Reading a commit's serialized form should be explicit, not
+  something a caller falls into. To read a file at a revision, `RepoView.file_content` is the
+  right verb — it goes through jj's model and handles conflicts.
+
+**Tests.** `tests/test_git_objects.py` against `git cat-file -t` and `git cat-file -p`: type
+agreement across all four object kinds, `None` and `False` for an absent object, blob bytes
+matching `cat-file -p` (including a 256-byte binary payload round trip), the non-blob and absent
+refusals, four malformed ids, and no operation published.
+
+The fixture uses `git tag -a` for the tag object: jj 0.44's `jj tag` is a listing command, and
+`jj tag v1 -m …` exits 2. The oracle for this lane is git anyway.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/<UTC>-d6-gate/`.

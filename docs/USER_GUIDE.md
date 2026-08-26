@@ -476,6 +476,10 @@ ws.git.head()                                 # GitHead: {name, oid, detached}
 ws.git.set_head("main")                       # git symbolic-ref HEAD refs/heads/main
 ws.git.worktrees()                            # list[GitWorktree] (git worktree list)
 
+ws.git.object_type(oid)                       # "commit" | "tree" | "blob" | "tag" | None
+ws.git.exists(oid)                            # is this object in the git object database?
+ws.git.read_blob(oid)                         # raw blob bytes
+
 ws.create_tag("v1.0", "@")                    # lightweight tag through jj-lib
 ws.push_tag("v1.0", "origin")                 # push lightweight or annotated tag
 ```
@@ -509,6 +513,12 @@ ws.push_tag("v1.0", "origin")                 # push lightweight or annotated ta
   comes first, then the linked ones, matching `git worktree list --porcelain`. Read-only: nothing
   here adds, moves, or prunes. jj workspaces and git worktrees are different things sharing a
   directory; this is how you see the git half.
+- **Objects:** `ws.git.object_type(oid)` (`git cat-file -t`), `ws.git.exists(oid)`, and
+  `ws.git.read_blob(oid)` (`git cat-file -p` on a blob) read the git object database directly.
+  `oid` is a full hex id in the repo's own object format — 40 characters for SHA-1, 64 for
+  SHA-256; a malformed id **raises** rather than reporting "absent", so a typo cannot look like a
+  missing object. `read_blob` refuses a non-blob on purpose. To read a file at a revision use
+  `view.file_content(path, rev)` instead: that goes through jj's model and handles conflicts.
 - **Tags:** `create_tag(name, target)` now creates a lightweight tag by default. Pass a positional
   or keyword `message` to retain annotated Git tag creation; that form emits a
   `DeprecationWarning` and delegates to `ws.git.create_tag(name, target, message)`, which now

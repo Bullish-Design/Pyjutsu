@@ -1878,6 +1878,22 @@ impl PyWorkspace {
         crate::git::worktrees::read(self, py)
     }
 
+    /// The git object kind at `oid` (`commit`/`tree`/`blob`/`tag`), or `None` if no such object
+    /// exists. `oid` must be a full hex id in the repository's own object format.
+    fn git_object_type(&self, py: Python<'_>, oid: &str) -> PyResult<Option<String>> {
+        crate::git::objects::object_type(self, py, oid)
+    }
+
+    /// Whether an object with `oid` exists in the git object database.
+    fn git_object_exists(&self, py: Python<'_>, oid: &str) -> PyResult<bool> {
+        crate::git::objects::exists(self, py, oid)
+    }
+
+    /// The raw bytes of the blob at `oid`. A missing object, or one that is not a blob, raises.
+    fn git_read_blob(&self, py: Python<'_>, oid: &str) -> PyResult<Vec<u8>> {
+        crate::git::objects::read_blob(self, py, oid)
+    }
+
     /// The name of `remote`'s default branch (what `git remote show` reports as `HEAD`), or `None`
     /// if the remote advertises none. Used by the pure-Python `git_clone` to place the new `@` on
     /// the cloned default branch. Spawns a `git remote show` subprocess (off the GIL) inside a
