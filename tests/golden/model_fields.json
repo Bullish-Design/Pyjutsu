@@ -1,8 +1,15 @@
 {
-  "Signature": [
-    "email",
+  "AbsorbResult": [
+    "num_rebased",
+    "rewritten_destinations",
+    "rewritten_source",
+    "skipped_paths"
+  ],
+  "Bookmark": [
     "name",
-    "timestamp"
+    "remote",
+    "target_ids",
+    "tracked"
   ],
   "Commit": [
     "author",
@@ -13,21 +20,81 @@
     "description",
     "has_conflict",
     "is_empty",
+    "is_signed",
     "parent_ids",
     "predecessor_ids",
     "short_change_id",
     "short_commit_id",
     "tree_id"
   ],
+  "CommitSignature": [
+    "display",
+    "key",
+    "status"
+  ],
+  "Conflict": [
+    "num_bases",
+    "num_sides",
+    "path"
+  ],
+  "Diff": [
+    "files"
+  ],
+  "DiffStat": [
+    "files",
+    "total_deletions",
+    "total_insertions"
+  ],
+  "EvolutionEntry": [
+    "commit",
+    "operation"
+  ],
+  "FileChange": [
+    "binary",
+    "hunks",
+    "kind",
+    "path",
+    "source"
+  ],
+  "FileStat": [
+    "deletions",
+    "insertions",
+    "path"
+  ],
+  "FixSummary": [
+    "num_checked_commits",
+    "num_fixed_commits",
+    "rewrites",
+    "tools"
+  ],
+  "GitTag": [
+    "annotated",
+    "date",
+    "message",
+    "name",
+    "tagger",
+    "target"
+  ],
+  "Hunk": [
+    "lines",
+    "new_lines",
+    "new_start",
+    "old_lines",
+    "old_start"
+  ],
+  "HunkLine": [
+    "content",
+    "kind"
+  ],
+  "JjResult": [
+    "args",
+    "returncode",
+    "stderr",
+    "stdout"
+  ],
   "MergeResult": [
     "has_conflict",
     "tree_id"
-  ],
-  "Bookmark": [
-    "name",
-    "remote",
-    "target_ids",
-    "tracked"
   ],
   "Operation": [
     "description",
@@ -40,32 +107,18 @@
     "tags",
     "username"
   ],
-  "WorkspaceInfo": [
-    "name",
-    "path",
-    "wc_commit_id"
-  ],
   "Remote": [
     "name",
     "url"
   ],
-  "Conflict": [
-    "num_bases",
-    "num_sides",
-    "path"
+  "Signature": [
+    "email",
+    "name",
+    "timestamp"
   ],
-  "FileStat": [
-    "deletions",
-    "insertions",
-    "path"
-  ],
-  "DiffStat": [
-    "files",
-    "total_deletions",
-    "total_insertions"
-  ],
-  "EvolutionEntry": [
-    "commit",
-    "operation"
+  "WorkspaceInfo": [
+    "name",
+    "path",
+    "wc_commit_id"
   ]
 }

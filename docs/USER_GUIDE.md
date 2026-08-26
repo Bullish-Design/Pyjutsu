@@ -161,6 +161,7 @@ view.file_content("a.txt")         # bytes of one file at one revision (`jj file
 view.file_list("@-", ["sub"])      # repo-relative file paths, fileset-filtered (`jj file list`)
 view.shortest_prefix(c.commit_id)  # shortest unique id prefix (whole-repo, never ambiguous)
 view.evolution(c.change_id)       # the change's evolution steps (`jj evolog`)
+view.verify("@")                   # CommitSignature | None — verify the commit's signature
 ```
 
 ### Reuse a view for several reads of the same state
@@ -208,6 +209,41 @@ state.
 - **`DiffStat`** / **`FileStat`** — per-file and total insertions/deletions.
 - **`Diff`** / **`FileChange`** / **`Hunk`** / **`HunkLine`** — the structured diff (§6).
 - **`WorkspaceInfo`**, **`Remote`**, **`JjResult`** — workspace, git-remote, and `run_jj` rows.
+
+### Signed commits
+
+Signing uses **jj's own** `signing.*` configuration — Pyjutsu adds no keys. Configure a backend
+and key exactly as you would for `jj sign`, and every commit Pyjutsu writes is signed:
+
+```toml
+[signing]
+backend = "ssh"          # or "gpg", "gpgsm"
+behavior = "own"         # drop | keep | own | force
+key = "~/.ssh/id_ed25519.pub"
+```
+
+Read the result back:
+
+```python
+c = ws.resolve("@")
+c.is_signed               # bool — a field read, no subprocess
+ws.head().verify("@")     # CommitSignature | None — runs the backend
+```
+
+`Commit.is_signed` says only whether a signature is present. `verify()` runs the backend
+(`gpg`, `ssh-keygen`) as a subprocess and returns `status` (`"good"`, `"bad"`, `"unknown"`),
+`key`, and `display`; jj-lib caches the verdict per commit id. This is why signature verification
+is a per-revision call and not a field on every `Commit` — a `log()` of a thousand commits would
+otherwise spawn a thousand subprocesses.
+
+Override the configured behaviour for one handle without editing any config file:
+
+```python
+ws = Workspace.load(path, sign_behavior="own")   # drop | keep | own | force
+```
+
+The backend and key still come from jj's configuration. With no backend configured, nothing is
+signed whatever `sign_behavior` says, and a signed commit verifies as `"unknown"`.
 
 ---
 

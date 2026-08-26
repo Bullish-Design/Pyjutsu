@@ -501,11 +501,17 @@ impl PyWorkspace {
 #[pymethods]
 impl PyWorkspace {
     /// Load the workspace whose working copy is rooted at `path`.
+    ///
+    /// `sign_behavior` (`None` ⇒ jj's own `signing.behavior` setting) overrides how commits
+    /// written through this handle are signed: `"drop"`, `"keep"`, `"own"`, or `"force"`. It is
+    /// applied as a highest-precedence configuration layer, so the signing backend and key still
+    /// come from jj's settings — Pyjutsu adds no configuration keys of its own.
     #[staticmethod]
-    fn load(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
+    #[pyo3(signature = (path, sign_behavior=None))]
+    fn load(py: Python<'_>, path: PathBuf, sign_behavior: Option<&str>) -> PyResult<Self> {
         // Resolve the workspace metadata before settings. Secondary `.jj/repo` files therefore
         // identify the same secure repository configuration as the primary workspace.
-        let resolved = resolved_workspace_settings(&path)?;
+        let resolved = resolved_workspace_settings(&path, sign_behavior)?;
         for warning in resolved.warnings {
             let message = CString::new(warning).map_err(map_workspace_err)?;
             PyErr::warn(py, &py.get_type::<PyUserWarning>(), &message, 1)?;
@@ -1029,12 +1035,13 @@ impl PyWorkspace {
     /// the returned handle, exactly as it does for `load`. Any secure-configuration warning reaches
     /// Python as a `UserWarning`.
     #[staticmethod]
-    #[pyo3(signature = (path, colocate=false, trunk=None))]
+    #[pyo3(signature = (path, colocate=false, trunk=None, sign_behavior=None))]
     fn init(
         py: Python<'_>,
         path: PathBuf,
         colocate: bool,
         trunk: Option<String>,
+        sign_behavior: Option<&str>,
     ) -> PyResult<Self> {
         // Initialization is a bootstrap path. No repository or workspace configuration identity
         // exists until jj-lib creates the workspace metadata.
@@ -1094,7 +1101,7 @@ impl PyWorkspace {
         // re-open the workspace through `load`, which resolves settings against the paths that now
         // exist on disk.
         drop(workspace);
-        Self::load(py, path)
+        Self::load(py, path, sign_behavior)
     }
 
     /// Add a secondary workspace on zero, one, or many requested parent revisions.

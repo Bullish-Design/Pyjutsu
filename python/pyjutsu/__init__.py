@@ -31,6 +31,7 @@ from .models import (
     ChangeId,
     Commit,
     CommitId,
+    CommitSignature,
     Conflict,
     Diff,
     DiffStat,
@@ -46,6 +47,7 @@ from .models import (
     Operation,
     Remote,
     Signature,
+    SignBehavior,
     WorkspaceInfo,
 )
 from .repo_view import RepoView
@@ -89,6 +91,8 @@ __all__ = [
     "Revset",
     "Pattern",
     "Commit",
+    "CommitSignature",
+    "SignBehavior",
     "Signature",
     "Operation",
     "Bookmark",

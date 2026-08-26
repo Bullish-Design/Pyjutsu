@@ -236,9 +236,22 @@ pub(crate) fn bootstrap_user_settings() -> Result<UserSettings, PyErr> {
     resolve_settings(config, &config_env, None, None)
 }
 
+/// The four `SignBehavior` names jj's `signing.behavior` key accepts.
+///
+/// Vendored, like the `git.object-hash` values: jj-lib defines the enum
+/// (`signing.rs`, `SignBehavior`) but its serde names are the configuration contract, and
+/// rejecting a bad name here gives a clear error instead of a config-deserialization one.
+/// Re-diff at every jj-lib upgrade.
+pub(crate) const SIGN_BEHAVIORS: [&str; 4] = ["drop", "keep", "own", "force"];
+
 /// Resolve workspace identity first, then load every existing Jujutsu configuration layer.
+///
+/// `sign_behavior`, when given, is applied as a final `--config`-strength layer over
+/// `signing.behavior`, so one loaded workspace can sign differently from the user's default
+/// without editing any configuration file.
 pub(crate) fn resolved_workspace_settings(
     workspace_root: &Path,
+    sign_behavior: Option<&str>,
 ) -> Result<ResolvedWorkspaceSettings, PyErr> {
     let workspace_path = dunce::canonicalize(workspace_root).map_err(map_workspace_err)?;
     let loader = DefaultWorkspaceLoaderFactory
@@ -268,6 +281,18 @@ pub(crate) fn resolved_workspace_settings(
         &mut config_env.rng,
         &mut warnings,
     )?;
+    if let Some(behavior) = sign_behavior {
+        if !SIGN_BEHAVIORS.contains(&behavior) {
+            return Err(map_workspace_err(format!(
+                "invalid sign_behavior {behavior:?}: expected one of {SIGN_BEHAVIORS:?}"
+            )));
+        }
+        let mut layer = ConfigLayer::empty(ConfigSource::CommandArg);
+        layer
+            .set_value("signing.behavior", behavior)
+            .map_err(map_workspace_err)?;
+        config.add_layer(layer);
+    }
     let settings = resolve_settings(config, &config_env, Some(&repo_path), Some(&workspace_path))?;
     Ok(ResolvedWorkspaceSettings {
         settings,

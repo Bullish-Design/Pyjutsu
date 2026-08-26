@@ -19,6 +19,10 @@ ChangeId = Annotated[str, StringConstraints(pattern=r"^[k-z]+$", min_length=1)]
 #: A jujutsu **commit id**, plain lowercase hex (git-style), e.g. ``"cc2a471e..."``.
 CommitId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]+$", min_length=1)]
 
+#: How commits written through a :class:`pyjutsu.Workspace` are signed — jj's own
+#: ``signing.behavior`` values (``jj_lib::signing::SignBehavior``).
+SignBehavior = Literal["drop", "keep", "own", "force"]
+
 
 class Signature(BaseModel):
     """A jj author/committer signature: who, and when (tz-aware)."""
@@ -77,6 +81,27 @@ class Commit(BaseModel):
     tree_id: CommitId
     #: Names of local bookmarks pointing at this commit (sorted).
     bookmarks: list[str]
+    #: True if the commit carries a cryptographic signature. This is a field read, not a
+    #: verification: checking a signature runs the signing backend as a subprocess, which no
+    #: ordinary commit read can afford. Call :meth:`pyjutsu.RepoView.verify` for the verdict.
+    is_signed: bool = False
+
+
+class CommitSignature(BaseModel):
+    """The verdict of :meth:`pyjutsu.RepoView.verify` on one commit's signature.
+
+    ``status`` is ``"good"`` (valid and matches the commit), ``"bad"`` (valid but does **not**
+    match), or ``"unknown"`` (valid, but no configured backend could check it — an unknown key,
+    or no signing backend configured). ``key`` and ``display`` carry whatever the backend can
+    supply, and either may be ``None``: GPG reports the key fingerprint and the formatted
+    primary user id; SSH reports the key fingerprint and the ``allowed-signers`` principal.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    status: Literal["good", "bad", "unknown"]
+    key: str | None = None
+    display: str | None = None
 
 
 class FileStat(BaseModel):

@@ -460,3 +460,65 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 ```
 
 Evidence is in `artifacts/<UTC>-c7-gate/` (red Ruff run) and the `-gate-green.txt` beside it.
+
+### 2026-08-26 — C8 commit signing
+
+Lane `003/c8` makes Pyjutsu usable in a repository that requires signed commits, and lets a
+caller read a signature back.
+
+**What already worked, and what did not.** jj-lib's `RepoLoader::init_from_file_system` builds
+the `Signer` from settings, and `CommitBuilder` takes its `SignSettings` from the same settings.
+So a workspace loaded by Pyjutsu already signed its commits whenever jj's `signing.*` keys were
+configured — that half needed no code. What was missing was the read (no way to see a signature
+or its verdict) and the per-handle override (no way to sign differently from the user's
+configured default without editing a configuration file).
+
+**Rust.**
+
+- `Commit.is_signed` — `CommitData::build` now carries `commit.is_signed()`, a field read.
+- `PyRepoView::verify(revset)` — `commit.verification()` → `{status, key, display}`, or `None`
+  for an unsigned commit.
+- `PyWorkspace::load(path, sign_behavior=None)` and `init(..., sign_behavior=None)` — a
+  `ConfigSource::CommandArg` layer setting `signing.behavior`, added by
+  `resolved_workspace_settings`. Highest precedence, so it beats every configuration file, and
+  the backend and key still come from jj's own settings. An unrecognized name is a
+  `WorkspaceError` before anything loads.
+
+**Decision — `Commit.is_signed`, not `Commit.signature`.** The plan asked for
+`Commit.signature -> CommitSignature | None`. Verification is not a field read: it runs the
+signing backend (`gpg`, `ssh-keygen`) as a subprocess. Filling it on every `CommitData::build`
+would make `log()` over a thousand commits spawn a thousand subprocesses. So the model carries
+the cheap fact (`is_signed`, straight off `SecureSig`'s presence) and `RepoView.verify(rev)`
+does the expensive one on demand; jj-lib caches the verdict per commit id inside the `Signer`.
+This mirrors C4's decision on `Commit.predecessor_ids` and is recorded in both docstrings.
+
+**One more vendored item.** `SIGN_BEHAVIORS` in `src/config_loader.rs` lists the four names jj's
+`signing.behavior` accepts. jj-lib owns the enum, but its serde names are the configuration
+contract; validating here gives a clear error instead of a config-deserialization one. It joins
+the per-upgrade re-verification list.
+
+**Tests.** `tests/test_signing.py`, end-to-end against the SSH backend (`ssh-keygen`, present in
+the devenv; the tests skip when it is not). A generated ed25519 key and an `allowed-signers`
+file give a real `"good"` verdict. Covered: an unsigned commit reads as unsigned and verifies as
+`None`; a commit the binding writes under `behavior = "own"` is signed and verifies `"good"`
+(with the CLI's `signature.status()` template agreeing); `sign_behavior="drop"` beats a config
+saying `own` and `"force"` beats a config saying `drop`; `"keep"` preserves a signature across a
+rewrite; a signature with no `allowed-signers` verifies `"unknown"`, not `"bad"`; an invalid
+`sign_behavior` raises; `verify` needs a single revision.
+
+The SSH backend reports the key **fingerprint** in `key` and the `allowed-signers` principal in
+`display` — the first draft had them the other way round.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: 481 collected, exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+PYJUTSU_TEST_OBJECT_HASH=sha256 pytest -q PASS: exit 0
+```
+
+Evidence is in `artifacts/<UTC>-c8-gate/` and `artifacts/<UTC>-c8-sha256/`.

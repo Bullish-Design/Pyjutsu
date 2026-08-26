@@ -29,6 +29,7 @@ from .models import (
     JjResult,
     Operation,
     Remote,
+    SignBehavior,
     WorkspaceInfo,
 )
 from .repo_view import RepoView
@@ -83,7 +84,13 @@ class Workspace:
         self._git: GitView | None = None
 
     @classmethod
-    def load(cls, path: str | os.PathLike[str], *, hooks_config: str = "auto") -> Workspace:
+    def load(
+        cls,
+        path: str | os.PathLike[str],
+        *,
+        hooks_config: str = "auto",
+        sign_behavior: SignBehavior | None = None,
+    ) -> Workspace:
         """Load the workspace whose working copy is rooted at ``path``.
 
         ``hooks_config`` selects the declarative hook config (pre-commit-config style, see
@@ -93,8 +100,19 @@ class Workspace:
           one is unchanged (no hooks, no file reads).
         - ``"off"``: never read a config file — imperative :attr:`hooks` registration only.
         - any other value: treated as a config file path to load.
+
+        ``sign_behavior`` overrides how commits written through this handle are signed. ``None``
+        (default) uses jj's own ``signing.behavior`` setting; otherwise one of:
+
+        - ``"drop"``: never sign, and drop an existing signature.
+        - ``"keep"``: re-sign a commit you authored that was already signed (jj's default).
+        - ``"own"``: sign every commit you authored, and drop other people's signatures.
+        - ``"force"``: sign everything.
+
+        The backend and key still come from jj's ``signing.*`` configuration — Pyjutsu adds no
+        configuration keys. With no backend configured, nothing is signed whatever this says.
         """
-        ws = cls(PyWorkspace.load(os.fspath(path)))
+        ws = cls(PyWorkspace.load(os.fspath(path), sign_behavior))
         ws._load_hooks_config(hooks_config)
         return ws
 
@@ -106,6 +124,7 @@ class Workspace:
         colocate: bool = False,
         trunk: str | None = None,
         hooks_config: str = "auto",
+        sign_behavior: SignBehavior | None = None,
     ) -> Workspace:
         """Create or adopt a jj repo + default workspace at ``path`` → a :class:`Workspace`.
 
@@ -128,9 +147,9 @@ class Workspace:
 
         ``hooks_config`` behaves like :meth:`load`'s: ``"auto"`` (default) reads
         ``<path>/.pyjutsu-hooks.toml`` when present, ``"off"`` never reads one, any other value is
-        a config file path.
+        a config file path. ``sign_behavior`` behaves like :meth:`load`'s.
         """
-        ws = cls(PyWorkspace.init(os.fspath(path), colocate, trunk))
+        ws = cls(PyWorkspace.init(os.fspath(path), colocate, trunk, sign_behavior))
         ws._load_hooks_config(hooks_config)
         return ws
 

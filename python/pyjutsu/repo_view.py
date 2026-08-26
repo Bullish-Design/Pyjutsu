@@ -15,6 +15,7 @@ from ._pyjutsu import PyRepoView
 from .models import (
     Bookmark,
     Commit,
+    CommitSignature,
     Conflict,
     Diff,
     DiffStat,
@@ -133,6 +134,19 @@ class RepoView:
         path that is absent or not a regular file at that revision.
         """
         return self._handle.file_content(path, _revset_str(rev))
+
+    def verify(self, rev: str | Revset = "@") -> CommitSignature | None:
+        """Verify the signature of the single commit named by ``rev`` → its
+        :class:`~pyjutsu.CommitSignature`, or ``None`` when the commit is unsigned.
+
+        This runs jj's configured signing backend as a subprocess (``gpg``, ``ssh-keygen``), so
+        it is a deliberate per-revision call; jj-lib caches the verdict per commit id. Use
+        :attr:`Commit.is_signed` for the cheap "is there a signature at all" question. With no
+        signing backend configured, a signed commit verifies as ``"unknown"``. Raises
+        :class:`~pyjutsu.errors.RevsetError` unless ``rev`` names exactly one revision.
+        """
+        row = self._handle.verify(_revset_str(rev))
+        return None if row is None else CommitSignature.model_validate(row)
 
     def file_list(
         self,

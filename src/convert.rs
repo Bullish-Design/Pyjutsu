@@ -91,6 +91,10 @@ pub(crate) struct CommitData {
     has_conflict: bool,
     tree_id: String,
     bookmarks: Vec<String>,
+    /// Whether the commit carries a cryptographic signature. This is a field read
+    /// (`Commit::is_signed`), not a verification: verifying spawns the signing backend, which no
+    /// ordinary commit read can afford. Use `RepoView.verify` for the full result.
+    is_signed: bool,
 }
 
 impl CommitData {
@@ -124,6 +128,7 @@ impl CommitData {
             has_conflict: commit.has_conflict(),
             tree_id: merge_tree_id_hex(commit.tree_ids()),
             bookmarks,
+            is_signed: commit.is_signed(),
         })
     }
 
@@ -142,6 +147,7 @@ impl CommitData {
         dict.set_item("has_conflict", self.has_conflict)?;
         dict.set_item("tree_id", &self.tree_id)?;
         dict.set_item("bookmarks", self.bookmarks.clone())?;
+        dict.set_item("is_signed", self.is_signed)?;
         Ok(dict)
     }
 }

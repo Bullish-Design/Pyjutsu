@@ -366,6 +366,36 @@ impl PyRepoView {
         })
     }
 
+    /// Verify the cryptographic signature of the single commit named by `revset_str` → a plain
+    /// dict `{status, key, display}`, or `None` when the commit is unsigned.
+    ///
+    /// `status` is `"good"` (valid, matches the data), `"bad"` (valid, does **not** match), or
+    /// `"unknown"` (valid, but no configured backend could check it — an unknown key, or no
+    /// signing backend configured at all). `key` and `display` are whatever the backend can
+    /// supply; both may be `None`.
+    ///
+    /// This runs the signing backend, which is a subprocess (`gpg`, `ssh-keygen`), so it is a
+    /// deliberate per-revision call. jj-lib caches the result per commit id inside the `Signer`.
+    /// `Commit.is_signed` answers the cheap question — is there a signature at all — without it.
+    fn verify<'py>(
+        &self,
+        py: Python<'py>,
+        revset_str: &str,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let verification = py.allow_threads(|| -> PyResult<_> {
+            let commit = self.resolve_single(revset_str)?;
+            commit.verification().map_err(crate::errors::to_py_err)
+        })?;
+        let Some(verification) = verification else {
+            return Ok(None);
+        };
+        let dict = PyDict::new(py);
+        dict.set_item("status", verification.status.to_string())?;
+        dict.set_item("key", verification.key)?;
+        dict.set_item("display", verification.display)?;
+        Ok(Some(dict))
+    }
+
     /// List the files in the single commit named by `revset_str` (repo-relative, sorted). With
     /// `paths` given, only the files matching those fileset expressions are listed — the same
     /// `jj file list -r <rev> <filesets>…` behavior (a bare name is a path prefix, `glob:`/etc.
