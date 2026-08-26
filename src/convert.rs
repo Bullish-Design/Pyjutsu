@@ -77,6 +77,8 @@ fn set_timestamp(dict: &Bound<'_, PyDict>, prefix: &str, ts: &Timestamp) -> PyRe
 pub(crate) struct CommitData {
     change_id: String,
     commit_id: String,
+    short_change_id: Option<String>,
+    short_commit_id: Option<String>,
     description: String,
     author: SignatureData,
     committer: SignatureData,
@@ -104,6 +106,11 @@ impl CommitData {
         Ok(Self {
             change_id: commit.change_id().reverse_hex(),
             commit_id: commit.id().hex(),
+            short_change_id: Some(crate::id_prefix::shortest_change_prefix(
+                repo,
+                commit.change_id(),
+            )?),
+            short_commit_id: Some(crate::id_prefix::shortest_commit_prefix(repo, commit.id())?),
             description: commit.description().to_owned(),
             author: SignatureData::from_jj(commit.author()),
             committer: SignatureData::from_jj(commit.committer()),
@@ -119,6 +126,8 @@ impl CommitData {
         let dict = PyDict::new(py);
         dict.set_item("change_id", &self.change_id)?;
         dict.set_item("commit_id", &self.commit_id)?;
+        dict.set_item("short_change_id", self.short_change_id.as_deref())?;
+        dict.set_item("short_commit_id", self.short_commit_id.as_deref())?;
         dict.set_item("description", &self.description)?;
         dict.set_item("author", self.author.to_dict(py)?)?;
         dict.set_item("committer", self.committer.to_dict(py)?)?;

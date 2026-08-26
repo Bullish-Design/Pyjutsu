@@ -199,6 +199,16 @@ impl PyRepoView {
         self.repo.operation().id().hex()
     }
 
+    /// The shortest unique prefix of `id` (a hex commit id or a z-k change id) within the whole
+    /// repository, disambiguated against other ids **and** bookmark/tag names — the same answer
+    /// the CLI's `commit_id.shortest()` / `change_id.shortest()` templates give, minus the
+    /// `visible()` scoping (see `src/id_prefix.rs` for the C3 decision). An unknown id yields its
+    /// full length.
+    fn shortest_prefix(&self, py: Python<'_>, id: &str) -> PyResult<String> {
+        let id = id.to_owned();
+        py.allow_threads(move || crate::id_prefix::shortest_prefix(self.repo.as_ref(), &id))
+    }
+
     /// All bookmarks at this operation: one row per local bookmark (`remote=None`) followed by
     /// one per remote-tracking ref. Local rows come first; within each, jj's name order.
     fn bookmarks<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {

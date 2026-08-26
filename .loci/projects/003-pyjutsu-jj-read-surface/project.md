@@ -173,3 +173,59 @@ PYJUTSU_TEST_OBJECT_HASH=sha256 (focused) PASS
 
 Evidence is in `artifacts/<UTC>-c2-gate/` (red Ruff run) and
 `artifacts/<UTC>-c2-gate-green/`.
+
+### 2026-08-26 — C3 short id prefixes
+
+Lane `003/c3` binds jj-lib's prefix-disambiguation machinery, so callers stop
+reimplementing shortest-unique-id with an index they do not have.
+
+**The open decision — resolved: whole-repository disambiguation.** The plan
+offered (1) disambiguate across the whole repo (no configuration surface,
+always correct, slower) or (2) within a configured revset defaulting to
+`visible()` (closer to the CLI, needs a new vendored `revsets.short-prefixes`
+key). I chose option 1 and recorded it in `src/id_prefix.rs`:
+
+- It has no configuration surface and no new vendored data.
+- It can never return an ambiguous prefix: every id in the index is a
+  neighbor, so a returned prefix resolves uniquely by construction.
+- The cost is speed on very large repos (the whole index is consulted), which
+  is acceptable for the first release.
+
+The observable difference: commit-id prefixes can be **longer** than the
+CLI's `visible()`-scoped answer when hidden (abandoned/rewritten) commits
+exist, because the whole index includes them. Change-id prefixes agree with
+the CLI, because rewritten commits keep their change id. The tests assert
+this contract: change-id byte-equality with `change_id.shortest()`, commit-id
+prefix+resolve-back (plus `len >=` the CLI's answer).
+
+**Rust.** New `src/id_prefix.rs`: `shortest_commit_prefix` /
+`shortest_change_prefix` (via `IdPrefixContext::new` without
+`disambiguate_within`, then `shortest_*_prefix_len`, which also disambiguates
+against bookmark/tag names — the CLI's own rule) and `shortest_prefix`
+(dispatch: hex → commit id, `k-z` letters → change id; the two alphabets are
+disjoint). `CommitData::build` now populates `short_commit_id` /
+`short_change_id` on every commit read, since the repo is the context
+everywhere (a superset of "populated when the view can supply a context").
+
+**Python.** `RepoView.shortest_prefix(id)`; `Commit` gains the two optional
+fields. `_pyjutsu.pyi` tracks the native method. The model-shape golden
+(`tests/golden/model_fields.json`) was regenerated for the two new Commit
+fields.
+
+The first gate runs stopped on clippy (a dead helper and a
+`manual-is-ascii-check` finding) and the golden guard; both were fixed and
+the gate restarted. Red runs preserved.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/<UTC>-c3-gate/` (red) and
+`artifacts/<UTC>-c3-gate-green/` + `-c3-gate-final/`.

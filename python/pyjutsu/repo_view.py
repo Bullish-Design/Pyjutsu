@@ -141,6 +141,20 @@ class RepoView:
         """
         return self._handle.file_list(_revset_str(rev), paths)
 
+    def shortest_prefix(self, id: str) -> str:
+        """The shortest unique prefix of ``id`` within the whole repository.
+
+        ``id`` is a hex commit id or a z-k change id (the two alphabets are disjoint, so the
+        kind is detected). The returned prefix is disambiguated against every other id **and**
+        bookmark/tag names — the same answer the CLI's ``commit_id.shortest()`` /
+        ``change_id.shortest()`` templates give, disambiguated across the **whole** repository
+        (see the C3 decision in ``src/id_prefix.rs``) — so it always resolves back to ``id`` via
+        :meth:`resolve`. An unknown id yields a prefix that never matches, so it can never
+        resolve to a different commit. Commit-id prefixes may be longer than the CLI's
+        ``visible()``-scoped answer when hidden commits exist; change-id prefixes agree.
+        """
+        return self._handle.shortest_prefix(id)
+
     def diff_stat(self, revset: str | Revset, to: str | Revset | None = None) -> DiffStat:
         """The diff stat (per-file + total line counts) of a commit or a range.
 

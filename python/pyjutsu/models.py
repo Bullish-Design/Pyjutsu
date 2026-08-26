@@ -51,6 +51,12 @@ class Commit(BaseModel):
 
     change_id: ChangeId
     commit_id: CommitId
+    #: Shortest unique prefix of the commit id within the repo (hex), or ``None`` when the read
+    #: could not supply a repo context. Disambiguated against all ids and bookmark/tag names.
+    short_commit_id: CommitId | None = None
+    #: Shortest unique prefix of the change id within the repo (z-k form), or ``None`` when the
+    #: read could not supply a repo context.
+    short_change_id: ChangeId | None = None
     description: str
     author: Signature
     committer: Signature

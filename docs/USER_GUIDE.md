@@ -159,6 +159,7 @@ view.conflict_content("file.txt")  # the marked text `jj file show` prints (styl
 view.conflict_sides("file.txt")    # the conflict's sides parsed back, no markers
 view.file_content("a.txt")         # bytes of one file at one revision (`jj file show`)
 view.file_list("@-", ["sub"])      # repo-relative file paths, fileset-filtered (`jj file list`)
+view.shortest_prefix(c.commit_id)  # shortest unique id prefix (whole-repo, never ambiguous)
 ```
 
 ### Reuse a view for several reads of the same state
@@ -180,7 +181,8 @@ loudly rather than pass silently).
 
 - **`Commit`** — `change_id` (stable across rewrites), `commit_id` (changes on rewrite),
   `description`, `author`/`committer` (`Signature`), `parent_ids`, `is_empty`, `has_conflict`,
-  `bookmarks`.
+  `bookmarks`, and `short_commit_id`/`short_change_id` (the shortest unique id prefixes within
+  the repo — whole-repository disambiguation, so a short id always resolves back to its commit).
 - **`Signature`** — `name`, `email`, tz-aware `timestamp`.
 - **`Bookmark`** — `name`, `remote` (`None` for a local bookmark), `target_ids`, `tracked`, and
   a `.conflicted` property (`True` when it points at more than one commit).

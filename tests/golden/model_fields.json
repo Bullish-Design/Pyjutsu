@@ -14,6 +14,8 @@
     "has_conflict",
     "is_empty",
     "parent_ids",
+    "short_change_id",
+    "short_commit_id",
     "tree_id"
   ],
   "MergeResult": [
