@@ -195,3 +195,21 @@ pub(crate) fn evaluate_ids(
         pollster::block_on(revset.stream().try_collect()).map_err(map_backend_err)?;
     Ok(ids)
 }
+
+/// Parse and symbol-resolve `revset_str` → the owned `ResolvedRevsetExpression`
+/// (wrapped in `Arc`, as jj-lib's annotate/absorb APIs take it). The
+/// expression is not evaluated here; the caller drives it. Errors map to
+/// `RevsetError` like every other revset read.
+pub(crate) fn resolve_expression(
+    repo: &dyn Repo,
+    revset_str: &str,
+    workspace_name: &WorkspaceName,
+    workspace_root: &Path,
+    revset_config: &RevsetConfig,
+) -> Result<Arc<jj_lib::revset::ResolvedRevsetExpression>, PyErr> {
+    let expr = parse_user_expression(revset_config, revset_str, workspace_name, workspace_root)?;
+    let no_extensions: &[Box<dyn SymbolResolverExtension>] = &[];
+    let resolver = SymbolResolver::new(repo, no_extensions);
+    expr.resolve_user_expression(repo, &resolver)
+        .map_err(map_revset_err)
+}

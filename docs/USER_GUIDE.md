@@ -244,6 +244,7 @@ op_id = ws.head_operation()      # the single operation this block produced
 | `tx.restore(commit, from_=..., paths=None)` | Replace a commit's content (or just `paths`) with another commit's. |
 | `tx.resolve_conflict(path, content)` | Resolve the conflict at `path` in `@` with `content` (`jj resolve`). |
 | `tx.duplicate(commits, onto=None)` | Duplicate commits into new changes with new change ids (`jj duplicate`). |
+| `tx.absorb(source="@", into=None)` | Distribute `source`'s hunks into the ancestors that introduced those lines (`jj absorb`). |
 | `tx.split(commit, selection, mode="siblings")` | Split one commit into two by a **hunk-level** selection (§6). Returns `(first, second)`. |
 | `tx.select_tree(commit, selection)` | Lower-level: build the tree id for a hunk selection. |
 | `tx.create_bookmark(name, commit)` | Create a local bookmark (errors if it exists). |
@@ -260,6 +261,21 @@ transaction, so you can chain on it.
 > exception, use `with ws.transaction("…", ignore_immutable=True) as tx:`; the root commit always
 > raises `ImmutableCommitError`. Call verbs only *inside* the `with` block — using `tx` after the
 > block raises `RuntimeError`.
+
+`tx.absorb()` returns an `AbsorbResult`:
+
+```python
+with ws.transaction("absorb") as tx:
+    result = tx.absorb()                 # source="@", into="mutable()"
+result.rewritten_destinations            # the ancestors that received hunks
+result.rewritten_source                  # the source minus the absorbed hunks, or None if abandoned
+result.num_rebased                       # descendants rebased onto the rewrites
+result.skipped_paths                     # (path, reason) for paths absorb cannot split
+```
+
+A hunk that no single ancestor owns stays in the source; only paths absorb cannot split at all
+(a symlink, a conflict, a submodule) appear in `skipped_paths`. The source is abandoned when it
+ends up empty and has no description.
 
 ### One-shot working-copy operations (outside a transaction)
 

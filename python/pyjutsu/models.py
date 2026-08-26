@@ -198,6 +198,30 @@ class EvolutionEntry(BaseModel):
     operation: Operation | None
 
 
+class AbsorbResult(BaseModel):
+    """The outcome of :meth:`pyjutsu.Transaction.absorb` (``jj absorb``).
+
+    ``rewritten_source`` is the source commit with the absorbed hunks removed,
+    or ``None`` when the source was abandoned (all hunks absorbed and no
+    description). ``rewritten_destinations`` lists the ancestor commits that
+    received hunks, in forward topological order; ``num_rebased`` counts
+    descendants rebased onto the rewrites. ``skipped_paths`` names the paths
+    absorb could not split at all, with jj's own reason.
+
+    A hunk that no single ancestor owns stays in the source. It is **not**
+    reported in ``skipped_paths``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rewritten_source: Commit | None
+    rewritten_destinations: list[Commit]
+    num_rebased: int
+    #: `(path, reason)` pairs for paths absorb cannot split into line hunks: a
+    #: symlink, a conflict, a git submodule, or an unreadable file.
+    skipped_paths: list[tuple[str, str]]
+
+
 class MergeResult(BaseModel):
     """The result of :meth:`pyjutsu.RepoView.try_merge`: a 3-way merged tree and its conflict flag."""
 

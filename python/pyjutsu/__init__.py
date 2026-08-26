@@ -26,6 +26,7 @@ from .errors import (
 from .git import GitView
 from .hooks import HookRegistry, run_pre_commit, run_prek
 from .models import (
+    AbsorbResult,
     Bookmark,
     ChangeId,
     Commit,
@@ -79,6 +80,7 @@ if __version__ != _EXT_PYJUTSU_VERSION:
     )
 
 __all__ = [
+    "AbsorbResult",
     "Workspace",
     "GitView",
     "Transaction",

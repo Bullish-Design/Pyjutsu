@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from .errors import HookAbort, PostHookError
 from .hooks import HookRegistry
-from .models import Bookmark, Commit
+from .models import AbsorbResult, Bookmark, Commit
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -317,6 +317,20 @@ class Transaction:
             Commit.model_validate(row)
             for row in self._require_open().duplicate(revsets, onto_revsets)
         ]
+
+    def absorb(self, source: str = "@", into: str | None = None) -> AbsorbResult:
+        """Absorb the changes of the single commit named by ``source`` into the ancestors that
+        introduced those lines → the :class:`~pyjutsu.AbsorbResult` (``jj absorb``).
+
+        Each hunk moves to the closest mutable ancestor that last modified its lines; hunks
+        with no unique ancestor stay behind in ``source``. ``into`` (a revset, default
+        ``mutable()``) selects the candidate ancestors — only ancestors of ``source`` are
+        considered, jj's own rule. The source is abandoned when it becomes empty and has no
+        description. ``source`` must name exactly one revision (else
+        :class:`~pyjutsu.errors.RevsetError`); an immutable source is refused. Must be called
+        inside the transaction's ``with`` block.
+        """
+        return AbsorbResult.model_validate(self._require_open().absorb(source, into))
 
     def changed_paths(self, commit: str = "@") -> list[str]:
         """The paths the pending transaction changed for ``commit`` (vs its merged parent tree).

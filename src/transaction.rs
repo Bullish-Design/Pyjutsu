@@ -668,6 +668,86 @@ impl PyTransaction {
         out.iter().map(|d| d.to_dict(py)).collect()
     }
 
+    /// Absorb the changes of the single commit named by `source` into the ancestors that
+    /// introduced those lines (matches `jj absorb --from <source> [--into <revset>]`): each hunk
+    /// moves to the closest mutable ancestor that last modified its lines, and hunks with no
+    /// unique ancestor stay behind in `source`. Returns a plain dict:
+    /// `{rewritten_source, rewritten_destinations, num_rebased, skipped_paths}`. `source`
+    /// defaults to `@`; `into` defaults to `mutable()`, and only ancestors of `source` are
+    /// considered (jj's own rule). The source is abandoned when it becomes empty and has no
+    /// description.
+    ///
+    /// jj-lib owns the whole algorithm (`absorb.rs`): `AbsorbSource::from_commit` →
+    /// `split_hunks_to_trees` (with the destination revset and an everything matcher — no
+    /// fileset scoping in this first release) → `absorb_hunks`. Runs on the GIL
+    /// (`MutableRepo` is `!Send`). Raises `RevsetError` unless `source` names exactly one
+    /// revision.
+    #[pyo3(signature = (source="@", into=None))]
+    fn absorb<'py>(
+        &self,
+        py: Python<'py>,
+        source: &str,
+        into: Option<&str>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs); in-memory graph work.
+        let repo = tx.repo_mut();
+        let source_commit = self.resolve_single(&*repo, source)?;
+        self.check_rewritable(&*repo, std::slice::from_ref(&source_commit))?;
+        let absorb_source = pollster::block_on(jj_lib::absorb::AbsorbSource::from_commit(
+            &*repo,
+            source_commit,
+        ))
+        .map_err(map_backend_err)?;
+        let destinations = crate::revset::resolve_expression(
+            &*repo,
+            into.unwrap_or("mutable()"),
+            &self.workspace_name,
+            &self.workspace_root,
+            &self.revset_config,
+        )?;
+        let matcher = jj_lib::matchers::EverythingMatcher;
+        let selected = pollster::block_on(jj_lib::absorb::split_hunks_to_trees(
+            &*repo,
+            &absorb_source,
+            &destinations,
+            &matcher,
+        ))
+        .map_err(crate::errors::to_py_err)?;
+        let stats = pollster::block_on(jj_lib::absorb::absorb_hunks(
+            repo,
+            &absorb_source,
+            selected.target_commits,
+        ))
+        .map_err(map_backend_err)?;
+        pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
+
+        let dict = PyDict::new(py);
+        match &stats.rewritten_source {
+            Some(commit) => dict.set_item("rewritten_source", CommitData::build(&*repo, commit)?.to_dict(py)?)?,
+            None => dict.set_item("rewritten_source", None::<&str>)?,
+        }
+        let destinations_dicts: Vec<Bound<'py, PyDict>> = stats
+            .rewritten_destinations
+            .iter()
+            .map(|c| CommitData::build(&*repo, c).and_then(|d| d.to_dict(py)))
+            .collect::<PyResult<_>>()?;
+        dict.set_item("rewritten_destinations", destinations_dicts)?;
+        dict.set_item("num_rebased", stats.num_rebased)?;
+        let skipped: Vec<(String, String)> = selected
+            .skipped_paths
+            .into_iter()
+            .map(|(path, reason)| {
+                (path.as_internal_file_string().to_owned(), reason)
+            })
+            .collect();
+        dict.set_item("skipped_paths", skipped)?;
+        Ok(dict)
+    }
+
     /// The paths changed by the single revision named by `revset_str` (diffed against its
     /// merged-parent tree, like the read surface's `diff`), evaluated against the **open**
     /// `MutableRepo` — so it sees this transaction's in-flight rewrites, which the read surface

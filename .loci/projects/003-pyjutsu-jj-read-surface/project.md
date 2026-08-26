@@ -325,3 +325,68 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 ```
 
 Evidence is in `artifacts/<UTC>-c5-gate/`.
+
+### 2026-08-26 — C6 absorb
+
+Lane `003/c6` binds `jj absorb`: the working copy's scattered edits move into
+the ancestors that introduced those lines, without a subprocess.
+
+**Rust.** New `revset::resolve_expression` parses and symbol-resolves a revset
+string into the owned `Arc<ResolvedRevsetExpression>` that jj-lib's
+annotate/absorb APIs take (it does not evaluate it — the caller drives it).
+`PyTransaction::absorb(source="@", into=None)` then runs jj-lib's own pipeline:
+`AbsorbSource::from_commit` → `split_hunks_to_trees` (destinations from `into`,
+defaulting to `mutable()`, with an `EverythingMatcher` — no fileset scoping in
+this first release) → `absorb_hunks` → `rebase_descendants`. It returns a plain
+dict `{rewritten_source, rewritten_destinations, num_rebased, skipped_paths}`.
+`source` must name exactly one revision and passes the immutable/root guard.
+
+**Python.** `Transaction.absorb(source="@", into=None) -> AbsorbResult`; the new
+`AbsorbResult` model; `_pyjutsu.pyi` tracks the native method.
+
+**The blocker the previous session hit, and its cause.** The first fixture made
+`@` edit two lines that were *adjacent* (`a\nb\n` → `A\nB\nzzz\n`), then added a
+trailing `jj new`. Both are fatal:
+
+- The trailing `jj new` leaves `@` empty, so there is nothing to absorb.
+- Adjacent edited lines collapse into one diff hunk that spans two annotation
+  ranges. `split_file_hunks` (`absorb.rs`) only maps a hunk that is *contained*
+  in a single annotation range, so nothing was attributable.
+
+The pinned `jj absorb` printed "Nothing changed" on that fixture too, which
+confirms the binding was never at fault. The fixture now gives each ancestor
+its own three-line region and edits one line inside each, with unchanged
+context between them.
+
+**Two semantics worth recording.**
+
+- *`skipped_paths` is not "unattributable hunks".* jj fills it from
+  `to_file_value`: a symlink, a conflict, a git submodule, or an unreadable
+  file — paths absorb cannot split into lines at all. A hunk with no unique
+  owner simply stays in the source and is reported nowhere. The model docstring
+  says so, and a symlink test pins the real contract.
+- *A pure insertion on an ancestor boundary is ambiguous by design.*
+  `split_file_hunks` refuses a zero-width left range whose neighbours are two
+  different commits. The test inserts a line exactly between A's region and B's
+  and asserts it stays behind.
+
+**Test oracle detail.** The differential test compares `jj absorb`'s repo state
+against the binding's, commit id for commit id — the shared test config pins
+`debug.commit-timestamp`, so the same mutation over two copied repos is
+byte-identical. `@` is excluded from that comparison and asserted separately:
+absorb abandons the emptied source, and the fresh working-copy commit jj creates
+carries a random change id, so its commit id differs between two otherwise
+identical runs.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: 460 collected, exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/<UTC>-c6-gate/`.
