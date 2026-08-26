@@ -566,3 +566,66 @@ added 136 tests.
 
 Evidence is in `artifacts/<UTC>-release-0190-gate/` (with the red SHA-256 run) and
 `-release-0190-final/`.
+
+### 2026-08-26 — post-release: stub drift guard and a local wheel task
+
+Two readiness items found by auditing the 0.19.0 state, landed together as one follow-up.
+
+**The `_pyjutsu.pyi` drift guard.** `tests/golden/model_fields.json` guarded the **model** shape;
+nothing guarded the **native** shape. An audit found `PyTransaction.changed_paths` present in the
+extension but absent from the stub since `dfe55bd` (0.14.0) — five releases. New
+`tests/test_stub_sync.py` parses the stub with `ast` and compares it to the compiled extension in
+both directions: a native method with no stub entry fails, and a stub entry with no native method
+fails. It also checks the module-level functions and that each declared exception subclasses what
+the stub says it does.
+
+Design notes:
+
+- *Names, not signatures.* A PyO3 method exposes no typed signature, so the stub's parameter types
+  are hand-written documentation nothing can verify at runtime. Names are what drift silently; a
+  wrong annotation is at least visible to a reader.
+- *`vars()`, not `dir()`.* `dir()` pulls in inherited `object`/`BaseException` members, which made
+  the first draft report `args`/`add_note`/`with_traceback` as missing on all ten error classes.
+- *Handle classes are the ones the stub declares with no base.* The exception classes all carry a
+  base and declare no methods, so this splits the two cleanly with no hand-maintained list.
+- *Dunders are excluded on both sides.* `PyCommitStream.__iter__`/`__next__` are protocol methods
+  whose absence breaks every iteration test immediately; they need no static guard.
+
+Verified both directions: the guard reproduced the real `changed_paths` gap, and a deliberately
+invented stub entry (`nonexistent_verb`) failed it too.
+
+**`pyjutsu:wheel` — a local wheel task.** `maturin build --release --out dist`, then a smoke
+check that installs the wheel into a throwaway venv and imports it. Deliberately **not** a publish
+step: nothing tags, signs, or uploads, and no CI runs it. The wheel is `abi3-py313` and plain
+`linux_x86_64` (not `manylinux`), so it serves this machine only — stated in `docs/DEV_GUIDE.md`.
+
+The smoke check is the reason the task exists rather than a bare `maturin build`. `pyjutsu:build`
+installs an **editable** build whose Python half is read from the source tree, so the whole suite
+can pass while the packaged wheel is missing a file or carrying a stale extension. The check
+asserts the wheel's filename version equals `pyjutsu.__version__`, that the jj-lib pin matches,
+that `py.typed` survived packaging, and that opening a real jj repo works. `devenv tasks run`
+suppresses task stdout, so the check was verified by exit code: an injected `sys.exit(7)` failed
+the task, confirming the embedded heredoc actually runs and propagates.
+
+**One stale documentation claim fixed.** `docs/USER_GUIDE.md` §13 listed "two-revset
+`diff(from, to)`" as out of scope, but `view.diff(rev, to=…)` and `view.diff_stat(rev, to=…)` have
+both shipped since the diff slice (`diff_between` / `diff_stat_between` on the native side). The
+line now scopes the exclusion to word/inline diff only.
+
+`docs/PYJUTSU_CONCEPT.md` §12's "Later" list has the same problem — it still lists the revset
+builder, full diffs/hunks, and streaming log as future work, all of which shipped. That is left
+for the gap investigation rather than patched piecemeal here.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: 544 collected, exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+devenv tasks run pyjutsu:wheel            PASS: exit 0 (wheel built + smoke check)
+```
+
+Evidence is in `artifacts/<UTC>-stub-guard-gate/`.

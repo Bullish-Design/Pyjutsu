@@ -774,7 +774,7 @@ Pyjutsu binds jj primitives faithfully and stays un-opinionated (no lanes, no wo
 Deliberately **not** provided (see [`PYJUTSU_CONCEPT.md`](PYJUTSU_CONCEPT.md) §12):
 
 - a native async facade (use `asyncio.to_thread`);
-- two-revset `diff(from, to)` and word/inline diff;
+- word/inline diff (`diff` and `diff_stat` do take a two-revset `to=` — see §6);
 - interactive/partial selection beyond `split`'s hunk-level carve;
 - assorted git/rewrite refinements (force-push flags, `--change`/`-r` push selection, tag fetch).
 

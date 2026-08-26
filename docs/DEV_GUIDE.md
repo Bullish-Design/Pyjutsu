@@ -90,7 +90,35 @@ matching `jj` 0.44.0 CLI used for differential tests. Never invoke bare `cargo`/
 devenv shell -- devenv tasks run pyjutsu:build   # maturin develop --uv (rebuild the extension)
 devenv shell -- devenv tasks run pyjutsu:test    # pytest -q  &&  cargo test
 devenv shell -- devenv tasks run pyjutsu:lint    # ruff check python tests  &&  cargo clippy -D warnings
+devenv shell -- devenv tasks run pyjutsu:verify  # the full local gate (lint, then test)
 ```
+
+### Building a wheel for local use
+
+To install Pyjutsu into another project **on this machine**, build a release wheel:
+
+```sh
+devenv shell -- devenv tasks run pyjutsu:wheel   # -> dist/pyjutsu-<ver>-cp313-abi3-<plat>.whl
+```
+
+Then, from the consuming project:
+
+```sh
+uv pip install /path/to/pyjutsu/dist/pyjutsu-0.19.0-cp313-abi3-linux_x86_64.whl
+```
+
+The wheel is `abi3-py313`, so one build serves every CPython ≥ 3.13 on the same platform. It is
+**not** portable off this machine: it is a plain `linux_x86_64` wheel linked against the nix
+glibc, not a `manylinux` build. There is no publish step — nothing tags, signs, or uploads, and
+`dist/` is git-ignored.
+
+The task ends with a smoke check that installs the wheel into a throwaway venv and imports it.
+That check is the point of the task, not decoration: `pyjutsu:build` installs an **editable**
+build whose Python half is read straight from the source tree, so the entire suite can pass
+while the packaged wheel is missing a file or carrying a stale extension. The smoke check asserts
+the wheel's filename version matches `pyjutsu.__version__`, that `py.typed` survived packaging,
+and that opening a real jj repo works. Run `pyjutsu:verify` first — the wheel task does not gate
+on it, because it is a packaging step, not a release.
 
 The task definitions live in `nix/pyjutsu.nix` (`enterTest` runs the same build→pytest→cargo test
 sequence). A one-off command inside the shell:
