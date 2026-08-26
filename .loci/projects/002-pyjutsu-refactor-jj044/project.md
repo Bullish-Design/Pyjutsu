@@ -541,3 +541,69 @@ Evidence is in `artifacts/20260826T184000Z-b1-pin/`,
 `artifacts/20260826T190000Z-b2-ref-repair/`,
 `artifacts/20260826T191500Z-b1b2-gate/` (the red run), and
 `artifacts/20260826T192500Z-b1b2-gate/` (green).
+
+### 2026-08-26 — B3 SHA-256 repositories
+
+jj 0.44 chooses a new repository's object format at creation. `init_colocated_git`
+and `init_internal_git` take a `gix::hash::Kind`; the B1 port passed
+`Kind::Sha1` as a placeholder. This lane replaces that literal with the real
+setting and proves a SHA-256 repository works end to end.
+
+**Where the format comes from.** jj-cli reads `git.object-hash`, whose default is
+`"sha1"`. jj-cli exposes no flag for it, so configuration is the only input, and
+`jj git init --config git.object-hash=sha256` is the CLI's own recipe. jj-lib
+defines neither the key, nor its values, nor the default, so `git_object_hash`
+in `src/workspace.rs` vendors that policy and joins the per-upgrade
+re-verification list. An unknown value fails at init with the value quoted, so a
+typo can never quietly create a SHA-1 repo. Only a *created* repo takes a format;
+an adopted `.git` keeps its own.
+
+**Decision: declare `sha1` and `sha256` on Pyjutsu's own gix edge.** This
+reverses the "do not add `features = [\"sha1\"]`" decision, whose stated reason
+was that lane A1 removed the last Pyjutsu call into `gix::hash`. The 0.44 port
+reintroduced one: `git_object_hash` names both `gix::hash::Kind` variants, and
+each variant is behind its matching feature. Audit rule 3 — declare every direct
+dependency feature Pyjutsu itself calls — therefore applies again. jj-lib
+already enables both, so the declaration adds no build and `cargo tree -i gix`
+still reports one version.
+
+**The test matrix.** `PYJUTSU_TEST_OBJECT_HASH=sha256` rebuilds every test repo
+on a SHA-256 backend, through the shared isolated config that both the CLI and
+the binding read. One harness fix was needed: git refuses to transfer between
+repositories of different object formats, so `init_bare_remote` now creates the
+push/fetch remote with a matching `--object-format`. Under that variable the
+whole suite passes — 395 passed, with `tests/test_sha256.py` skipping itself
+because each of its tests picks its own format.
+
+**The strongest patch-id evidence is incidental.** `test_patch_id_is_pinned_for_fixed_diff`
+pins the literal digest `9acba72932d8936dab73915f34a54bceb923689f`. That test
+passes unchanged in the SHA-256 matrix run. The patch id is therefore not merely
+the same *width* in a SHA-256 repository — it is the same *value*, which is the
+finding F2 decision proved directly.
+
+Focused validation:
+
+```text
+pytest -q -n0 tests/test_sha256.py                  PASS: 6 passed
+PYJUTSU_TEST_OBJECT_HASH=sha256 pytest -q           PASS: 395 passed, 6 skipped
+```
+
+Full validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: 401 passed
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+The first full gate stopped at Ruff on an import left unused by the harness fix.
+The import was removed and the whole gate restarted.
+
+Evidence is in `artifacts/20260826T194500Z-b3-focused/`,
+`artifacts/20260826T195500Z-b3-sha256-matrix/` (the run that exposed the
+mismatched bare remotes), `artifacts/20260826T200500Z-b3-sha256-matrix/` (green),
+`artifacts/20260826T201000Z-b3-gate/` (the red Ruff run), and
+`artifacts/20260826T201500Z-b3-gate/` (green).

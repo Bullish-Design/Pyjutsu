@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from tests.diff.jj_cli import JjCli, write_config
+from tests.diff.jj_cli import JjCli, init_bare_remote, write_config
 
 #: Description set on `@` in the scratch repo; tests assert the binding reads it back.
 WC_DESCRIPTION = "hello from pyjutsu test"
@@ -70,7 +69,7 @@ def bookmarked_repo(tmp_path: Path, jj: JjCli) -> Path:
     jj(repo, "new", "-m", "work on top")
 
     origin = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
+    init_bare_remote(origin)
     jj(repo, "git", "remote", "add", "origin", str(origin))
     jj(repo, "git", "push", "--bookmark", "feature")
     return repo

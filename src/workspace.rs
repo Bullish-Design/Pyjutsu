@@ -22,6 +22,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use jj_lib::commit::Commit;
+use jj_lib::config::ConfigGetError;
 use jj_lib::default_backend_factories::{
     default_backend_factories, default_working_copy_factories, default_working_copy_factory,
 };
@@ -42,7 +43,7 @@ use jj_lib::ref_name::{RefName, RefNameBuf, RemoteName, WorkspaceName, Workspace
 use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader};
 use jj_lib::repo_path::{RepoPath, RepoPathBuf, RepoPathUiConverter};
 use jj_lib::rewrite::merge_commit_trees;
-use jj_lib::settings::HumanByteSize;
+use jj_lib::settings::{HumanByteSize, UserSettings};
 use jj_lib::str_util::{StringExpression, StringPattern};
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
 use jj_lib::workspace::Workspace;
@@ -170,6 +171,31 @@ fn adopt_existing_git(workspace: &mut Workspace, repo: Arc<ReadonlyRepo>) -> PyR
         pollster::block_on(locked_ws.finish(op_id)).map_err(map_workingcopy_err)?;
     }
     Ok(())
+}
+
+/// Resolve the repository object format for a **new** repo, matching `jj git init`.
+///
+/// jj-lib gap (checked 0.44.0): `Workspace::init_colocated_git` and `init_internal_git` take a
+/// `gix::hash::Kind` directly. jj-lib defines neither the `git.object-hash` key, nor its two
+/// values, nor the `"sha1"` default — jj-**cli** owns all three. That policy is vendored here,
+/// like `src/config/revsets.toml`, and belongs on the per-upgrade re-verification list.
+///
+/// The object format is fixed when the repo is created and can never change afterwards, so this
+/// is read once at init and never again. Every other verb reads the format back from the store.
+fn git_object_hash(settings: &UserSettings) -> PyResult<gix::hash::Kind> {
+    // Vendored from jj 0.44.0: `git.object-hash = "sha1"` in the CLI's `--include-defaults` output.
+    let name = match settings.get_string("git.object-hash") {
+        Ok(name) => name,
+        Err(ConfigGetError::NotFound { .. }) => "sha1".to_owned(),
+        Err(err) => return Err(PyjutsuError::new_err(err.to_string())),
+    };
+    match name.as_str() {
+        "sha1" => Ok(gix::hash::Kind::Sha1),
+        "sha256" => Ok(gix::hash::Kind::Sha256),
+        other => Err(PyjutsuError::new_err(format!(
+            "invalid git.object-hash {other:?}: expected \"sha1\" or \"sha256\""
+        ))),
+    }
 }
 
 /// jj-lib gap (checked 0.42.0 and 0.44.0): the string `info/exclude` appears nowhere in jj-lib.
@@ -990,6 +1016,11 @@ impl PyWorkspace {
     /// existing repo. Uncommitted working-tree edits are preserved (the next snapshot captures them
     /// into `@`). A repo with no commits yet leaves the empty `@` on `root()`.
     ///
+    /// **Object format:** a created repo uses the `git.object-hash` setting (`"sha1"` or
+    /// `"sha256"`, default `"sha1"`), exactly as `jj git init` does. jj-cli exposes no flag for it
+    /// either, so configuration is the only input. An adopted `.git` keeps its own format. In a
+    /// SHA-256 repo every commit id is 64 hex characters; `patch_id_hex` stays SHA-1 by design.
+    ///
     /// I/O-heavy and `Send` → the constructor runs **off the GIL**. Creation itself uses bootstrap
     /// settings, because no repository or workspace configuration identity exists yet. The handle
     /// this method returns is then built by `load`, so settings are re-resolved against the
@@ -1008,6 +1039,9 @@ impl PyWorkspace {
         // Initialization is a bootstrap path. No repository or workspace configuration identity
         // exists until jj-lib creates the workspace metadata.
         let settings = bootstrap_user_settings()?;
+        // Only a *created* repo takes an object format. An adopted `.git` already has one, and
+        // jj reads it back from that repo.
+        let object_hash = git_object_hash(&settings)?;
         // Colocating onto an existing `.git` adopts it; `init_colocated_git` would instead try to
         // *create* a git repo and fail ("Failed to initialize git repository").
         let adopt_existing = colocate && path.join(".git").exists();
@@ -1027,7 +1061,7 @@ impl PyWorkspace {
                 let (workspace, _repo) = pollster::block_on(Workspace::init_colocated_git(
                     &settings,
                     &path,
-                    gix::hash::Kind::Sha1,
+                    object_hash,
                 ))
                 .map_err(map_workspace_err)?;
                 ensure_jj_git_excluded(&path.join(".git"))?;
@@ -1049,12 +1083,9 @@ impl PyWorkspace {
                 }
                 Ok(workspace)
             } else {
-                let (workspace, _repo) = pollster::block_on(Workspace::init_internal_git(
-                    &settings,
-                    &path,
-                    gix::hash::Kind::Sha1,
-                ))
-                .map_err(map_workspace_err)?;
+                let (workspace, _repo) =
+                    pollster::block_on(Workspace::init_internal_git(&settings, &path, object_hash))
+                        .map_err(map_workspace_err)?;
                 Ok(workspace)
             }
         })?;

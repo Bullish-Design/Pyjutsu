@@ -19,11 +19,11 @@ import pyjutsu
 import pytest
 from pyjutsu import GitError
 
-from tests.diff.jj_cli import JjCli
+from tests.diff.jj_cli import JjCli, init_bare_remote
 
 
 def _init_bare(path: Path) -> Path:
-    subprocess.run(["git", "init", "--bare", str(path)], check=True, capture_output=True)
+    init_bare_remote(path)
     return path
 
 

@@ -1,6 +1,6 @@
 """Driver for the devenv-pinned `jj` CLI — the other half of every differential test.
 
-Each operation Pyjutsu performs is checked against the exact `jj` 0.42.0 binary the devenv
+Each operation Pyjutsu performs is checked against the exact `jj` 0.44.0 binary the devenv
 pins (concept §7). This module just runs that binary against a repo with an isolated config
 so results are reproducible and independent of the developer's `~/.jjconfig`.
 """
@@ -25,11 +25,42 @@ _CONFIG_TOML = (
 )
 
 
+#: Environment variable that runs the whole suite against one object format. Unset means the jj
+#: default, SHA-1. Set it to ``sha256`` to re-run every repo-building test on a SHA-256 backend:
+#:
+#:     PYJUTSU_TEST_OBJECT_HASH=sha256 pytest -q
+#:
+#: `tests/test_sha256.py` chooses its own format per test, so it skips itself when this is set.
+OBJECT_HASH_ENV = "PYJUTSU_TEST_OBJECT_HASH"
+
+
+def suite_object_hash() -> str | None:
+    """The object format this whole run forces, or ``None`` for the jj default."""
+    return os.environ.get(OBJECT_HASH_ENV) or None
+
+
 def write_config(directory: Path) -> Path:
     """Write the isolated jj config into ``directory`` and return its path."""
     config = directory / "jjconfig.toml"
-    config.write_text(_CONFIG_TOML)
+    toml = _CONFIG_TOML
+    object_hash = suite_object_hash()
+    if object_hash:
+        toml += f'\n[git]\nobject-hash = "{object_hash}"\n'
+    config.write_text(toml)
     return config
+
+
+def init_bare_remote(path: Path) -> None:
+    """Create the bare git remote every push/fetch test uses.
+
+    Git refuses to transfer between repositories of different object formats, so the remote must
+    match whatever format the suite builds its repos with.
+    """
+    object_hash = suite_object_hash()
+    args = ["git", "init", "--bare"]
+    if object_hash:
+        args.append(f"--object-format={object_hash}")
+    subprocess.run([*args, str(path)], check=True, capture_output=True)
 
 
 class JjCli:

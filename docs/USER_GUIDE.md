@@ -83,8 +83,25 @@ They remain in `.git` after re-adoption until explicit backend garbage collectio
 ws.gc()  # mirrors `jj util gc`; no operation is published
 ```
 
-The default preserves objects newer than two weeks, matching jj 0.42. Pass a timezone-aware
+The default preserves objects newer than two weeks, matching jj 0.44. Pass a timezone-aware
 `datetime` as `keep_newer` to select another safety cutoff.
+
+### Object format (SHA-1 or SHA-256)
+
+A repo `init` creates uses the `git.object-hash` setting — `"sha1"` (the default) or `"sha256"`
+— exactly as `jj git init` does. jj offers no command-line flag for it, so configuration is the
+only input:
+
+```toml
+# in your jj config
+[git]
+object-hash = "sha256"
+```
+
+The format is fixed at creation and cannot change afterwards. An adopted `.git` keeps its own
+format. In a SHA-256 repo every commit id is 64 hex characters. `patch_id` is unaffected: it is
+a Pyjutsu content digest, not a git object id, so it stays SHA-1 and 40 hex characters in every
+repo, and the same diff yields the same value under both formats.
 
 ### Add a secondary workspace
 

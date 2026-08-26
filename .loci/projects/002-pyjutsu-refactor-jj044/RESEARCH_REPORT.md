@@ -174,3 +174,43 @@ Primary sources:
 
 This evidence proves the port compiles and the existing suite passes under
 0.44.0. It does not yet prove SHA-256 repository behavior; B3 covers that.
+
+## 2026-08-26 — B3 SHA-256 repositories
+
+The pinned CLI is the primary source for the object-format policy. Its
+`--include-defaults` output lists `git.object-hash = "sha1"`, and `jj git init
+--help` lists no flag for it, so configuration is the only input. Creating a
+repository with `jj git init --colocate --config git.object-hash=sha256` yields
+`extensions.objectformat = sha256` in the colocated `.git` and 64-hex commit
+ids. That command is the oracle Pyjutsu's `init` now matches.
+
+jj-lib takes the format as a `gix::hash::Kind` and defines none of the key, the
+values, or the default. Searching the jj-lib 0.44.0 source for `object-hash`
+returns no configuration handling, only `gix` calls. The mapping is therefore
+jj-cli policy, vendored in `git_object_hash`.
+
+`gix::hash::Kind::Sha1` and `Kind::Sha256` are each behind their matching gix
+feature (`gix-hash-0.26.0/src/lib.rs:96-105`). Pyjutsu names both, so both are
+now declared on Pyjutsu's own gix edge. This is finding F1's rule applied to a
+call the 0.44 port introduced, and it supersedes the earlier decision not to
+declare `sha1`.
+
+Two harness facts came out of the matrix run:
+
+- Git refuses to transfer objects between repositories of different formats.
+  Eight `test_git_net` failures and four tag-push failures were all one cause: a
+  SHA-1 bare remote paired with a SHA-256 source repo. Creating the remote with
+  a matching `--object-format` fixes every one. This is a harness limit, not a
+  Pyjutsu defect.
+- `test_patch_id_is_pinned_for_fixed_diff` pins a literal SHA-1 digest and
+  passes unchanged under the SHA-256 matrix. The patch id keeps its exact value,
+  not only its width, which proves the finding F2 decision directly.
+
+Primary sources:
+
+- Pinned CLI binary, jj 0.44.0 — `git.object-hash` default and the `jj git init` option list.
+- [jj-lib 0.44.0 `git_backend.rs`](https://github.com/jj-vcs/jj/blob/v0.44.0/lib/src/git_backend.rs) — `object_hash` threaded into repository creation.
+- `gix-hash` 0.26.0 `src/lib.rs` — the two `Kind` variants and their feature gates.
+
+This evidence proves repository creation, the full read and write surface, and
+patch-id stability under SHA-256.
