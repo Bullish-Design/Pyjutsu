@@ -498,3 +498,71 @@ cargo tree -i gix                         one version (0.85.0)
 ```
 
 Evidence is in `artifacts/<UTC>-d9-gate/`.
+
+### 2026-08-26 — release 0.19.0, and project 004 closes
+
+**Version: 0.19.0.** Every lane added public surface and changed no existing behaviour, so the
+minor number moves. The one behaviour change is a narrowing that makes a silent failure loud:
+`init(colocate=True, trunk=…)` used to swallow a failed `.git/HEAD` write; D4 replaced it with a
+gix `RefEdit`, so an invalid trunk name now raises instead of leaving `HEAD` alone.
+
+Bumped in `Cargo.toml`, `pyproject.toml`, `python/pyjutsu/__init__.py`, and the pinned value in
+`tests/test_build.py`. Release notes are in `README.md` beside 0.18.0; `docs/USER_GUIDE.md` and
+`docs/PYJUTSU_CONCEPT.md` carry the new status line, and the guide documents every new verb in §8.
+
+**`ws.git` is complete.** Every git-side read and write now lives in one namespace:
+
+| Verb | Lane |
+|---|---|
+| `refs`, `write_ref`, `delete_ref`, `remotes` | D1 (moved, with deprecating aliases) |
+| `create_tag`, `tag`, `tags` | D2 |
+| `config_get`, `config_set`, `config_unset` | D3 |
+| `head`, `set_head` | D4 |
+| `worktrees` | D5 |
+| `object_type`, `exists`, `read_blob` | D6 |
+| `submodules` | D7 |
+| `reflog` | D8 |
+| `index_entries` | D9 |
+
+`git_import`, `git_export`, `sync_colocated`, `git_fetch`, and `git_push` stayed on `Workspace`:
+they publish jj operations, they are not git-side reads.
+
+**gix features declared on Pyjutsu's own edge:** `sha1` and `sha256` (from project 002),
+`attributes` (D7, `Repository::submodules`), and `index` (D9, `Repository::try_index`). jj-lib
+already enabled all four, so the build is unchanged; declaring them states what Pyjutsu itself
+calls rather than relying on a transitive crate's feature choice. `cargo tree -i gix` shows one
+version, 0.85.0.
+
+**The depth rule held.** `apply_head_ref_packed` is still the only site reaching under
+`gix::refs::file::transaction`, and this project did not touch it. The deepest new call is D3's
+`gix::config::File::set_raw_value_filter_by`, one level below `config_snapshot`, and only because
+gix's typed `SnapshotMut::set_value` accepts just the statically-known keys in its own config tree.
+
+**Re-verification list.** Unchanged by this project — still the five entries project 003 left:
+`src/config/revsets.toml`, the `git.object-hash` policy, the `fix.tools` schema, the `revsets.fix`
+default, and the `signing.behavior` names. No Phase D lane vendored jj-cli policy.
+
+**One SHA-256 fix.** The first full `PYJUTSU_TEST_OBJECT_HASH=sha256` run failed all of
+`test_git_submodules.py`: git refuses to add "a submodule of a different hash algorithm", so the
+child repository must share the superproject's object format. `_child_repo` now passes
+`--object-format` from `suite_object_hash()`, the same rule `init_bare_remote` already applied to
+push/fetch remotes. Red run preserved.
+
+**Final gate, on the documented state:**
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: 537 collected, exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+PYJUTSU_TEST_OBJECT_HASH=sha256 pytest -q PASS: exit 0
+cargo tree -i gix                         one version (0.85.0)
+```
+
+Baseline for comparison: 7 Rust tests and 401 Python tests at 0.17.0. Phases C and D together
+added 136 tests.
+
+Evidence is in `artifacts/<UTC>-release-0190-gate/` (with the red SHA-256 run) and
+`-release-0190-final/`.

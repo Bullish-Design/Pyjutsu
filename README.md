@@ -12,8 +12,43 @@ no subprocess and no text parsing.
   [`docs/DEV_GUIDE.md`](docs/DEV_GUIDE.md) (working on it) ·
   [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md) (design spec).
 
-**Status: 0.18.0 — tracks jj-lib 0.44.0.** The reads, transactions/mutations, op-log time travel,
+**Status: 0.19.0 — tracks jj-lib 0.44.0.** The reads, transactions/mutations, op-log time travel,
 workspaces, and git interop are implemented and differential-tested against the pinned `jj` CLI.
+
+### 0.19.0 — the colocated git surface
+
+0.19.0 adds public surface only. Nothing existing changes behaviour. It completes `ws.git`, the
+namespace 0.18.0 opened: the git half of a colocated repository that jj deliberately does not
+model.
+
+**Git configuration.** `ws.git.config_get(key)` returns the **effective** value — the merged
+system, global, and repository-local configuration git itself would use — so it answers "what is
+`core.hooksPath` here". `ws.git.config_set` and `ws.git.config_unset` write the
+**repository-local** file only, never your global one.
+
+**`HEAD`.** `ws.git.head()` returns `{name, oid, detached}`, and `ws.git.set_head(name)` points
+`HEAD` at a branch symbolically. The raw `.git/HEAD` file write behind
+`init(colocate=True, trunk=...)` is gone; gix validates the ref name now.
+
+**Worktrees.** `ws.git.worktrees()` lists them as `GitWorktree` rows (`path`, `head_oid`,
+`branch`, `locked`, `prunable`, `main`), matching `git worktree list --porcelain`. Read-only.
+
+**Objects.** `ws.git.object_type(oid)`, `ws.git.exists(oid)`, and `ws.git.read_blob(oid)` read the
+git object database directly. A malformed oid raises rather than reporting "absent".
+
+**Submodules.** `ws.git.submodules()` lists what `.gitmodules` declares. jj has no submodule
+support at all, so this is the only way to see them. Read-only: no update, init, or clone.
+
+**Reflog.** `ws.git.reflog(ref="HEAD", limit=None)` returns `ReflogEntry` rows newest first. jj's
+operation log covers what jj did; it does not cover a `git reset` or `git checkout` run outside
+jj, which is exactly when a colocated recovery tool is needed.
+
+**Index.** `ws.git.index_entries()` returns `GitIndexEntry` rows in `git ls-files --stage` order,
+conflict stages included. Read-only: jj-lib's `reset_head` owns index writes.
+
+Two gix features are now declared on Pyjutsu's own dependency edge — `attributes` (submodules) and
+`index` (the index read). Both were already enabled by jj-lib, so nothing about the build changes;
+Pyjutsu simply no longer relies on a transitive crate's feature choice.
 
 ### 0.18.0 — the jj read surface
 

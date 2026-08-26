@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pyjutsu
 
-from tests.diff.jj_cli import JjCli
+from tests.diff.jj_cli import JjCli, suite_object_hash
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -51,10 +51,18 @@ def _submodule_status(repo: Path) -> dict[str, tuple[str, str]]:
 
 
 def _child_repo(tmp_path: Path) -> Path:
-    """A plain git repository to use as a submodule source."""
+    """A plain git repository to use as a submodule source.
+
+    It must share the superproject's object format: git refuses to add "a submodule of a
+    different hash algorithm", the same rule `init_bare_remote` handles for push/fetch remotes.
+    """
     child = tmp_path / "child"
     child.mkdir()
-    _git(child, "init", "-q", "--initial-branch=main", ".")
+    args = ["init", "-q", "--initial-branch=main"]
+    object_hash = suite_object_hash()
+    if object_hash:
+        args.append(f"--object-format={object_hash}")
+    _git(child, *args, ".")
     (child / "c.txt").write_text("child\n")
     _git(child, "add", "c.txt")
     _git(child, "commit", "-q", "-m", "child commit")
