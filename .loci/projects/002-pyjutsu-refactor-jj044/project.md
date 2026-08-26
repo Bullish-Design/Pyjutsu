@@ -1,7 +1,7 @@
 ---
 title: Pyjutsu refactor and jj-lib 0.44 upgrade
 type: project
-status: active
+status: complete
 loci:
   schema: 1
   id: 73e04d8e-9b53-47a1-ba77-0bd81b54d558
@@ -672,3 +672,19 @@ object-format mapping, because jj-lib owns neither the key nor its default.
 `refs/jj/keep/` and `gix::hash::hasher` appear nowhere in `src/`. `gix::hash`
 does appear, in `git_object_hash`, which names the two `Kind` variants — the
 reason Pyjutsu now declares the `sha1` and `sha256` gix features itself.
+
+### 2026-08-26 — handoff
+
+Phase A and Phase B are complete, released as 0.17.0, and merged to `main` at
+`186e460941d0`. Phase C and Phase D are now their own projects, each with a
+prompt written from the plan:
+
+- [[.loci/projects/003-pyjutsu-jj-read-surface/project.md]] — Phase C, the jj
+  read surface. Start with C1 (conflict content); it is the largest and the
+  highest value. C3 carries an unresolved scoping decision for
+  `IdPrefixContext`; the plan records the recommendation and the alternative.
+- [[.loci/projects/004-pyjutsu-ws-git-namespace/project.md]] — Phase D, the
+  `ws.git` colocated namespace. D1 blocks every other lane, and D1 plus D2 are
+  what make the `DeprecationWarning` this release ships point at a real path.
+
+Neither was started in this session.
