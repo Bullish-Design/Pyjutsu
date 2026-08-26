@@ -16,12 +16,15 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
-use gix::remote::{Direction, fetch::Tags};
+use gix::remote::Direction;
 use pyo3::exceptions::PyUserWarning;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use jj_lib::commit::Commit;
+use jj_lib::default_backend_factories::{
+    default_backend_factories, default_working_copy_factories, default_working_copy_factory,
+};
 use jj_lib::fileset::{self, FilesetAliasesMap, FilesetDiagnostics, FilesetParseContext};
 use jj_lib::git::{
     self, GitFetch, GitFetchRefExpression, GitImportOptions, GitProgress, GitPushOptions,
@@ -36,13 +39,13 @@ use jj_lib::object_id::ObjectId;
 use jj_lib::op_store::OperationId;
 use jj_lib::op_walk;
 use jj_lib::ref_name::{RefName, RefNameBuf, RemoteName, WorkspaceName, WorkspaceNameBuf};
-use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader, StoreFactories};
+use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader};
 use jj_lib::repo_path::{RepoPath, RepoPathBuf, RepoPathUiConverter};
 use jj_lib::rewrite::merge_commit_trees;
 use jj_lib::settings::HumanByteSize;
 use jj_lib::str_util::{StringExpression, StringPattern};
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
-use jj_lib::workspace::{Workspace, default_working_copy_factories, default_working_copy_factory};
+use jj_lib::workspace::Workspace;
 use jj_lib::workspace_store::{SimpleWorkspaceStore, WorkspaceStore};
 
 use crate::config_loader::{bootstrap_user_settings, resolved_workspace_settings};
@@ -463,7 +466,7 @@ impl PyWorkspace {
     /// Re-opening per verb reads the current on-disk git config, matching the CLI's behaviour.
     fn fresh_loader(ws: &Workspace) -> PyResult<RepoLoader> {
         let settings = ws.repo_loader().settings().clone();
-        let store_factories = StoreFactories::default();
+        let store_factories = default_backend_factories();
         RepoLoader::init_from_file_system(&settings, ws.repo_path(), &store_factories)
             .map_err(map_backend_err)
     }
@@ -487,7 +490,7 @@ impl PyWorkspace {
             let message = CString::new(warning).map_err(map_workspace_err)?;
             PyErr::warn(py, &py.get_type::<PyUserWarning>(), &message, 1)?;
         }
-        let store_factories = StoreFactories::default();
+        let store_factories = default_backend_factories();
         let working_copy_factories = default_working_copy_factories();
         let inner = resolved
             .loader
@@ -1021,9 +1024,12 @@ impl PyWorkspace {
                 ensure_jj_git_excluded(&path.join(".git"))?;
                 Ok(workspace)
             } else if colocate {
-                let (workspace, _repo) =
-                    pollster::block_on(Workspace::init_colocated_git(&settings, &path))
-                        .map_err(map_workspace_err)?;
+                let (workspace, _repo) = pollster::block_on(Workspace::init_colocated_git(
+                    &settings,
+                    &path,
+                    gix::hash::Kind::Sha1,
+                ))
+                .map_err(map_workspace_err)?;
                 ensure_jj_git_excluded(&path.join(".git"))?;
                 // If a trunk name is given, set HEAD in the colocated .git to point at that
                 // branch so no leftover default-branch ref (e.g. refs/heads/master) survives.
@@ -1043,9 +1049,12 @@ impl PyWorkspace {
                 }
                 Ok(workspace)
             } else {
-                let (workspace, _repo) =
-                    pollster::block_on(Workspace::init_internal_git(&settings, &path))
-                        .map_err(map_workspace_err)?;
+                let (workspace, _repo) = pollster::block_on(Workspace::init_internal_git(
+                    &settings,
+                    &path,
+                    gix::hash::Kind::Sha1,
+                ))
+                .map_err(map_workspace_err)?;
                 Ok(workspace)
             }
         })?;
@@ -1512,7 +1521,7 @@ impl PyWorkspace {
                 let refspecs =
                     git::expand_fetch_refspecs(remote_name, ref_expr).map_err(map_git_err)?;
                 fetcher
-                    .fetch(remote_name, refspecs, &mut NullGitCallback, None, None)
+                    .fetch(remote_name, refspecs, &mut NullGitCallback, None)
                     .map_err(map_git_err)?;
                 pollster::block_on(fetcher.import_refs()).map_err(map_git_err)?;
             } // drop the fetcher → release its &mut MutableRepo borrow before rebase/commit
@@ -1958,9 +1967,9 @@ impl PyWorkspace {
         rows.iter().map(|r| r.to_dict(py)).collect()
     }
 
-    /// Add a git remote (`jj git remote add`), publishing one operation. `push_url`, `fetch_tags`,
-    /// and per-remote auto-track are the CLI's defaults (`None` / `Tags::None` / match-all) — the
-    /// refinements are out of scope, not exposed. A duplicate name raises `GitError`.
+    /// Add a git remote (`jj git remote add`), publishing one operation. `push_url` uses the CLI's
+    /// default (`None`, the fetch URL); refinements are out of scope. A duplicate name raises
+    /// `GitError`.
     ///
     /// `add_remote` is a `&mut MutableRepo` mutation that changes the view, so it runs inside a
     /// transaction publishing exactly one op. The `!Send` `Transaction` stays inside one off-GIL
@@ -1971,10 +1980,8 @@ impl PyWorkspace {
         py.allow_threads(move || -> PyResult<()> {
             let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
             let mut tx = repo.start_transaction();
-            // jj-lib 0.42 dropped `add_remote`'s trailing auto-track expression argument; the
-            // 4th arg is the optional push URL (`None` = same as fetch).
-            git::add_remote(tx.repo_mut(), name.as_ref(), url, None, Tags::None)
-                .map_err(map_git_err)?;
+            // The 4th arg is the optional push URL (`None` = same as fetch).
+            git::add_remote(tx.repo_mut(), name.as_ref(), url, None).map_err(map_git_err)?;
             pollster::block_on(tx.commit(format!("add git remote '{name}'")))
                 .map_err(map_backend_err)?;
             Ok(())

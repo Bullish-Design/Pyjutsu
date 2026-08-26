@@ -128,7 +128,10 @@ def test_vendored_aliases_match_pinned_cli_defaults(tmp_path: Path, monkeypatch:
     repo = _make_repo(tmp_path)
     vendored = tomllib.loads((Path(__file__).parents[1] / "src/config/revsets.toml").read_text())
     effective = tomllib.loads(_run_jj(repo, "config", "list", "--include-defaults"))
-    assert effective["ui"]["revsets-use-glob-by-default"] is True
+    # jj 0.44 dropped `ui.revsets-use-glob-by-default`; jj-lib dropped the matching
+    # `RevsetParseContext` field. Assert the key is gone, so a future release that brings a
+    # glob-mode setting back fails here rather than diverging from the CLI in silence.
+    assert "revsets-use-glob-by-default" not in effective["ui"]
     assert effective["revset-aliases"] == vendored["revset-aliases"]
 
 

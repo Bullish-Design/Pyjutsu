@@ -459,3 +459,85 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 The first full run stopped on Ruff import ordering after Rust passed. The two
 imports were reordered and the whole gate restarted. Green evidence is in
 `artifacts/20260826T183000Z-a4-final/`.
+
+### 2026-08-26 — B1 and B2 pin move and gix port
+
+Lane `jj044-upgrade` moves the pin to `jj-lib = "=0.44.0"` and
+`gix = "=0.85.0"`, regenerates the lock, and ports every call site the new
+release changed. `cargo tree -i gix` reports one version, `gix v0.85.0`, with
+`jj-lib v0.44.0` and `pyjutsu` as its only two dependents. The `version_is_pinned`
+Rust test and `tests/test_build.py` assert `"0.44.0"` in the same commit as the
+pin, so the pin and its assertions can never disagree.
+
+The devenv `nixpkgs-jj` input moves to rev `a5c43f1df1e17386c951571ec4a7942d2e9cda2e`,
+which ships jujutsu 0.44.0. The differential tests therefore compare against the
+CLI of the bound library, as before.
+
+**Decision: B1 and B2 land as one commit.** The pin move alone does not compile.
+It produced exactly 12 errors, preserved in `artifacts/20260826T184000Z-b1-pin/`.
+The project forbids a commit on a red gate, so the pin and its port are one
+change. The evidence for each step is separate.
+
+The 12 errors are seven distinct jj-lib API changes:
+
+| Change | Site |
+|---|---|
+| `StoreFactories::default()` is gone; use `default_backend_factories::default_backend_factories()` | `workspace.rs` `fresh_loader`, `load` |
+| `default_working_copy_factories` and `default_working_copy_factory` moved from `jj_lib::workspace` to `jj_lib::default_backend_factories` | `workspace.rs` imports |
+| `Workspace::init_colocated_git` and `init_internal_git` take a third argument, the `gix::hash::Kind` object format | `workspace.rs` `init` |
+| `GitFetch::fetch` takes four arguments, not five | `workspace.rs` `fetch` |
+| `git::add_remote` takes four arguments, not five; the `gix::remote::fetch::Tags` import is deleted | `workspace.rs` `add_remote` |
+| `Index::is_ancestor` is now async | `repo_view.rs` `is_ancestor` |
+| `MutableRepo::track_remote_bookmark` is now async | `transaction.rs` `track_remote_bookmark` |
+| `RevsetParseContext` has no `use_glob_by_default` field | `revset.rs` `RevsetConfig`, `parse_user_expression` |
+
+Both new async calls run through `pollster::block_on` inside the existing
+off-GIL block, which is the pattern every other async jj-lib call already uses.
+
+**`apply_head_ref_packed` — its own task.** The plan budgets this function
+separately because it drives the low-level `gix` file-store transaction API.
+Under gix 0.85 it needed no source change. `PackedRefs`,
+`DeletionsAndNonSymbolicUpdatesRemoveLooseSourceReference`, `prepare`, and
+`commit` all keep their 0.84 signatures. Its focused suite proves it:
+
+```text
+cargo fmt --check                      PASS
+cargo check --all-targets              PASS
+maturin develop --uv                   PASS
+pytest -q -n0 tests/test_git_ref_write.py  PASS: 8 passed
+```
+
+Evidence is in `artifacts/20260826T190000Z-b2-ref-repair/`.
+
+**The vendored revset table.** `src/config/revsets.toml` was re-diffed against
+the pinned CLI itself, because jj-cli sources are not published to the Cargo
+registry. `jj config list --include-defaults revset-aliases` under jj 0.44.0
+matches the vendored table byte for byte and adds one alias, `builtin_log()`.
+That alias is now vendored, so `tests/test_revset_config.py` can keep asserting
+exact equality with the pinned CLI rather than a weaker subset check.
+
+**One dropped setting.** jj 0.44 removes `ui.revsets-use-glob-by-default`, and
+jj-lib removes the matching `RevsetParseContext` field. The staleness test
+asserted that setting was `true`. It now asserts the key is absent, so a future
+release that reintroduces glob mode fails the test instead of diverging from the
+CLI in silence.
+
+The first full gate stopped on that one test, after Rust and Ruff passed. The
+table and the assertion were corrected and the whole gate restarted.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: 395 passed
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/20260826T184000Z-b1-pin/`,
+`artifacts/20260826T184500Z-b2-mechanical/`,
+`artifacts/20260826T190000Z-b2-ref-repair/`,
+`artifacts/20260826T191500Z-b1b2-gate/` (the red run), and
+`artifacts/20260826T192500Z-b1b2-gate/` (green).

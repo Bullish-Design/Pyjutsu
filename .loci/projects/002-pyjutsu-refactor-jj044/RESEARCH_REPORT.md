@@ -133,3 +133,44 @@ contract. The same anchors must be rechecked once B1 moves the pin to 0.44.0.
 The restarted full gate is green in `artifacts/20260826T183000Z-a4-final/`:
 7 Rust tests passed, all 395 Python tests passed, and the aggregate verification
 task exited successfully.
+
+## 2026-08-26 — B1 and B2 pin move and gix port
+
+The pin move is not a self-contained green step. Moving `jj-lib` to `=0.44.0`
+and `gix` to `=0.85.0` produced 12 compiler errors across four source files.
+The raw output is preserved in `artifacts/20260826T184000Z-b1-pin/`. B1 and B2
+therefore land as one commit, because the project forbids a commit on a red gate.
+
+The 12 errors reduce to seven jj-lib API changes: `StoreFactories::default` is
+replaced by `default_backend_factories`; the two working-copy factory functions
+moved module; the two Git workspace initializers take a `gix::hash::Kind`;
+`GitFetch::fetch` and `git::add_remote` each lost one argument;
+`Index::is_ancestor` and `MutableRepo::track_remote_bookmark` became async; and
+`RevsetParseContext` lost `use_glob_by_default`.
+
+`cargo tree -i gix` resolves a single `gix v0.85.0`. Nothing pulls a second
+version, so the direct `gix` edge and jj-lib's own edge unify as required.
+
+`apply_head_ref_packed` is the one call site the plan budgets on its own,
+because it drives the low-level file-store transaction API. Under gix 0.85 it
+compiled and ran without a source change. Its dedicated suite passed 8 tests.
+Evidence is in `artifacts/20260826T190000Z-b2-ref-repair/`.
+
+jj-cli is not published to the Cargo registry, so the vendored revset table was
+re-diffed against the pinned CLI binary instead of upstream source. jj 0.44.0's
+`jj config list --include-defaults revset-aliases` reproduces every vendored
+alias byte for byte and adds `builtin_log()`. Vendoring that one alias keeps the
+staleness test an exact-equality oracle.
+
+jj 0.44 also removes `ui.revsets-use-glob-by-default` from the CLI defaults,
+which confirms the jj-lib field removal is intended and not a private-API
+accident. The test now asserts the key is absent.
+
+Primary sources:
+
+- [Jujutsu v0.44.0 source](https://github.com/jj-vcs/jj/tree/v0.44.0) — target release.
+- [jj-lib 0.44 crate manifest](https://github.com/jj-vcs/jj/blob/v0.44.0/lib/Cargo.toml) — gix features `sha1` and `sha256`.
+- Pinned CLI binary, nixpkgs rev `a5c43f1df1e17386c951571ec4a7942d2e9cda2e` — jj 0.44.0, the revset-alias and dropped-setting oracle.
+
+This evidence proves the port compiles and the existing suite passes under
+0.44.0. It does not yet prove SHA-256 repository behavior; B3 covers that.

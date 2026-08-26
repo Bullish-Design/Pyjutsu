@@ -346,9 +346,7 @@ impl PyRepoView {
         py.allow_threads(|| {
             let a = self.resolve_single(ancestor)?;
             let d = self.resolve_single(descendant)?;
-            self.repo
-                .index()
-                .is_ancestor(a.id(), d.id())
+            pollster::block_on(self.repo.index().is_ancestor(a.id(), d.id()))
                 .map_err(|e| PyjutsuError::new_err(e.to_string()))
         })
     }

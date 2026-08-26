@@ -39,7 +39,7 @@ class GitError(BackendError):
     """A git import/export or remote operation failed."""
 
 def version() -> str:
-    """Return the jj-lib version this extension was built against (build-derived, e.g. ``"0.42.0"``)."""
+    """Return the jj-lib version this extension was built against (build-derived, e.g. ``"0.44.0"``)."""
 
 def pyjutsu_version() -> str:
     """Return the compiled pyjutsu crate version (``CARGO_PKG_VERSION``), for the stale-build guard."""

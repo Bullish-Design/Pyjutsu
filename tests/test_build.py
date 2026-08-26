@@ -6,15 +6,15 @@ import pyjutsu
 from pyjutsu import _pyjutsu as ext
 
 
-def test_extension_links_jj_lib_0_42() -> None:
+def test_extension_links_jj_lib_0_44() -> None:
     # `version()` is build-derived (build.rs parses Cargo.lock), so this asserts the resolved pin.
-    assert ext.version() == "0.42.0"
+    assert ext.version() == "0.44.0"
 
 
 def test_linked_jj_lib_matches_target() -> None:
     # `JJ_LIB_TARGET` is now an alias of the build-derived `JJ_VERSION` (no second hand-maintained
     # copy); both equal the resolved jj-lib pin.
-    assert pyjutsu.JJ_VERSION == pyjutsu.JJ_LIB_TARGET == "0.42.0"
+    assert pyjutsu.JJ_VERSION == pyjutsu.JJ_LIB_TARGET == "0.44.0"
 
 
 def test_pyjutsu_version_matches_extension() -> None:

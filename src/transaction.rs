@@ -835,8 +835,7 @@ impl PyTransaction {
                 "no such remote bookmark '{name}@{remote}'"
             )));
         }
-        repo.track_remote_bookmark(symbol)
-            .map_err(map_backend_err)?;
+        pollster::block_on(repo.track_remote_bookmark(symbol)).map_err(map_backend_err)?;
         let remote_ref = repo.get_remote_bookmark(symbol);
         BookmarkData::remote(name, remote, &remote_ref).to_dict(py)
     }

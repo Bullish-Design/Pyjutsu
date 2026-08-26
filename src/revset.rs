@@ -32,11 +32,10 @@ use crate::errors::{map_backend_err, map_revset_err};
 /// Parsed settings that affect every revset in one loaded workspace.
 ///
 /// `Workspace::load()` creates this once from the resolved jj settings. Views and transactions
-/// clone its `Arc`, so each parse sees the same aliases, glob mode, and author email without
+/// clone its `Arc`, so each parse sees the same aliases and author email without
 /// reparsing configuration on every read.
 pub(crate) struct RevsetConfig {
     aliases: RevsetAliasesMap,
-    use_glob_by_default: bool,
     user_email: String,
     immutable_expression: OnceLock<Result<Arc<UserRevsetExpression>, String>>,
 }
@@ -66,15 +65,9 @@ impl RevsetConfig {
                 ));
             }
         }
-        // jj 0.42 defaults this setting to true. Pyjutsu does not yet vendor misc.toml, so retain
-        // the pinned default if a resolved configuration layer does not set it.
-        let use_glob_by_default = config
-            .get::<bool>("ui.revsets-use-glob-by-default")
-            .unwrap_or(true);
         (
             Self {
                 aliases,
-                use_glob_by_default,
                 user_email: settings.user_email().to_owned(),
                 immutable_expression: OnceLock::new(),
             },
@@ -123,7 +116,6 @@ fn parse_user_expression(
         date_pattern_context: chrono::Local::now().into(),
         default_ignored_remote: Some("git".as_ref()),
         fileset_aliases_map: &fileset_aliases,
-        use_glob_by_default: revset_config.use_glob_by_default,
         extensions: &extensions,
         workspace: Some(ws_ctx),
     };

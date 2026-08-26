@@ -74,9 +74,9 @@ mod tests {
     #[test]
     fn version_is_pinned() {
         // The build-derived jj-lib version (from Cargo.lock via build.rs) must equal the Cargo pin
-        // (`jj-lib = "=0.42.0"`). This asserts build.rs parsed the lock correctly, not a second
+        // (`jj-lib = "=0.44.0"`). This asserts build.rs parsed the lock correctly, not a second
         // hand-maintained copy of the number.
-        assert_eq!(version(), "0.42.0");
+        assert_eq!(version(), "0.44.0");
     }
 
     #[test]
