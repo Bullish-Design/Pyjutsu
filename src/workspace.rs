@@ -1901,6 +1901,19 @@ impl PyWorkspace {
         crate::git::submodules::read(self, py)
     }
 
+    /// Read the git reflog of `ref_name` (default `HEAD`), newest entry first, capped at `limit`
+    /// → one plain row each (`{old_oid, new_oid, signature, message}`). A bare name is a branch.
+    /// A ref with no reflog yields an empty list; an unknown ref raises. Read-only.
+    #[pyo3(signature = (ref_name="HEAD", limit=None))]
+    fn git_reflog<'py>(
+        &self,
+        py: Python<'py>,
+        ref_name: &str,
+        limit: Option<usize>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        crate::git::reflog::read(self, py, ref_name, limit)
+    }
+
     /// The name of `remote`'s default branch (what `git remote show` reports as `HEAD`), or `None`
     /// if the remote advertises none. Used by the pure-Python `git_clone` to place the new `@` on
     /// the cloned default branch. Spawns a `git remote show` subprocess (off the GIL) inside a

@@ -424,3 +424,43 @@ cargo tree -i gix                         one version (0.85.0)
 ```
 
 Evidence is in `artifacts/<UTC>-d7-gate/`.
+
+### 2026-08-26 — D8 reflog read
+
+Lane `004/d8` reads the colocated repository's git reflog. jj's operation log covers what jj did;
+it does not cover a `git reset` or `git checkout` run outside jj — exactly the case a colocated
+recovery tool is called for.
+
+**Rust.** New `src/git/reflog.rs` with a flat `git_reflog(ref_name="HEAD", limit=None)` native
+method. `Head::log_iter` for `HEAD`, `Reference::log_iter` for a branch; both are the shallow gix
+calls. The platform's `rev()` iterator yields most-recent first, which is `git reflog show`'s
+order, so no sorting is needed. Rows are `{old_oid, new_oid, signature, message}`, with the
+signature split into the same four fields every other Pyjutsu signature uses.
+
+**Two decisions.**
+
+- *A bare `ref` is a branch.* `reflog("main")` reads `refs/heads/main`, matching
+  `git reflog show main`; a name starting with `refs/` is taken as written.
+- *No reflog is an empty list; an unknown ref raises.* git creates a reflog only once something
+  moves the ref, so "nothing has happened yet" is not a failure. A ref that does not exist at all
+  is a different thing and raises.
+
+**Tests.** `tests/test_git_reflog.py` against `git reflog show --format=%H%x00%gD%x00%gs`: oid and
+message agreement entry for entry, newest-first order (each entry's `old_oid` is the next-older
+entry's `new_oid`), the all-zero `old_oid` git writes for a ref's creation, `limit`, the signature,
+a branch read by short and full name, the empty-list case, an unknown ref, and no operation
+published. The fixtures build a plain git repository first and adopt it with
+`Workspace.init(colocate=True)`, so the reflog holds real `git commit` entries rather than jj's.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/<UTC>-d8-gate/`.

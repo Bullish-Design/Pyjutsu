@@ -168,6 +168,22 @@ class GitSubmodule(BaseModel):
     active: bool
 
 
+class ReflogEntry(BaseModel):
+    """One line of a git reflog (:meth:`pyjutsu.GitView.reflog`).
+
+    ``old_oid`` and ``new_oid`` are the ref's values before and after the move; a run of zeros
+    means "the ref did not exist" (creation) or "the ref was deleted". ``message`` is git's own
+    reflog message, such as ``"commit: add a thing"`` or ``"checkout: moving from main to side"``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    old_oid: CommitId
+    new_oid: CommitId
+    signature: Signature
+    message: str
+
+
 class FileStat(BaseModel):
     """Per-file line counts within a :class:`DiffStat`."""
 

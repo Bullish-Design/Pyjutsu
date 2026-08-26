@@ -480,6 +480,7 @@ ws.git.object_type(oid)                       # "commit" | "tree" | "blob" | "ta
 ws.git.exists(oid)                            # is this object in the git object database?
 ws.git.read_blob(oid)                         # raw blob bytes
 ws.git.submodules()                           # list[GitSubmodule] (read-only)
+ws.git.reflog("HEAD", limit=20)               # list[ReflogEntry], newest first
 
 ws.create_tag("v1.0", "@")                    # lightweight tag through jj-lib
 ws.push_tag("v1.0", "origin")                 # push lightweight or annotated tag
@@ -528,6 +529,11 @@ ws.push_tag("v1.0", "origin")                 # push lightweight or annotated ta
   `git submodule status`'s flag: `-` when `head_oid is None`, `+` when the two differ, else a
   space. Nothing here updates, initializes, or clones — that would mutate a working copy jj knows
   nothing about.
+- **Reflog:** `ws.git.reflog(ref="HEAD", limit=None)` returns `ReflogEntry` rows newest first
+  (`old_oid`, `new_oid`, `signature`, `message`), matching `git reflog show`. jj's operation log
+  covers what jj did; it does **not** cover a `git reset` or `git checkout` run outside jj, which
+  is exactly when a colocated recovery tool is needed. A bare `ref` means `refs/heads/<name>`. A
+  ref with no reflog yields an empty list; an unknown ref raises.
 - **Tags:** `create_tag(name, target)` now creates a lightweight tag by default. Pass a positional
   or keyword `message` to retain annotated Git tag creation; that form emits a
   `DeprecationWarning` and delegates to `ws.git.create_tag(name, target, message)`, which now

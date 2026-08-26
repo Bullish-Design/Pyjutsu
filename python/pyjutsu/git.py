@@ -18,7 +18,15 @@ does not own; callers reconcile it into jj's view with
 
 from __future__ import annotations
 
-from .models import GitHead, GitSubmodule, GitTag, GitWorktree, Operation, Remote
+from .models import (
+    GitHead,
+    GitSubmodule,
+    GitTag,
+    GitWorktree,
+    Operation,
+    ReflogEntry,
+    Remote,
+)
 
 __all__ = ["GitView"]
 
@@ -180,6 +188,21 @@ class GitView:
         only: update, init, and clone would mutate a working copy jj knows nothing about.
         """
         return [GitSubmodule.model_validate(row) for row in self._handle.git_submodules()]
+
+    def reflog(self, ref: str = "HEAD", limit: int | None = None) -> list[ReflogEntry]:
+        """Read a git reflog → its :class:`~pyjutsu.ReflogEntry` rows, **newest first**.
+
+        ``ref`` is ``"HEAD"`` (the default) or a branch; a bare name means ``refs/heads/<name>``,
+        and a name starting with ``refs/`` is taken as written. ``limit`` caps the number of
+        entries returned. Matches ``git reflog show <ref>``.
+
+        jj's operation log covers what jj did. It does **not** cover a ``git reset`` or
+        ``git checkout`` run outside jj — which is exactly when a colocated recovery tool is
+        called for. A ref with no reflog yields an empty list (git creates one only once
+        something moves the ref); an unknown ref raises
+        :class:`~pyjutsu.errors.PyjutsuError`.
+        """
+        return [ReflogEntry.model_validate(row) for row in self._handle.git_reflog(ref, limit)]
 
     def create_tag(
         self,
