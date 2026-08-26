@@ -26,6 +26,7 @@ use pyo3::types::PyDict;
 
 use jj_lib::backend::{CommitId, TreeValue};
 use jj_lib::commit::Commit;
+use jj_lib::dag_walk;
 use jj_lib::diff::{ContentDiff, DiffHunkKind};
 use jj_lib::matchers::{EverythingMatcher, FilesMatcher};
 use jj_lib::merge::{Merge, MergedTreeValue};
@@ -37,8 +38,8 @@ use jj_lib::ref_name::{RefName, RemoteName, WorkspaceNameBuf};
 use jj_lib::repo::Repo;
 use jj_lib::repo_path::{RepoPath, RepoPathBuf};
 use jj_lib::rewrite::{
-    CommitWithSelection, MoveCommitsLocation, MoveCommitsTarget, RebaseOptions, merge_commit_trees,
-    move_commits, restore_tree, squash_commits,
+    self, CommitWithSelection, MoveCommitsLocation, MoveCommitsTarget, RebaseOptions,
+    merge_commit_trees, move_commits, restore_tree, squash_commits,
 };
 use jj_lib::store::Store;
 use jj_lib::transaction::Transaction;
@@ -137,6 +138,18 @@ impl PyTransaction {
             )));
         }
         Ok(commits.pop().expect("len checked == 1"))
+    }
+
+    /// Resolve a revset to **all** its matching commits, in revset order (the multi-revision
+    /// variant of [`resolve_single`](Self::resolve_single); the `duplicate` target surface).
+    fn resolve_many(&self, repo: &dyn Repo, revset_str: &str) -> PyResult<Vec<Commit>> {
+        revset::evaluate(
+            repo,
+            revset_str,
+            &self.workspace_name,
+            &self.workspace_root,
+            &self.revset_config,
+        )
     }
 
     /// The roots of the branch carried by `jj rebase -b <target> -d <onto…>`: the commits reachable
@@ -546,6 +559,113 @@ impl PyTransaction {
         let restored = self.resolve_single(&*repo, commit)?; // re-read post-rewrite (id changed)
         let data = CommitData::build(&*repo, &restored)?;
         data.to_dict(py)
+    }
+
+    /// Duplicate the commits named by `revsets` → the new commits as plain dicts, in the same
+    /// (children-first) order. Matches `jj duplicate -r <revsets> [--onto <onto>]`: each
+    /// duplicated commit copies its original's content and description with a **new** change id,
+    /// and the originals stay in place. With `onto=None` (the default) the duplicated commits sit
+    /// on their original parents (or on the other duplicated commits, preserving internal
+    /// structure). With `onto` (one or more single-revision revsets) the roots of the duplicated
+    /// set sit on those commits instead (a merge when several).
+    ///
+    /// Targets are ordered reverse-topologically (children before parents) exactly as jj-lib
+    /// requires, then `rewrite::duplicate_commits(_onto_parents)` runs. Configured immutable
+    /// revisions — and the root — are rejected before any write. Must be called inside the
+    /// transaction's `with` block.
+    #[pyo3(signature = (revsets, onto=None))]
+    fn duplicate<'py>(
+        &self,
+        py: Python<'py>,
+        revsets: Vec<String>,
+        onto: Option<Vec<String>>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let mut guard = self.tx.borrow_mut();
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| PyjutsuError::new_err("transaction is already closed"))?;
+        // On the GIL — `MutableRepo` is `!Send` (see module docs); in-memory graph work.
+        let repo = tx.repo_mut();
+        // Collect the target commits (dedup by id, first occurrence wins).
+        let mut targets: Vec<Commit> = Vec::new();
+        let mut seen: HashSet<CommitId> = HashSet::new();
+        for expression in &revsets {
+            for commit in self.resolve_many(&*repo, expression)? {
+                if seen.insert(commit.id().clone()) {
+                    targets.push(commit);
+                }
+            }
+        }
+        if targets.is_empty() {
+            return Err(RevsetError::new_err(
+                "duplicate needs at least one revision",
+            ));
+        }
+        self.check_rewritable(&*repo, &targets)?;
+        // Reverse topological order (children before parents) — jj-lib's documented requirement.
+        // The walk must stay inside the target set: `topo_order_reverse` would otherwise pull in
+        // every ancestor of the targets (and duplicate them all).
+        let target_set: HashSet<CommitId> = targets.iter().map(|c| c.id().clone()).collect();
+        let ordered = dag_walk::topo_order_reverse_ok(
+            targets.into_iter().map(Ok::<Commit, PyErr>),
+            |c: &Commit| c.id().clone(),
+            |c: &Commit| match pollster::block_on(c.parents()) {
+                Ok(parents) => parents
+                    .into_iter()
+                    .filter(|parent| target_set.contains(parent.id()))
+                    .map(Ok::<Commit, PyErr>)
+                    .collect::<Vec<_>>(),
+                Err(e) => vec![Err(map_backend_err(e))],
+            },
+            |c: Commit| -> PyErr {
+                PyjutsuError::new_err(format!(
+                    "cycle in duplicate targets around {}",
+                    c.id().hex()
+                ))
+            },
+        )?;
+        let ordered_ids: Vec<CommitId> = ordered.iter().map(|c| c.id().clone()).collect();
+
+        let stats = match onto {
+            None => pollster::block_on(rewrite::duplicate_commits_onto_parents(
+                repo,
+                &ordered_ids,
+                &HashMap::new(),
+            ))
+            .map_err(map_backend_err)?,
+            Some(onto_revsets) => {
+                let mut onto_commits: Vec<Commit> = Vec::new();
+                let mut seen_onto: HashSet<CommitId> = HashSet::new();
+                for expression in &onto_revsets {
+                    let commit = self.resolve_single(&*repo, expression)?;
+                    if seen_onto.insert(commit.id().clone()) {
+                        onto_commits.push(commit);
+                    }
+                }
+                let onto_ids: Vec<CommitId> = onto_commits.iter().map(|c| c.id().clone()).collect();
+                pollster::block_on(rewrite::duplicate_commits(
+                    repo,
+                    &ordered_ids,
+                    &HashMap::new(),
+                    &onto_ids,
+                    &[],
+                ))
+                .map_err(map_backend_err)?
+            }
+        };
+        pollster::block_on(repo.rebase_descendants()).map_err(map_backend_err)?;
+        // Return the duplicated commits in the same children-first order as the targets.
+        let mut out = Vec::new();
+        for original_id in ordered_ids {
+            let duplicated = stats.duplicated_commits.get(&original_id).ok_or_else(|| {
+                PyjutsuError::new_err(format!(
+                    "duplicate produced no commit for {}",
+                    original_id.hex()
+                ))
+            })?;
+            out.push(CommitData::build(&*repo, duplicated)?);
+        }
+        out.iter().map(|d| d.to_dict(py)).collect()
     }
 
     /// The paths changed by the single revision named by `revset_str` (diffed against its

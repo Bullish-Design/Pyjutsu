@@ -292,6 +292,32 @@ class Transaction:
         """
         return Commit.model_validate(self._require_open().resolve_conflict(path, content))
 
+    def duplicate(
+        self,
+        commits: str | list[str],
+        *,
+        onto: str | list[str] | None = None,
+    ) -> list[Commit]:
+        """Duplicate the commits named by ``commits`` → the new :class:`Commit` list (``jj
+        duplicate``).
+
+        Each duplicated commit copies its original's content and description with a **new** change
+        id; the originals stay in place. ``commits`` is one revset or a list of revsets (``jj
+        duplicate -r``). With ``onto=None`` (the default) the duplicates sit on their original
+        parents (or on the other duplicates, preserving internal structure). With ``onto`` (one or
+        more single-revision revsets) the roots of the duplicated set sit on those commits instead
+        (a merge when several). Returns the duplicated commits in children-first order. Raises
+        :class:`~pyjutsu.errors.RevsetError` for an empty selection or a bad revset, or
+        :class:`~pyjutsu.errors.ImmutableCommitError` for an immutable target. Must be called
+        inside the ``with`` block.
+        """
+        revsets = [commits] if isinstance(commits, str) else list(commits)
+        onto_revsets = None if onto is None else ([onto] if isinstance(onto, str) else list(onto))
+        return [
+            Commit.model_validate(row)
+            for row in self._require_open().duplicate(revsets, onto_revsets)
+        ]
+
     def changed_paths(self, commit: str = "@") -> list[str]:
         """The paths the pending transaction changed for ``commit`` (vs its merged parent tree).
 

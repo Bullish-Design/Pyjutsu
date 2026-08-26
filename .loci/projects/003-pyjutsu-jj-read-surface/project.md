@@ -283,3 +283,45 @@ PYJUTSU_TEST_OBJECT_HASH=sha256 (focused) PASS
 
 Evidence is in `artifacts/<UTC>-c4-gate/` (red clippy run) and
 `artifacts/<UTC>-c4-gate-final/`.
+
+### 2026-08-26 — C5 duplicate
+
+Lane `003/c5` binds `jj duplicate` (the lane title says "duplicate and
+backout", but the plan's surface and jj-lib entry points cover only
+`duplicate`; backout is a jj-cli composition over lower-level primitives and
+has no listed jj-lib entry point, so it stays out of scope).
+
+**Rust.** `PyTransaction::duplicate(revsets, onto=None)`. The target revsets
+resolve (multi-revision, dedup by id), pass the immutable/root guard, then
+order **reverse-topologically within the target set** (children before
+parents — jj-lib's documented requirement) via
+`dag_walk::topo_order_reverse_ok` with the neighbors filtered to the targets.
+The first implementation walked every ancestor (the unfiltered topo sort
+pulls in the whole ancestry) and panicked in jj-lib's `set_parents` on the
+root's empty parents — the filter is the fix. `onto=None` calls
+`rewrite::duplicate_commits_onto_parents`; `onto` (one or more single-revision
+revsets) calls `rewrite::duplicate_commits` with the resolved parent ids.
+Returns the duplicated commits in children-first order.
+
+**Python.** `Transaction.duplicate(commits, onto=None)` accepting a revset or
+a list; `_pyjutsu.pyi` tracked.
+
+**Tests.** `tests/test_duplicate.py` against `jj duplicate`: single commit
+(same tree/description, new change and commit ids; the CLI resolves the new
+change to the same commit id), onto (parent is the destination, verified via
+`jj change_ids`/`jj parent_commit_ids`), a two-commit chain onto (internal
+structure preserved: B's duplicate on A's duplicate), originals untouched,
+empty selection and immutable root refused.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/<UTC>-c5-gate/`.

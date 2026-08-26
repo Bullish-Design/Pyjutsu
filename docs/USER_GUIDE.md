@@ -243,6 +243,7 @@ op_id = ws.head_operation()      # the single operation this block produced
 | `tx.squash(source, into, message=None)` | Move `source`'s changes into `into`; `source` is abandoned. |
 | `tx.restore(commit, from_=..., paths=None)` | Replace a commit's content (or just `paths`) with another commit's. |
 | `tx.resolve_conflict(path, content)` | Resolve the conflict at `path` in `@` with `content` (`jj resolve`). |
+| `tx.duplicate(commits, onto=None)` | Duplicate commits into new changes with new change ids (`jj duplicate`). |
 | `tx.split(commit, selection, mode="siblings")` | Split one commit into two by a **hunk-level** selection (§6). Returns `(first, second)`. |
 | `tx.select_tree(commit, selection)` | Lower-level: build the tree id for a hunk selection. |
 | `tx.create_bookmark(name, commit)` | Create a local bookmark (errors if it exists). |
