@@ -80,6 +80,14 @@
     "tagger",
     "target"
   ],
+  "GitWorktree": [
+    "branch",
+    "head_oid",
+    "locked",
+    "main",
+    "path",
+    "prunable"
+  ],
   "Hunk": [
     "lines",
     "new_lines",

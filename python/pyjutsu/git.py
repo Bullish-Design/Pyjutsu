@@ -18,7 +18,7 @@ does not own; callers reconcile it into jj's view with
 
 from __future__ import annotations
 
-from .models import GitHead, GitTag, Operation, Remote
+from .models import GitHead, GitTag, GitWorktree, Operation, Remote
 
 __all__ = ["GitView"]
 
@@ -132,6 +132,18 @@ class GitView:
         it detached at ``@``'s parent.
         """
         self._handle.git_set_head(name)
+
+    def worktrees(self) -> list[GitWorktree]:
+        """The colocated repository's git worktrees → their :class:`~pyjutsu.GitWorktree` rows.
+
+        The repository's own worktree comes first (``main is True``), then the linked ones —
+        the order ``git worktree list --porcelain`` uses. Read-only: this lists and reports
+        state, it does not add, move, or prune anything.
+
+        jj workspaces and git worktrees are different things sharing a directory, and they
+        coexist badly; this is how you see the git half.
+        """
+        return [GitWorktree.model_validate(row) for row in self._handle.git_worktrees()]
 
     def create_tag(
         self,

@@ -287,3 +287,44 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 ```
 
 Evidence is in `artifacts/<UTC>-d4-gate/`.
+
+### 2026-08-26 — D5 git worktrees
+
+Lane `004/d5` lists the colocated repository's git worktrees. Read-only, as the plan requires:
+nothing here adds, moves, or prunes.
+
+**Rust.** New `src/git/worktrees.rs`, plus a flat `git_worktrees` native method. Each row is
+`{path, head_oid, branch, locked, prunable, main}`.
+
+**Three decisions.**
+
+- *The main worktree is listed.* gix's `Repository::worktrees` returns only the **linked**
+  worktrees — its own doc says the count is 0 when only the main worktree exists. But
+  `git worktree list` starts with the main one, and that is this lane's oracle, so the binding
+  prepends it from `Repository::workdir` + `head()`. The extra `main` field says which is which.
+- *`prunable` is derived, not parsed.* gix has no `prunable`. git calls a worktree prunable when
+  its checkout directory is gone ("gitdir file points to non-existent location"), so the binding
+  applies the same test — `base()` is missing or is not a directory — rather than parsing git's
+  prose.
+- *`into_repo_with_possibly_inaccessible_worktree`, not `into_repo`.* A prunable worktree still
+  has a readable `HEAD`, and reporting it is more useful than reporting nothing.
+
+`branch` is the full ref name (`refs/heads/side`), matching `git worktree list --porcelain`'s
+`branch` line; it is `None` for a detached worktree, and `head_oid` is `None` for an unborn one.
+
+**Tests.** `tests/test_git_worktrees.py` against `git worktree list --porcelain`, parsed into
+dicts: the main worktree alone; a linked worktree (path, branch, and `HEAD` all compared field for
+field); a locked one; one whose checkout was deleted; a detached one; and no operation published.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/<UTC>-d5-gate/` and `-d5-gate-final/`.

@@ -474,6 +474,7 @@ ws.git.config_unset("core.hooksPath")         # remove it from the repository-lo
 
 ws.git.head()                                 # GitHead: {name, oid, detached}
 ws.git.set_head("main")                       # git symbolic-ref HEAD refs/heads/main
+ws.git.worktrees()                            # list[GitWorktree] (git worktree list)
 
 ws.create_tag("v1.0", "@")                    # lightweight tag through jj-lib
 ws.push_tag("v1.0", "origin")                 # push lightweight or annotated tag
@@ -503,6 +504,11 @@ ws.push_tag("v1.0", "origin")                 # push lightweight or annotated ta
   `@`'s parent, so a detached read is the normal state, not a fault. `ws.git.set_head(name)`
   points `HEAD` at a branch symbolically; a bare name becomes `refs/heads/<name>`, the branch need
   not exist, and jj's next colocated sync detaches `HEAD` again.
+- **Worktrees:** `ws.git.worktrees()` lists the repo's git worktrees as `GitWorktree` rows —
+  `path`, `head_oid`, `branch`, `locked`, `prunable`, and `main`. The repository's own worktree
+  comes first, then the linked ones, matching `git worktree list --porcelain`. Read-only: nothing
+  here adds, moves, or prunes. jj workspaces and git worktrees are different things sharing a
+  directory; this is how you see the git half.
 - **Tags:** `create_tag(name, target)` now creates a lightweight tag by default. Pass a positional
   or keyword `message` to retain annotated Git tag creation; that form emits a
   `DeprecationWarning` and delegates to `ws.git.create_tag(name, target, message)`, which now

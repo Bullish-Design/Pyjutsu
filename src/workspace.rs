@@ -1871,6 +1871,13 @@ impl PyWorkspace {
         crate::git::head::set(self, py, name)
     }
 
+    /// List the colocated repository's git worktrees → one plain row each
+    /// (`{path, head_oid, branch, locked, prunable, main}`), the main worktree first and then the
+    /// linked ones. Read-only. Requires a colocated git backend.
+    fn git_worktrees<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        crate::git::worktrees::read(self, py)
+    }
+
     /// The name of `remote`'s default branch (what `git remote show` reports as `HEAD`), or `None`
     /// if the remote advertises none. Used by the pure-Python `git_clone` to place the new `@` on
     /// the cloned default branch. Spawns a `git remote show` subprocess (off the GIL) inside a

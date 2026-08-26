@@ -120,6 +120,27 @@ class GitHead(BaseModel):
     detached: bool
 
 
+class GitWorktree(BaseModel):
+    """One git worktree of a colocated repository (:meth:`pyjutsu.GitView.worktrees`).
+
+    ``path`` is the checkout directory. ``head_oid`` is the commit ``HEAD`` resolves to there
+    (``None`` for an unborn branch or an unreadable worktree); ``branch`` is the full ref name
+    ``HEAD`` points at (``None`` when detached). ``locked`` mirrors ``git worktree lock``.
+    ``prunable`` is true when the checkout directory is gone — what ``git worktree list
+    --porcelain`` reports as ``prunable``. ``main`` marks the repository's own worktree, which
+    ``git worktree list`` lists first and which can never be locked or prunable.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str
+    head_oid: CommitId | None
+    branch: str | None
+    locked: bool
+    prunable: bool
+    main: bool
+
+
 class FileStat(BaseModel):
     """Per-file line counts within a :class:`DiffStat`."""
 
