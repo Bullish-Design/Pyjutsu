@@ -1,6 +1,6 @@
 # Pyjutsu — Concept (PyO3 / jj-lib binding)
 
-**Status:** Shipping at `pyjutsu 0.17.0`, binding jj-lib 0.44.0. M1 (read layer) and M2 (write
+**Status:** Shipping at `pyjutsu 0.18.0`, binding jj-lib 0.44.0. M1 (read layer) and M2 (write
 layer — mutations, transactions, op-log, workspaces, git interop incl. network fetch/push/clone)
 are complete; the power surface has since grown a revset builder, streaming log, `run_jj` escape
 hatch, native sub-file `tx.split`/`select_tree`, and — in 0.10.0 — `untrack_paths` plus an

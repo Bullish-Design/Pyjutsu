@@ -12,8 +12,46 @@ no subprocess and no text parsing.
   [`docs/DEV_GUIDE.md`](docs/DEV_GUIDE.md) (working on it) ·
   [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md) (design spec).
 
-**Status: 0.17.0 — tracks jj-lib 0.44.0.** The reads, transactions/mutations, op-log time travel,
+**Status: 0.18.0 — tracks jj-lib 0.44.0.** The reads, transactions/mutations, op-log time travel,
 workspaces, and git interop are implemented and differential-tested against the pinned `jj` CLI.
+
+### 0.18.0 — the jj read surface
+
+0.18.0 adds public surface only. Nothing existing changes behaviour.
+
+**Conflicts are readable and resolvable.** `view.conflict_content(path, rev, style)` returns the
+marked text `jj file show` prints (`"diff"`, `"snapshot"`, or `"git"` markers);
+`view.conflict_sides(path, rev)` parses it back into the conflict's terms; and
+`tx.resolve_conflict(path, content)` writes a resolution into `@`.
+
+**File content and listing.** `view.file_content(path, rev)` returns raw bytes (`jj file show`);
+`view.file_list(rev, paths)` lists a revision's files, fileset-filtered (`jj file list`).
+
+**Short ids.** `view.shortest_prefix(id)` gives the shortest unique prefix, and every `Commit`
+carries `short_commit_id` / `short_change_id`. Prefixes disambiguate across the **whole**
+repository, so they are never ambiguous; a commit-id prefix can therefore be longer than the
+CLI's, which scopes itself to `visible()`.
+
+**Evolution.** `view.evolution(change_id)` follows a change across its rewrites (`jj evolog`).
+`Commit.predecessor_ids` is filled on those entries; ordinary reads leave it empty rather than
+pay an op-log walk per commit.
+
+**Three rewrite verbs.** `tx.duplicate(commits, onto)` (`jj duplicate`),
+`tx.absorb(source, into)` (`jj absorb`), and `tx.fix(revset, tools)` (`jj fix`). `fix` uses jj's
+own `fix.tools` configuration — Pyjutsu defines no second format.
+
+**Commit signing.** `Commit.is_signed` is a cheap field read; `view.verify(rev)` runs jj's
+configured signing backend and returns the verdict. `Workspace.load(path, sign_behavior=...)`
+overrides jj's `signing.behavior` for one handle (`"drop"`, `"keep"`, `"own"`, `"force"`); the
+backend and key still come from jj's own configuration.
+
+**The `ws.git` namespace opens.** A colocated repository's git half now has one place to live.
+`ws.git_refs`, `ws.write_git_ref`, `ws.delete_git_ref`, and `ws.remotes` move to `ws.git.refs`,
+`ws.git.write_ref`, `ws.git.delete_ref`, and `ws.git.remotes`; each old name still works and
+emits a `DeprecationWarning`. `ws.git.create_tag(name, target, message)` writes an annotated git
+tag — the path 0.17.0's `create_tag(message=...)` warning already named — and `ws.git.tag(name)`
+/ `ws.git.tags()` read tags back. `git_import`, `git_export`, `sync_colocated`, `git_fetch`, and
+`git_push` stay on `Workspace`: they publish jj operations, they are not git-side reads.
 
 ### 0.17.0 behaviour changes
 

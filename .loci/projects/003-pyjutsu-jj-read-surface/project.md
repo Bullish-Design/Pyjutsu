@@ -522,3 +522,43 @@ PYJUTSU_TEST_OBJECT_HASH=sha256 pytest -q PASS: exit 0
 ```
 
 Evidence is in `artifacts/<UTC>-c8-gate/` and `artifacts/<UTC>-c8-sha256/`.
+
+### 2026-08-26 — release 0.18.0, and project 003 closes
+
+**Version: 0.18.0.** Every lane in this project added public surface and changed no existing
+behaviour, so the minor number moves and the patch number resets. Nothing here is a breaking
+change: `Commit` gains three optional fields (`short_commit_id`, `short_change_id`,
+`predecessor_ids`, `is_signed`, all defaulted), and every new verb is new.
+
+Bumped in `Cargo.toml`, `pyproject.toml`, `python/pyjutsu/__init__.py`, and the pinned value in
+`tests/test_build.py` (the stale-build guard asserts the release number, so it moves with it).
+Release notes are in `README.md` beside the 0.17.0 and 0.16.0 sections; `docs/USER_GUIDE.md` and
+`docs/PYJUTSU_CONCEPT.md` carry the new status line, and the guide documents every new verb.
+
+**The re-verification list at the end of this project.** It grew from two entries to five. Each
+new one is a piece of jj-**cli** policy Pyjutsu must reproduce because jj-cli is not published to
+crates.io:
+
+| Entry | Where | Added by |
+|---|---|---|
+| `src/config/revsets.toml` | vendored default aliases | project 002 |
+| the `git.object-hash` key, values, and `"sha1"` default | `git_object_hash`, `src/workspace.rs` | project 002 |
+| the `fix.tools` schema | `src/fix.rs` | C7 |
+| the `revsets.fix` default | `DEFAULT_FIX_REVSET`, `src/fix.rs` | C7 |
+| the four `signing.behavior` names | `SIGN_BEHAVIORS`, `src/config_loader.rs` | C8 |
+
+**Final gate, on the documented state:**
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: 481 collected, exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Baseline for comparison: 7 Rust tests and 401 Python tests at 0.17.0. Phase C added 80 tests.
+
+Evidence is in `artifacts/<UTC>-release-0180-gate/` (a red run: the stale-build guard still
+pinned 0.17.0) and `-gate-green.txt` beside it.
