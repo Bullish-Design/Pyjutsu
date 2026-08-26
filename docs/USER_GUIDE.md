@@ -472,6 +472,9 @@ ws.git.config_get("core.hooksPath")           # effective git config value (or N
 ws.git.config_set("core.hooksPath", ".hooks") # write the repository-local config
 ws.git.config_unset("core.hooksPath")         # remove it from the repository-local config
 
+ws.git.head()                                 # GitHead: {name, oid, detached}
+ws.git.set_head("main")                       # git symbolic-ref HEAD refs/heads/main
+
 ws.create_tag("v1.0", "@")                    # lightweight tag through jj-lib
 ws.push_tag("v1.0", "origin")                 # push lightweight or annotated tag
 ```
@@ -494,6 +497,12 @@ ws.push_tag("v1.0", "origin")                 # push lightweight or annotated ta
   **repository-local** file only, never your global one; that asymmetry is deliberate. `key` is
   `"section.key"` or `"section.subsection.key"` (the subsection may itself contain dots).
   Unsetting an absent key is a no-op, and neither write publishes a jj operation.
+- **`HEAD`:** `ws.git.head()` returns a `GitHead` — `name` is the full ref name
+  `git symbolic-ref HEAD` prints (`None` when detached), `oid` the commit it resolves to (`None`
+  for an unborn branch), and `detached` the flag. In a colocated repo jj keeps `HEAD` detached at
+  `@`'s parent, so a detached read is the normal state, not a fault. `ws.git.set_head(name)`
+  points `HEAD` at a branch symbolically; a bare name becomes `refs/heads/<name>`, the branch need
+  not exist, and jj's next colocated sync detaches `HEAD` again.
 - **Tags:** `create_tag(name, target)` now creates a lightweight tag by default. Pass a positional
   or keyword `message` to retain annotated Git tag creation; that form emits a
   `DeprecationWarning` and delegates to `ws.git.create_tag(name, target, message)`, which now

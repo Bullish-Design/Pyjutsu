@@ -230,3 +230,60 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 ```
 
 Evidence is in `artifacts/<UTC>-d3-gate/`.
+
+### 2026-08-26 — D4 HEAD state
+
+Lane `004/d4` reads and writes the colocated `.git`'s `HEAD`, and retires the last raw
+`.git/HEAD` file write.
+
+**Rust.** New `src/git/head.rs`. `read` maps gix's `head::Kind` onto plain data: `Symbolic` →
+`{name: "refs/heads/…", oid, detached: false}`, `Unborn` → the same with `oid: None`, `Detached`
+→ `{name: None, oid, detached: true}`. `set` writes one `RefEdit` through
+`Repository::edit_reference` with `deref: false`, so `HEAD` itself moves rather than its referent.
+Two flat native methods, `git_head` and `git_set_head`.
+
+**The raw write is gone.** `init(colocate=True, trunk=…)` used
+`std::fs::write(".git/HEAD", format!("ref: refs/heads/{trunk}\n"))` guarded by a hand-rolled
+`\n`/`\r` check. It now calls `head::set_on_store`, so gix validates the whole ref name. `init` has
+no `PyWorkspace` yet, so that function takes the jj `Store` the initializer just returned. The
+failure is no longer swallowed: an invalid trunk name now raises instead of silently leaving `HEAD`
+alone.
+
+**jj-lib gap, restated and narrowed.** jj-lib's `git.rs` only *reads* `HEAD`; `reset_head` owns a
+different job (detach at `@`'s parent plus an index rewrite). gix 0.85 has **no** `set_head` either
+— the plan cited one, and it does not exist at this pin. So the write is one `RefEdit` through the
+shallow `edit_reference`, not the low-level file-store transaction `apply_head_ref_packed` drives.
+That deep call site is untouched, as the plan requires.
+
+**Design notes.**
+
+- *`name` is the full ref name.* `git symbolic-ref HEAD` prints `refs/heads/main`, and that is the
+  oracle, so the model matches it byte for byte. `set_head` accepts either form: a bare `main`
+  becomes `refs/heads/main`, and anything starting with `refs/` is taken as written.
+- *No `unborn` field.* `detached is False` with `oid is None` already says it, and the plan's shape
+  is three fields. The model docstring names the state.
+- *An absent branch is allowed.* `git symbolic-ref` allows it, and it is how git models an unborn
+  branch.
+
+**Tests.** `tests/test_git_head.py` against `git symbolic-ref HEAD` and `git rev-parse`: detached
+after ordinary jj use, unborn in a fresh repo, `init(trunk=…)`, `set_head` by short and full name,
+an absent branch, four invalid names, no operation published, and jj re-detaching `HEAD` on its
+next colocated sync.
+
+**One test-only discovery.** `Workspace.init` requires the target directory to exist; it does not
+create it. That is pre-existing behaviour, not a regression from this lane — the first draft of the
+`trunk` test omitted the `mkdir` and failed with `Cannot access <path>/.jj`, and a colocated `init`
+with no `trunk` fails the same way.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/<UTC>-d4-gate/`.

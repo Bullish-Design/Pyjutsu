@@ -11,4 +11,5 @@
 //! (`src/workspace.rs`).
 
 pub(crate) mod config;
+pub(crate) mod head;
 pub(crate) mod tags;

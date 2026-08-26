@@ -1065,7 +1065,7 @@ impl PyWorkspace {
                 ensure_jj_git_excluded(&path.join(".git"))?;
                 Ok(workspace)
             } else if colocate {
-                let (workspace, _repo) = pollster::block_on(Workspace::init_colocated_git(
+                let (workspace, repo) = pollster::block_on(Workspace::init_colocated_git(
                     &settings,
                     &path,
                     object_hash,
@@ -1074,19 +1074,10 @@ impl PyWorkspace {
                 ensure_jj_git_excluded(&path.join(".git"))?;
                 // If a trunk name is given, set HEAD in the colocated .git to point at that
                 // branch so no leftover default-branch ref (e.g. refs/heads/master) survives.
-                // Best-effort plain-file write — HEAD is guaranteed a loose file, never packed.
-                //
-                // jj-lib gap (checked 0.42.0 and 0.44.0): jj-lib's `git.rs` only *reads* HEAD.
-                // It exposes no `set_head`, `reset_head`, or `export_head`.
+                // Lane D4 replaced the raw `.git/HEAD` write with one gix `RefEdit`, so gix
+                // validates the ref name (the hand-rolled newline check is gone).
                 if let Some(trunk) = &trunk {
-                    if trunk.contains('\n') || trunk.contains('\r') {
-                        return Err(PyjutsuError::new_err(format!(
-                            "invalid trunk name: {trunk:?}"
-                        )));
-                    }
-                    let head_path = path.join(".git").join("HEAD");
-                    // Non-fatal on write failure: the repo is valid; the caller can fix HEAD.
-                    let _ = std::fs::write(&head_path, format!("ref: refs/heads/{trunk}\n"));
+                    crate::git::head::set_on_store(repo.store(), trunk)?;
                 }
                 Ok(workspace)
             } else {
@@ -1864,6 +1855,20 @@ impl PyWorkspace {
     /// that is not set locally is left alone (no error). Publishes no jj operation.
     fn git_config_unset(&self, py: Python<'_>, key: &str) -> PyResult<()> {
         crate::git::config::unset(self, py, key)
+    }
+
+    /// Read the colocated `.git`'s `HEAD` → `{name, oid, detached}`. `name` is the **full** ref
+    /// name `HEAD` points at (`refs/heads/main`), or `None` when detached; `oid` is the commit it
+    /// resolves to, or `None` when the branch is unborn. Requires a colocated git backend.
+    fn git_head<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        crate::git::head::read(self, py)
+    }
+
+    /// Point the colocated `.git`'s `HEAD` at a branch symbolically (`git symbolic-ref HEAD`).
+    /// A bare name becomes `refs/heads/<name>`; a `refs/...` name is taken as written. The branch
+    /// need not exist (that is how git models an unborn branch). Publishes no jj operation.
+    fn git_set_head(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        crate::git::head::set(self, py, name)
     }
 
     /// The name of `remote`'s default branch (what `git remote show` reports as `HEAD`), or `None`

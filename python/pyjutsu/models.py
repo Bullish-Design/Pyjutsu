@@ -104,6 +104,22 @@ class CommitSignature(BaseModel):
     display: str | None = None
 
 
+class GitHead(BaseModel):
+    """The colocated ``.git``'s ``HEAD`` (:meth:`pyjutsu.GitView.head`).
+
+    ``name`` is the **full** ref name ``HEAD`` points at (``"refs/heads/main"``), matching
+    ``git symbolic-ref HEAD``, or ``None`` when ``HEAD`` is detached. ``oid`` is the commit it
+    resolves to, or ``None`` when the branch is **unborn** — named but with no commit yet, the
+    state of a freshly initialized repository.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str | None
+    oid: CommitId | None
+    detached: bool
+
+
 class FileStat(BaseModel):
     """Per-file line counts within a :class:`DiffStat`."""
 

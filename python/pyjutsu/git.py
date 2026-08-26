@@ -18,7 +18,7 @@ does not own; callers reconcile it into jj's view with
 
 from __future__ import annotations
 
-from .models import GitTag, Operation, Remote
+from .models import GitHead, GitTag, Operation, Remote
 
 __all__ = ["GitView"]
 
@@ -109,6 +109,29 @@ class GitView:
         untouched, so :meth:`config_get` may still return it afterwards.
         """
         self._handle.git_config_unset(key)
+
+    def head(self) -> GitHead:
+        """The colocated ``.git``'s ``HEAD`` → its :class:`~pyjutsu.GitHead`.
+
+        ``name`` is the full ref name ``HEAD`` points at, exactly as ``git symbolic-ref HEAD``
+        prints it, or ``None`` when detached. ``oid`` is ``None`` for an unborn branch. This
+        reads git's ``HEAD``, not jj's ``@`` — in a colocated repo jj keeps ``HEAD`` detached at
+        ``@``'s parent, and seeing that is the point.
+        """
+        return GitHead.model_validate(self._handle.git_head())
+
+    def set_head(self, name: str) -> None:
+        """Point ``HEAD`` at a branch symbolically (``git symbolic-ref HEAD refs/heads/<name>``).
+
+        A bare ``"main"`` becomes ``refs/heads/main``; a name already starting with ``refs/`` is
+        taken as written. The branch need not exist — that is how git models an unborn branch,
+        and ``git symbolic-ref`` allows it too. gix validates the ref name; an invalid one raises
+        :class:`~pyjutsu.errors.PyjutsuError`. Publishes no jj operation.
+
+        Note that jj's own verbs move ``HEAD`` back: ``git_export`` and ``sync_colocated`` leave
+        it detached at ``@``'s parent.
+        """
+        self._handle.git_set_head(name)
 
     def create_tag(
         self,

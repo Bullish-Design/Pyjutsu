@@ -67,6 +67,11 @@
     "rewrites",
     "tools"
   ],
+  "GitHead": [
+    "detached",
+    "name",
+    "oid"
+  ],
   "GitTag": [
     "annotated",
     "date",
