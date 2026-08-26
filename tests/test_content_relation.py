@@ -104,8 +104,8 @@ def test_patch_id_is_stable_across_duplicate(scratch_repo: Path, jj: JjCli) -> N
     assert ws.patch_id(a) == ws.patch_id(b)
 
 
-def test_patch_id_is_hex_digest(scratch_repo: Path, jj: JjCli) -> None:
+def test_patch_id_is_pinned_for_fixed_diff(scratch_repo: Path, jj: JjCli) -> None:
     (scratch_repo / "h.txt").write_text("x\n")
     jj(scratch_repo, "describe", "-m", "content")
     pid = pyjutsu.Workspace.load(scratch_repo).patch_id("@")
-    assert len(pid) == 40 and all(c in "0123456789abcdef" for c in pid)  # sha1 hex
+    assert pid == "9acba72932d8936dab73915f34a54bceb923689f"

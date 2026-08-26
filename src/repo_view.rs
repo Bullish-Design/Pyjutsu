@@ -15,6 +15,7 @@ use futures::StreamExt as _;
 use pyo3::PyErr;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use sha1::{Digest as _, Sha1};
 
 use jj_lib::backend::CommitId;
 use jj_lib::commit::Commit;
@@ -421,12 +422,12 @@ impl PyRepoView {
 /// a stable width is the useful contract. Do not "fix" this to follow the repository object hash —
 /// that would make the same change produce different ids in different repos.
 ///
-/// jj-lib gap: patch ids are a pyjutsu concept. jj-lib has no equivalent, so `gix` supplies the
-/// hasher. This is the only site that needs the `gix` `sha1` feature directly.
+/// jj-lib gap: patch ids are a pyjutsu concept. jj-lib has no equivalent. Pyjutsu computes this
+/// content digest directly with the `sha1` crate.
 fn patch_id_hex(data: &DiffData) -> String {
     let mut files: Vec<&FileChangeData> = data.files.iter().collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    let mut hasher = gix::hash::hasher(gix::hash::Kind::Sha1);
+    let mut hasher = Sha1::new();
     for f in files {
         hasher.update(f.path.as_bytes());
         hasher.update(b"\0");
@@ -446,11 +447,7 @@ fn patch_id_hex(data: &DiffData) -> String {
         }
         hasher.update(b"\0\0");
     }
-    hasher
-        .try_finalize()
-        .expect("sha1 finalization is infallible for fully-provided input")
-        .to_hex()
-        .to_string()
+    format!("{:x}", hasher.finalize())
 }
 
 /// Build the `diff_stat` result dict (`files: [{path, insertions, deletions}], total_*`) from

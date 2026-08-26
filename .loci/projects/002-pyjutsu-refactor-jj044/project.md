@@ -337,3 +337,29 @@ Comment-only changes landed at these sites: `src/workspace/tags.rs`,
 `src/workspace.rs` (`ensure_jj_git_excluded`, `prune_orphaned_keep_refs`,
 `apply_head_ref_packed`, the trunk HEAD write), `src/repo_view.rs`
 (`patch_id_hex`), and `python/pyjutsu/revset.py` (`_quote`).
+
+### 2026-08-26 — A1 patch-id hash
+
+Lane `jj044-refactor/patch-id-hash` replaces the gix SHA-1 state with the
+`sha1` crate. The dependency tree already resolved `sha1` 0.10.6, so the new
+direct edge reuses the existing build. The update order inside
+`patch_id_hex` did not change.
+
+The fixed diff adds `h.txt` with `x\n`. The old implementation returned
+`9acba72932d8936dab73915f34a54bceb923689f`. The new implementation returns
+the same value, and the regression test pins it.
+
+Validation:
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+```
+
+Evidence is in `artifacts/20260826T173954Z-a1-prechange/`,
+`artifacts/20260826T174036Z-a1-postchange/`, and
+`artifacts/20260826T174148Z-a1-gate/`.
