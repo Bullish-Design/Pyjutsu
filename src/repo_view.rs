@@ -199,6 +199,21 @@ impl PyRepoView {
         self.repo.operation().id().hex()
     }
 
+    /// Walk the evolution of the change named by `change_id_str` (z-k form) → one plain entry
+    /// dict per step, newest first, capped at `limit` (matches `jj evolog`). Each entry is
+    /// `{commit, operation}`: the commit carries its `predecessor_ids` (the only reads that
+    /// populate them — see `src/evolution.rs`), the operation is the one that created or last
+    /// rewrote it. An unknown change id yields an empty list.
+    #[pyo3(signature = (change_id_str, limit=None))]
+    fn evolution<'py>(
+        &self,
+        py: Python<'py>,
+        change_id_str: &str,
+        limit: Option<usize>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        crate::evolution::evolution(self, py, change_id_str, limit)
+    }
+
     /// The shortest unique prefix of `id` (a hex commit id or a z-k change id) within the whole
     /// repository, disambiguated against other ids **and** bookmark/tag names — the same answer
     /// the CLI's `commit_id.shortest()` / `change_id.shortest()` templates give, minus the

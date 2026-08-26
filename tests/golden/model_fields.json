@@ -14,6 +14,7 @@
     "has_conflict",
     "is_empty",
     "parent_ids",
+    "predecessor_ids",
     "short_change_id",
     "short_commit_id",
     "tree_id"
@@ -62,5 +63,9 @@
     "files",
     "total_deletions",
     "total_insertions"
+  ],
+  "EvolutionEntry": [
+    "commit",
+    "operation"
   ]
 }

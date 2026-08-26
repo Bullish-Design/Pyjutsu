@@ -62,6 +62,10 @@ class Commit(BaseModel):
     committer: Signature
     #: Parent commit ids (a merge has more than one; the root commit has none).
     parent_ids: list[CommitId]
+    #: Commit ids this commit evolved from (its creating operation's predecessor record).
+    #: Populated on the commits carried by :class:`EvolutionEntry` (the evolution read knows the
+    #: creating operation); ordinary reads leave it empty rather than pay an op-log walk per commit.
+    predecessor_ids: list[CommitId] = []
     #: True if the commit makes no change to its parent tree.
     is_empty: bool
     #: True if the commit's tree contains a conflict (jj's first-class conflicts).
@@ -177,6 +181,21 @@ class Conflict(BaseModel):
     num_sides: int
     #: Number of negative (base/remove) terms. A regular 3-way conflict is 2 sides / 1 base.
     num_bases: int
+
+
+class EvolutionEntry(BaseModel):
+    """One step of a change's evolution (``jj evolog``).
+
+    The commit's :attr:`Commit.predecessor_ids` names the commit it evolved
+    from (empty for the oldest step); the operation is the one that created or
+    last rewrote it.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    commit: Commit
+    #: The operation that created or last rewrote :attr:`commit`.
+    operation: Operation | None
 
 
 class MergeResult(BaseModel):

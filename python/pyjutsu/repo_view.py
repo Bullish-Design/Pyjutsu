@@ -12,7 +12,16 @@ from collections.abc import Iterator
 from typing import Literal
 
 from ._pyjutsu import PyRepoView
-from .models import Bookmark, Commit, Conflict, Diff, DiffStat, MergeResult, Operation
+from .models import (
+    Bookmark,
+    Commit,
+    Conflict,
+    Diff,
+    DiffStat,
+    EvolutionEntry,
+    MergeResult,
+    Operation,
+)
 from .revset import Revset, _revset_str
 
 __all__ = ["RepoView"]
@@ -154,6 +163,21 @@ class RepoView:
         ``visible()``-scoped answer when hidden commits exist; change-id prefixes agree.
         """
         return self._handle.shortest_prefix(id)
+
+    def evolution(self, change_id: str, limit: int | None = None) -> list[EvolutionEntry]:
+        """Walk the evolution of the change named by ``change_id`` (a z-k change id) → its
+        :class:`~pyjutsu.EvolutionEntry` steps, newest first, capped at ``limit``.
+
+        Matches ``jj evolog`` for that change: each entry carries the :class:`~pyjutsu.Commit`
+        (with :attr:`~pyjutsu.Commit.predecessor_ids` populated) and the
+        :class:`~pyjutsu.Operation` that created or last rewrote it. An unknown change id
+        yields an empty list. Raises :class:`~pyjutsu.errors.PyjutsuError` for a malformed
+        change id.
+        """
+        return [
+            EvolutionEntry.model_validate(row)
+            for row in self._handle.evolution(change_id, limit)
+        ]
 
     def diff_stat(self, revset: str | Revset, to: str | Revset | None = None) -> DiffStat:
         """The diff stat (per-file + total line counts) of a commit or a range.

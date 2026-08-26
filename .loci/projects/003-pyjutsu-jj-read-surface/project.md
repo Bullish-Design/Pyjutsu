@@ -229,3 +229,57 @@ devenv tasks run pyjutsu:verify           PASS: exit 0
 
 Evidence is in `artifacts/<UTC>-c3-gate/` (red) and
 `artifacts/<UTC>-c3-gate-green/` + `-c3-gate-final/`.
+
+### 2026-08-26 — C4 evolution and predecessors
+
+Lane `003/c4` binds jj-lib's evolution read, so callers can follow a change
+across its rewrites (gitman's rewrite-heavy workflow) without `jj evolog`.
+
+**Rust.** New `src/evolution.rs`: `PyRepoView::evolution(change_id, limit)`
+parses the z-k change id, resolves its **visible** target commits via
+`repo.resolve_change_id`, and drives `evolution::walk_predecessors` (off the
+GIL, via `pollster::block_on` around the stream) into plain `EvolutionEntryData`
+rows. Each row nests the `CommitData` (with `predecessor_ids` filled from the
+entry) and the `OperationData` that created/last rewrote it.
+
+**Design decisions.**
+
+- *Visible starts, hidden steps.* The walk starts from the visible commits of
+  the change (like `jj evolog`), so hidden/older steps arrive as predecessors
+  and are not double-counted; starting from every indexed target over-counted
+  the chain in testing.
+- *`Commit.predecessor_ids` populated only by evolution.* Ordinary reads leave
+  it empty: finding a commit's creating operation requires an op-log walk, and
+  paying that on every commit read is not acceptable. The evolution machinery
+  knows the creating operation already, so it fills the field for free. The
+  model field defaults to `[]`; the docstring says so.
+- *Full-length change ids only.* A shorter z-k string is a prefix, and
+  `resolve_change_id` panics on the ambiguity; the native layer rejects
+  non-full-length ids with a clear error.
+- *Abandoned changes vanish.* After abandoning the only commit of a change,
+  `evolution()` returns `[]` — the CLI's `jj evolog -r <change>` errors
+  "Revision doesn't exist" for the same reason. Test asserts the empty list.
+
+**Python.** `RepoView.evolution(change_id, limit=None)`; new `EvolutionEntry`
+model (`commit` + `operation`); `Commit.predecessor_ids`; `_pyjutsu.pyi`
+tracked; the model-shape golden regenerated.
+
+The oracle tests showed that the chain includes jj's auto-snapshot steps (a
+`describe` after writing a file creates a snapshot commit first), so the
+fixture chains are longer than a first guess — the tests compare
+commit-for-commit against `jj evolog` and assert structure, not length.
+
+Validation (full gate, plus a focused SHA-256 run):
+
+```text
+cargo fmt --check                         PASS
+cargo clippy --all-targets -- -D warnings PASS
+cargo test                                PASS: 7 passed, 0 failed
+ruff check python tests scripts           PASS
+pytest -q                                 PASS: exit 0
+devenv tasks run pyjutsu:verify           PASS: exit 0
+PYJUTSU_TEST_OBJECT_HASH=sha256 (focused) PASS
+```
+
+Evidence is in `artifacts/<UTC>-c4-gate/` (red clippy run) and
+`artifacts/<UTC>-c4-gate-final/`.
