@@ -12,7 +12,7 @@ no subprocess and no text parsing.
   [`docs/DEV_GUIDE.md`](docs/DEV_GUIDE.md) (working on it) ·
   [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md) (design spec).
 
-**Status: 0.19.0 — tracks jj-lib 0.44.0.** The reads, transactions/mutations, op-log time travel,
+**Status: 0.20.0 — tracks jj-lib 0.44.0.** The reads, transactions/mutations, op-log time travel,
 workspaces, and git interop are implemented and differential-tested against the pinned `jj` CLI.
 
 ### 0.19.0 — the colocated git surface
