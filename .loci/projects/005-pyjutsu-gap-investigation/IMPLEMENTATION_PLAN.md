@@ -67,6 +67,8 @@ against jj-lib 0.44.0.
 
 ## E1 — `005/log-limit`
 
+**Status.** Complete on 2026-08-26. See [[RESEARCH_REPORT.md]].
+
 **Goal.** Make `RepoView.log(revset, limit)` cost what `limit` says it costs.
 Retire the measured 102× penalty and the docstring that denies it.
 

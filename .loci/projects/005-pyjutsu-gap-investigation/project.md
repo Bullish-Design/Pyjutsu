@@ -30,6 +30,7 @@ depth rule.
 | [[GAP_REPORT.md]] | every item in all six groups, tiered, with a verdict |
 | [[PERFORMANCE.md]] | the method, the repositories, the numbers, the conclusion |
 | [[IMPLEMENTATION_PLAN.md]] | lanes for the **bind** items only, sequenced |
+| [[RESEARCH_REPORT.md]] | the bounded-log fix and its before/after evidence |
 
 ## Method
 
@@ -41,6 +42,21 @@ depth rule.
   directory is git-ignored.
 
 ## Implementation log
+
+### 2026-08-26 — bounded `log(limit)` reads
+
+Implemented lane `005/log-limit`. `eval_to_data` now truncates evaluated
+commit IDs before it reads commit objects. `resolve` still evaluates every
+match because it passes no limit.
+
+A regression hides an older commit object and asks for one newer commit. The
+test failed with `BackendError` before the fix and passes after it. It proves
+the limited call does not load commits after its limit.
+
+On the same release build and 100,002-commit fixture, `log("::@", 1)` fell
+from 818.74 ms to 6.67 ms. `iter_log("::@", 1)` measured 7.21 ms. See
+[[RESEARCH_REPORT.md]] and
+`artifacts/20260827T011206Z-log-limit-fix/`.
 
 ### 2026-08-26 — baseline
 

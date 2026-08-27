@@ -79,8 +79,8 @@ impl PyRepoView {
         Ok(commits.into_iter().next().expect("len checked == 1"))
     }
 
-    /// Evaluate a revset and build a `CommitData` per match — all off the GIL. `limit` caps the
-    /// result before the (backend-touching) `CommitData` build, so it bounds the work too.
+    /// Evaluate a revset to commit ids, apply `limit`, then load and build the surviving commits.
+    /// All evaluation and backend reads run off the GIL.
     fn eval_to_data(
         &self,
         py: Python<'_>,
@@ -89,7 +89,7 @@ impl PyRepoView {
     ) -> PyResult<Vec<CommitData>> {
         py.allow_threads(|| {
             let repo = self.repo.as_ref();
-            let mut commits = revset::evaluate(
+            let mut ids = revset::evaluate_ids(
                 repo,
                 revset_str,
                 &self.workspace_name,
@@ -97,11 +97,13 @@ impl PyRepoView {
                 &self.revset_config,
             )?;
             if let Some(limit) = limit {
-                commits.truncate(limit);
+                ids.truncate(limit);
             }
-            commits
-                .iter()
-                .map(|c| CommitData::build(repo, c))
+            ids.iter()
+                .map(|id| {
+                    let commit = repo.store().get_commit(id).map_err(map_backend_err)?;
+                    CommitData::build(repo, &commit)
+                })
                 .collect::<Result<Vec<_>, PyErr>>()
         })
     }

@@ -31,7 +31,7 @@ def test_resolve_zero_matches_raises(linear_repo: Path) -> None:
 
 
 def test_resolve_many_matches_raises(linear_repo: Path) -> None:
-    with pytest.raises(RevsetError):
+    with pytest.raises(RevsetError, match="resolved to 5 revisions"):
         pyjutsu.Workspace.load(linear_repo).resolve("all()")
 
 

@@ -204,7 +204,7 @@ scales with **tag count**, not repository size — 60 ms for 2,000 tags, about
 This is a caching question, not a correctness one, and no caller has reported
 it. Deferred, with the number recorded.
 
-### Confirmed as the one real defect: `log(limit=N)` does not bound its work
+### Resolved: `log(limit=N)` now bounds commit reads
 
 `eval_to_data` (`src/repo_view.rs:90-106`) evaluates the whole revset into a
 `Vec<Commit>` — which loads every commit object from the store — and only then
@@ -230,6 +230,18 @@ the result before the (backend-touching) `CommitData` build, so it bounds the
 work too." True of the build. False of the evaluation.
 
 **This is lane P1 in the plan.**
+
+The 2026-08-26 fix evaluates commit IDs, truncates them, and then loads only
+the surviving commits. A hidden-object regression proves that a limited log
+does not read an older commit. The same release benchmark produced:
+
+| Repository | Before | After | `iter_log` after |
+|---|---:|---:|---:|
+| `pyjutsu-self` (149) | 1.48 ms | 0.04 ms | 0.04 ms |
+| 100k | 818.74 ms | 6.67 ms | 7.21 ms |
+
+The 100k call is 123× faster. Fresh evidence and the exact environment are in
+[[RESEARCH_REPORT.md]] and `artifacts/20260827T011206Z-log-limit-fix/`.
 
 ## 5. Debug against release
 

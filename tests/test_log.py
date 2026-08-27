@@ -20,6 +20,22 @@ def test_log_limit_keeps_newest_first(linear_repo: Path, jj: JjCli) -> None:
     assert [c.change_id for c in commits] == jj.change_ids(linear_repo, "::@")[:2]
 
 
+def test_log_limit_does_not_load_commits_after_limit(linear_repo: Path, jj: JjCli) -> None:
+    head_id = jj.commit_id(linear_repo, "@")
+    old_id = jj.commit_id(linear_repo, "@---")
+    old_object = linear_repo / ".git" / "objects" / old_id[:2] / old_id[2:]
+    hidden_object = old_object.with_suffix(".hidden")
+    workspace = pyjutsu.Workspace.load(linear_repo)
+
+    old_object.rename(hidden_object)
+    try:
+        commits = workspace.log("::@", limit=1)
+    finally:
+        hidden_object.rename(old_object)
+
+    assert [commit.commit_id for commit in commits] == [head_id]
+
+
 def test_log_empty_revset_is_empty_list(linear_repo: Path) -> None:
     assert pyjutsu.Workspace.load(linear_repo).log("none()") == []
 
