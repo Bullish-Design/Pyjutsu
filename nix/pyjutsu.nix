@@ -41,10 +41,20 @@ in
       "pyjutsu:test"
     ];
 
-    # Build a release wheel into dist/, then prove it imports in a clean interpreter.
+    # Build a portable release wheel + sdist into dist/, then prove the wheel imports in a
+    # clean interpreter.
     #
-    # This is a LOCAL artifact for installing pyjutsu into another project on this machine.
-    # It is not a publish step: nothing here uploads, signs, or tags. `dist/` is git-ignored.
+    # This builds the artifact that `pyjutsu:publish` uploads. Nothing here uploads or tags;
+    # `dist/` is git-ignored. Run it alone to install pyjutsu into another project on this
+    # machine.
+    #
+    # Two nix-specific corrections are needed, and both are silent when missed:
+    #
+    #  1. devenv exports `_PYTHON_HOST_PLATFORM=linux_x86_64`, which overrides `--compatibility`
+    #     and stamps the wheel with the bare `linux_x86_64` platform tag. Unset it.
+    #  2. maturin applies the manylinux tag on request but does not clean the extension, which
+    #     still carries a RUNPATH into `/nix/store`. `scripts/relocate_wheel.py` strips it, so
+    #     the tag states something true.
     #
     # The smoke check matters more than it looks. `maturin develop` installs an *editable*
     # build whose Python half is read from the source tree, so the whole suite can pass while
@@ -55,10 +65,14 @@ in
       set -euo pipefail
       cd "$DEVENV_ROOT"
 
+      unset _PYTHON_HOST_PLATFORM  # see (1) above
+
       rm -rf dist
-      maturin build --release --out dist
+      maturin build --release --compatibility manylinux_2_39 --out dist
+      maturin sdist --out dist
 
       wheel="$(ls dist/*.whl)"
+      ${venvBin}/python scripts/relocate_wheel.py "$wheel"  # see (2) above
       echo "built $wheel"
 
       # A throwaway venv, deliberately NOT the devenv one: installing there would shadow the
@@ -79,6 +93,14 @@ in
       assert pyjutsu.JJ_VERSION == pyjutsu.JJ_LIB_TARGET, "extension/jj-lib pin mismatch"
       # `py.typed` must survive packaging, or every consumer silently loses type information.
       assert (pathlib.Path(pyjutsu.__file__).parent / "py.typed").is_file(), "py.typed missing"
+      # The published wheel claims manylinux. A surviving nix-store RUNPATH would make that
+      # claim false on every non-nix host, so assert the relocation actually ran. Read the
+      # dynamic entry, not the raw bytes: patchelf empties the entry but leaves the now-dead
+      # strings in `.dynstr`, so a byte scan reports a problem that is not there.
+      ext = pathlib.Path(pyjutsu.__file__).parent / "_pyjutsu.abi3.so"
+      runpath = subprocess.run(["patchelf", "--print-rpath", str(ext)],
+                               capture_output=True, text=True, check=True).stdout.strip()
+      assert not runpath, f"{ext.name} still carries a RUNPATH: {runpath}"
 
       # Open a real repo, so the smoke check exercises the native layer rather than imports.
       with tempfile.TemporaryDirectory() as tmp:
@@ -90,6 +112,61 @@ in
           assert ws.working_copy().commit_id
       print(f"smoke check passed: pyjutsu {pyjutsu.__version__}, jj-lib {pyjutsu.JJ_VERSION}")
       SMOKE
+    '';
+
+    # Publish the built artifacts as a GitHub release. This is the authoritative source other
+    # projects install pyjutsu from: it is not on PyPI, and a consumer that has to reach for
+    # the vendomat wheelhouse needs the exact nix revision pyjutsu was built against, which
+    # does not generalise. A release asset URL does.
+    #
+    # The tag is derived from pyproject.toml, never passed in, so the tag and the wheel name
+    # cannot disagree. Re-running against an existing tag fails rather than overwriting a
+    # published artifact.
+    "pyjutsu:publish".exec = ''
+      set -euo pipefail
+      cd "$DEVENV_ROOT"
+
+      version="$(${venvBin}/python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+      tag="v$version"
+
+      if [ -n "$(git status --porcelain)" ]; then
+        echo "refusing to publish: working tree is dirty. Commit or stash first." >&2
+        exit 1
+      fi
+      if gh release view "$tag" >/dev/null 2>&1; then
+        echo "refusing to publish: release $tag already exists. Bump the version first." >&2
+        exit 1
+      fi
+
+      ls dist/*.whl >/dev/null 2>&1 || {
+        echo 'no artifacts in dist/ — run `devenv tasks run pyjutsu:wheel` first.' >&2
+        exit 1
+      }
+      wheel="$(ls dist/*.whl)"
+      case "$wheel" in
+        *"-$version-"*) ;;
+        *) echo "dist/ holds $wheel but pyproject says $version — rebuild." >&2; exit 1 ;;
+      esac
+
+      git tag -a "$tag" -m "Release $version"
+      git push origin "$tag"
+      gh release create "$tag" dist/* \
+        --title "pyjutsu $version" \
+        --notes "pyjutsu $version — in-process binding to jj-lib.
+
+Pyjutsu is not on PyPI. Install it from this release by pinning the wheel in your
+\`pyproject.toml\`:
+
+    [project]
+    dependencies = [\"pyjutsu==$version\"]
+
+    [tool.uv.sources]
+    pyjutsu = { url = \"https://github.com/Bullish-Design/Pyjutsu/releases/download/$tag/$(basename "$wheel")\" }
+
+The wheel is abi3 (one build serves CPython 3.13 and later) and manylinux_2_39, so it needs
+glibc 2.39 or newer on x86-64 Linux. On any other platform, build from the sdist in this
+release; that needs a Rust toolchain."
+      echo "published $tag"
     '';
   };
 

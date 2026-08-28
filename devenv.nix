@@ -23,6 +23,10 @@ in
     # whole of jj-lib, so every incremental rebuild re-links a large cdylib — `mold` cuts that link
     # step from many seconds to ~1s. Wired up as the linker in `.cargo/config.toml`.
     pkgs.mold
+    # `pyjutsu:publish` uses both: patchelf strips the nix-store RUNPATH out of the built
+    # extension so the manylinux wheel is portable, and gh uploads the release assets.
+    pkgs.patchelf
+    pkgs.gh
   ];
 
   # https://devenv.sh/languages/
