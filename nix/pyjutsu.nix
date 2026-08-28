@@ -148,7 +148,19 @@ in
         *) echo "dist/ holds $wheel but pyproject says $version — rebuild." >&2; exit 1 ;;
       esac
 
-      git tag -a "$tag" -m "Release $version"
+      # The tag may already exist: `gitman release` writes and pushes it, and this task then
+      # only attaches the artifacts. Create it only when it is missing, so re-publishing a
+      # release whose tag is already public never moves it.
+      if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+        tagged="$(git rev-list -n1 "$tag")"
+        if [ "$tagged" != "$(git rev-parse HEAD)" ]; then
+          echo "note: $tag points at $tagged but HEAD is $(git rev-parse HEAD);" >&2
+          echo "      the artifacts were built from HEAD. Check the difference is not in the" >&2
+          echo "      library before continuing." >&2
+        fi
+      else
+        git tag -a "$tag" -m "Release $version"
+      fi
       git push origin "$tag"
       gh release create "$tag" dist/* \
         --title "pyjutsu $version" \
