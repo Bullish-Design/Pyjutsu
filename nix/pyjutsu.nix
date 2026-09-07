@@ -44,9 +44,11 @@ in
     # Build a portable release wheel + sdist into dist/, then prove the wheel imports in a
     # clean interpreter.
     #
-    # This builds the artifact that `pyjutsu:publish` uploads. Nothing here uploads or tags;
-    # `dist/` is git-ignored. Run it alone to install pyjutsu into another project on this
-    # machine.
+    # This is a **local check and the sdist source**, not the published wheel. Vendomat builds
+    # the wheel that ships (`nix build .#pyjutsu-wheel`, uploaded by `vendomat publish
+    # pyjutsu`); building the shipping wheel here too is what gave one version two artifacts.
+    # Nothing here uploads or tags; `dist/` is git-ignored. Run it alone to install pyjutsu
+    # into another project on this machine.
     #
     # Two nix-specific corrections are needed, and both are silent when missed:
     #
@@ -114,14 +116,19 @@ in
       SMOKE
     '';
 
-    # Publish the built artifacts as a GitHub release. This is the authoritative source other
-    # projects install pyjutsu from: it is not on PyPI, and a consumer that has to reach for
-    # the vendomat wheelhouse needs the exact nix revision pyjutsu was built against, which
-    # does not generalise. A release asset URL does.
+    # Cut the release and publish the sdist. **This task no longer publishes the wheel.**
     #
-    # The tag is derived from pyproject.toml, never passed in, so the tag and the wheel name
-    # cannot disagree. Re-running against an existing tag fails rather than overwriting a
-    # published artifact.
+    # Vendomat is the release engine: it performs the single hermetic build and uploads that
+    # exact store file with `vendomat publish pyjutsu`. Two builders uploading under one
+    # version is what produced two different files carrying the same version number, and every
+    # downstream symptom followed from it (gitman project 32 G3, devman 023-toolchain).
+    #
+    # The sdist stays here because vendomat builds no sdist, and it is the only way onto a
+    # platform the manylinux wheel does not serve.
+    #
+    # The tag is derived from pyproject.toml, never passed in, so the tag and the artifact
+    # names cannot disagree. Re-running against an existing tag fails rather than overwriting
+    # a published artifact.
     "pyjutsu:publish".exec = ''
       set -euo pipefail
       cd "$DEVENV_ROOT"
@@ -138,14 +145,14 @@ in
         exit 1
       fi
 
-      ls dist/*.whl >/dev/null 2>&1 || {
-        echo 'no artifacts in dist/ — run `devenv tasks run pyjutsu:wheel` first.' >&2
+      ls dist/*.tar.gz >/dev/null 2>&1 || {
+        echo 'no sdist in dist/ — run `devenv tasks run pyjutsu:wheel` first.' >&2
         exit 1
       }
-      wheel="$(ls dist/*.whl)"
-      case "$wheel" in
-        *"-$version-"*) ;;
-        *) echo "dist/ holds $wheel but pyproject says $version — rebuild." >&2; exit 1 ;;
+      sdist="$(ls dist/*.tar.gz)"
+      case "$sdist" in
+        *"-$version.tar.gz") ;;
+        *) echo "dist/ holds $sdist but pyproject says $version — rebuild." >&2; exit 1 ;;
       esac
 
       # The tag may already exist: `gitman release` writes and pushes it, and this task then
@@ -162,7 +169,7 @@ in
         git tag -a "$tag" -m "Release $version"
       fi
       git push origin "$tag"
-      gh release create "$tag" dist/* \
+      gh release create "$tag" "$sdist" \
         --title "pyjutsu $version" \
         --notes "pyjutsu $version — in-process binding to jj-lib.
 
@@ -173,12 +180,13 @@ Pyjutsu is not on PyPI. Install it from this release by pinning the wheel in you
     dependencies = [\"pyjutsu==$version\"]
 
     [tool.uv.sources]
-    pyjutsu = { url = \"https://github.com/Bullish-Design/Pyjutsu/releases/download/$tag/$(basename "$wheel")\" }
+    pyjutsu = { url = \"https://github.com/Bullish-Design/Pyjutsu/releases/download/$tag/pyjutsu-$version-cp313-abi3-manylinux_2_39_x86_64.whl\" }
 
 The wheel is abi3 (one build serves CPython 3.13 and later) and manylinux_2_39, so it needs
 glibc 2.39 or newer on x86-64 Linux. On any other platform, build from the sdist in this
 release; that needs a Rust toolchain."
-      echo "published $tag"
+      echo "published $tag with the sdist."
+      echo "Now attach the wheel from the store:  vendomat publish pyjutsu"
     '';
   };
 
