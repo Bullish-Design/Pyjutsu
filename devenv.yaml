@@ -16,13 +16,13 @@ inputs:
   # yazi packages, the guarded `shellij open` enterShell hook, and
   # YAZI_CONFIG_HOME pointing at the packaged Yazi assets.
   shellij:
-    url: path:/home/andrew/Documents/Projects/shellij
+    url: "git+file:///home/andrew/Documents/Projects/shellij"
 
   # devman: the automation plane's repo interface (CONCEPT.md §3.2). A devenv
   # import is a PATH inside an input, never a flake output attribute, and the
   # file it resolves to must be named devenv.nix.
   devman:
-    url: "git+https://github.com/Bullish-Design/devman?ref=main&rev=02d00f64f7a1fe5003380ef4e7fb9464d1cef910"
+    url: "git+https://github.com/Bullish-Design/devman?ref=refs/tags/v0.4.0"
 
 imports:
   - shellij/modules

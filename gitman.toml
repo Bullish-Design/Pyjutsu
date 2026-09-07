@@ -1,5 +1,1 @@
 trunk = "main"
-
-[version]
-file = "pyproject.toml"
-pattern = 'version = "{version}"'
