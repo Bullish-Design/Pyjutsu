@@ -145,15 +145,13 @@ in
         exit 1
       fi
 
-      ls dist/*.tar.gz >/dev/null 2>&1 || {
-        echo 'no sdist in dist/ — run `devenv tasks run pyjutsu:wheel` first.' >&2
+      # Name the sdist from the version rather than globbing. `dist/` is not cleaned between
+      # releases, so a glob matches every stale artifact still sitting there.
+      sdist="dist/pyjutsu-$version.tar.gz"
+      [ -f "$sdist" ] || {
+        echo "no $sdist — run \`devenv tasks run pyjutsu:wheel\` first." >&2
         exit 1
       }
-      sdist="$(ls dist/*.tar.gz)"
-      case "$sdist" in
-        *"-$version.tar.gz") ;;
-        *) echo "dist/ holds $sdist but pyproject says $version — rebuild." >&2; exit 1 ;;
-      esac
 
       # The tag may already exist: `gitman release` writes and pushes it, and this task then
       # only attaches the artifacts. Create it only when it is missing, so re-publishing a
