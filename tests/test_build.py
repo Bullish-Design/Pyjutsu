@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pathlib
+import tomllib
+
 import pyjutsu
 from pyjutsu import _pyjutsu as ext
 
@@ -22,4 +25,19 @@ def test_pyjutsu_version_matches_extension() -> None:
     # extension's `pyjutsu_version()`. If a bump to `__version__` lands without `maturin develop`,
     # importing pyjutsu raises at module load — so reaching this assertion already proves the two
     # agree; we also pin the current release value.
-    assert ext.pyjutsu_version() == pyjutsu.__version__ == "0.20.0"
+    assert ext.pyjutsu_version() == pyjutsu.__version__ == "0.21.1"
+
+
+def _manifest_version(relative: str, table: str) -> str:
+    manifest = tomllib.loads((pathlib.Path(__file__).parents[1] / relative).read_text())
+    return str(manifest[table]["version"])
+
+
+def test_every_manifest_agrees_on_the_version() -> None:
+    # The version is hand-maintained in four places: Cargo.toml, pyproject.toml, __init__.py and
+    # the assertion above. A bump that misses one used to reach a published release — 0.21.0 was
+    # cut with __version__ still at 0.20.0, so the wheel raised on import and the sdist was
+    # unbuildable. Compare the files directly, because the two tests above both read the *built*
+    # extension and therefore agree with each other while disagreeing with the manifests.
+    assert _manifest_version("Cargo.toml", "package") == _manifest_version("pyproject.toml", "project")
+    assert pyjutsu.__version__ == _manifest_version("pyproject.toml", "project")
