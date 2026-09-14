@@ -1,0 +1,4 @@
+schema = 1
+project = "pyjutsu"
+groups = ["base"]
+policy = "stable"

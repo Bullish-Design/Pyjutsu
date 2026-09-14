@@ -53,12 +53,6 @@ in
   # test, and this project has no type checker: its Python layer is thin and the
   # checking that matters is clippy over the Rust crate, which is already inside
   # `pyjutsu:lint`.
-  devman = {
-    enable = true;
-    project = "pyjutsu";
-    groups = [ "base" ];
-  };
-
   # base's two names, aliased onto the entrypoints ./nix/pyjutsu.nix already
   # defines. A devenv task with only `after` and no `exec` runs its dependency
   # and fails when that dependency fails, so this duplicates no command bodies.
