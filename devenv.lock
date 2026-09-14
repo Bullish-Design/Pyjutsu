@@ -17,25 +17,6 @@
         "type": "github"
       }
     },
-    "devman": {
-      "inputs": {
-        "nixpkgs": "nixpkgs"
-      },
-      "locked": {
-        "lastModified": 1789067929,
-        "narHash": "sha256-MLYTeJzk2eRAFThm2vGrkkBPdz+8cy2GGtIRrMt/OvY=",
-        "ref": "refs/tags/v0.5.1",
-        "rev": "8311f1434d6959ab0f50533cada8a451f5eab70e",
-        "revCount": 393,
-        "type": "git",
-        "url": "https://github.com/Bullish-Design/devman"
-      },
-      "original": {
-        "ref": "refs/tags/v0.5.1",
-        "type": "git",
-        "url": "https://github.com/Bullish-Design/devman"
-      }
-    },
     "flake-compat": {
       "flake": false,
       "locked": {
@@ -195,7 +176,6 @@
     "root": {
       "inputs": {
         "devenv": "devenv",
-        "devman": "devman",
         "nixpkgs": "nixpkgs_2",
         "nixpkgs-jj": "nixpkgs-jj",
         "nixpkgs-python": "nixpkgs-python",
@@ -208,6 +188,7 @@
         "nixpkgs": "nixpkgs_4"
       },
       "locked": {
+        "ref": "refs/heads/038-devman-migration",
         "type": "git",
         "url": "file:///home/andrew/Documents/Projects/shellij"
       },
