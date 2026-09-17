@@ -107,6 +107,18 @@ def test_conflict_stages_are_reported(tmp_path: Path, jj: JjCli) -> None:
     assert stages == sorted(row[2] for row in _ls_files(repo) if row[3] == "c.txt")
 
 
+def test_intent_to_add_is_reported(tmp_path: Path, jj: JjCli) -> None:
+    """`git add -N` stages a path with no content; the read flags it via `intent_to_add`."""
+    repo = _staged_repo(tmp_path, "intent-to-add")
+    (repo / "new.txt").write_text("new\n")
+    _git(repo, "add", "-N", "new.txt")
+    ws = pyjutsu.Workspace.init(repo, colocate=True)
+
+    by_path = {e.path: e for e in ws.git.index_entries()}
+    assert by_path["new.txt"].intent_to_add is True
+    assert by_path["a.txt"].intent_to_add is False
+
+
 def test_reading_publishes_no_operation(tmp_path: Path, jj: JjCli) -> None:
     repo = _staged_repo(tmp_path, "readonly")
     ws = pyjutsu.Workspace.init(repo, colocate=True)

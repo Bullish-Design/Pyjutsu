@@ -1915,7 +1915,7 @@ impl PyWorkspace {
     }
 
     /// Read the on-disk git index → one plain row per entry
-    /// (`{path, oid, stage, mode}`), in `git ls-files --stage` order. An absent index file yields
+    /// (`{path, oid, stage, mode, intent_to_add}`), in `git ls-files --stage` order. An absent index file yields
     /// an empty list. **Read-only** — jj-lib's `reset_head` owns index writes.
     fn git_index_entries<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
         crate::git::index::read(self, py)

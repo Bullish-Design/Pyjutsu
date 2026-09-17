@@ -23,6 +23,7 @@ struct IndexEntryData {
     oid: String,
     stage: u32,
     mode: u32,
+    intent_to_add: bool,
 }
 
 impl IndexEntryData {
@@ -32,6 +33,7 @@ impl IndexEntryData {
         dict.set_item("oid", &self.oid)?;
         dict.set_item("stage", self.stage)?;
         dict.set_item("mode", self.mode)?;
+        dict.set_item("intent_to_add", self.intent_to_add)?;
         Ok(dict)
     }
 }
@@ -61,6 +63,9 @@ pub(crate) fn read<'py>(
                 // The raw octal file mode, as `git ls-files --stage` prints it (100644, 100755,
                 // 120000, 160000).
                 mode: entry.mode.bits(),
+                intent_to_add: entry
+                    .flags
+                    .contains(gix::index::entry::Flags::INTENT_TO_ADD),
             })
             .collect())
     })?;

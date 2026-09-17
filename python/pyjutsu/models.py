@@ -190,6 +190,8 @@ class GitIndexEntry(BaseModel):
     ``stage`` is 0 for an unconflicted path, and 1/2/3 for the base/ours/theirs sides of a git
     merge conflict. ``mode`` is the raw octal file mode as an integer — ``0o100644`` for a
     regular file, ``0o100755`` executable, ``0o120000`` a symlink, ``0o160000`` a submodule.
+    ``intent_to_add`` is true when the path was staged with ``git add -N`` (``--intent-to-add``),
+    meaning its content was not yet written to the index, so ``oid`` is the empty blob.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -198,6 +200,7 @@ class GitIndexEntry(BaseModel):
     oid: CommitId
     stage: int
     mode: int
+    intent_to_add: bool
 
 
 class FileStat(BaseModel):
