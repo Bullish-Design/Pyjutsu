@@ -1,1 +1,3 @@
 trunk = "main"
+verify = ["bash", "-c", "env -u DEVENV_CMDLINE -u DEVENV_DOTFILE -u DEVENV_PROFILE -u DEVENV_ROOT -u DEVENV_RUNTIME -u DEVENV_STATE -u DEVENV_TASKS -u DEVENV_TASK_FILE -u UV_PROJECT_ENVIRONMENT -u VIRTUAL_ENV -u IN_NIX_SHELL devenv shell -- devenv tasks run pyjutsu:verify"]
+verify_timeout = 3600
