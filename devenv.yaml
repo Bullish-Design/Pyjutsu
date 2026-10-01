@@ -11,18 +11,11 @@ inputs:
   # Provides the exact CPython for `languages.python.version = "3.13"`.
   nixpkgs-python:
     url: github:cachix/nixpkgs-python
-  # shellij: durable Zellij workbenches. This repo does not import RepoMan's
-  # meta-module, so it imports shellij's devenv module directly — shellij/zellij/
-  # yazi packages, the guarded `shellij open` enterShell hook, and
-  # YAZI_CONFIG_HOME pointing at the packaged Yazi assets.
-  shellij:
-    url: "git+file:///home/andrew/Documents/Projects/shellij"
 
   # devman: the automation plane's repo interface (CONCEPT.md §3.2). A devenv
   # import is a PATH inside an input, never a flake output attribute, and the
   # file it resolves to must be named devenv.nix.
-imports:
-  - shellij/modules
+imports: []
 
 # If you're using non-OSS software, you can set allowUnfree to true.
 # allowUnfree: true
