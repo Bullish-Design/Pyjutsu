@@ -267,6 +267,16 @@ with ws.transaction("start feature") as tx:
 op_id = ws.head_operation()      # the single operation this block produced
 ```
 
+### Guarded publication: `publish_if`
+
+A transaction publishes with no check on what other writers did. When a caller must publish a
+reviewed change **only if** nothing moved, use `ws.publish_if(expected_wc_commit, onto,
+description)`. It holds the working-copy lock, checks the working-copy commit and the operation
+heads, and raises `StalePublishError` before it moves `@` or writes a file. The same call is the
+`pyjutsu publish-if` command, with stable output and exit codes for a caller that runs a
+subprocess. The contract, the crash states, the recovery command, and the known limits are in
+[`PUBLISH_IF.md`](PUBLISH_IF.md).
+
 ### The transaction verbs
 
 | Method | Does |
@@ -764,6 +774,9 @@ All in-process errors derive from `PyjutsuError` (import from `pyjutsu` or `pyju
 | `StaleWorkingCopyError` (⊂ `WorkingCopyError`) | `@` is stale — call `update_stale()` |
 | `ImmutableCommitError` | you tried to rewrite/abandon an immutable commit (e.g. the root) |
 | `GitError` (⊂ `BackendError`) | a git import/export/remote/fetch/push failed |
+| `PublishError` | `publish_if` refused and changed nothing, and the cause is not a stale finding (`onto-not-found`, `unsupported-store`, `invalid-commit-id`) |
+| `StalePublishError` (⊂ `PublishError`) | `publish_if` found a stale precondition; nothing was published |
+| `PublishIncompleteError` (⊂ `PublishError`) | `publish_if`'s operation landed, or may have landed, and a later step failed — run `ws.recover()` |
 | `JjCliError` | **only** from `run_jj` — binary not found, or non-zero exit under `check=True` |
 
 ---

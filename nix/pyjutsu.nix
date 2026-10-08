@@ -107,6 +107,12 @@ in
                                capture_output=True, text=True, check=True).stdout.strip()
       assert not runpath, f"{ext.name} still carries a RUNPATH: {runpath}"
 
+      # The dev build enables the `test-hooks` feature. The release wheel must not carry it: those
+      # barriers and the head-comparison switch are test debris, not a runtime interface.
+      from pyjutsu import _pyjutsu
+      assert not _pyjutsu.has_test_hooks(), "the wheel carries the test-only publication hooks"
+      assert b"PJ_SIGNAL_" not in ext.read_bytes(), "the wheel carries the barrier environment names"
+
       # Open a real repo, so the smoke check exercises the native layer rather than imports.
       with tempfile.TemporaryDirectory() as tmp:
           repo = pathlib.Path(tmp) / "repo"
@@ -115,6 +121,31 @@ in
                          capture_output=True)
           ws = pyjutsu.Workspace.load(repo)
           assert ws.working_copy().commit_id
+
+          # The installed `pyjutsu` executable must exist and publish. This is the surface
+          # CopyRoom runs by absolute path.
+          exe = pathlib.Path(sys.executable).parent / "pyjutsu"
+          assert exe.is_file(), "the wheel installed no `pyjutsu` executable"
+
+          def jj(*args):
+              return subprocess.run(["jj", *args], cwd=repo, check=True, capture_output=True,
+                                    text=True).stdout.strip()
+
+          (repo / "a.txt").write_text("base\n")
+          jj("describe", "-m", "base")
+          jj("new", "-m", "prepared")
+          (repo / "p.txt").write_text("prepared\n")
+          jj("new", 'description(exact:"base\\n")')
+          expected = jj("--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", "commit_id")
+          onto = jj("--ignore-working-copy", "log", "-r", 'description(exact:"prepared\\n")',
+                    "--no-graph", "-T", "commit_id")
+          args = [str(exe), "publish-if", "--repo", str(repo), "--expect-wc", expected,
+                  "--onto", onto, "-m", "wheel smoke"]
+          first = subprocess.run(args, capture_output=True, text=True)
+          assert first.returncode == 0 and first.stdout.startswith("result=published"), first
+          assert (repo / "p.txt").read_text() == "prepared\n"
+          second = subprocess.run(args, capture_output=True, text=True)
+          assert second.returncode == 1 and "reason=commit-moved" in second.stdout, second
       print(f"smoke check passed: pyjutsu {pyjutsu.__version__}, jj-lib {pyjutsu.JJ_VERSION}")
       SMOKE
     '';

@@ -52,6 +52,8 @@ as small as possible, pin it exactly, and turn any behavioral drift into a loud 
 | `config/revsets.toml` | Vendored jj 0.44 default revset aliases; re-diff it on every jj upgrade. |
 | `diff.rs`, `diff_stat.rs` | Diff + diff-stat computation, producing the plain hunk/stat dicts. |
 | `convert.rs` | jj-lib value → plain-Python-dict converters (the shape the Pydantic models expect). |
+| `workspace/publish.rs` | `publish_if`: guarded publication (working-copy lock, in-memory snapshot, operation-heads comparison). Contract in `docs/PUBLISH_IF.md`. |
+| `test_hooks.rs` | Test-only barriers and a negative-control switch, compiled only with the `test-hooks` feature. |
 | `errors.rs` | The `PyjutsuError` hierarchy + `jj-lib` error → exception mapping. |
 | `build.rs` | Emits `PYJUTSU_JJ_LIB_VERSION` from the resolved `Cargo.lock` (see §7). |
 
@@ -92,6 +94,15 @@ devenv shell -- devenv tasks run pyjutsu:test    # pytest -q  &&  cargo test
 devenv shell -- devenv tasks run pyjutsu:lint    # ruff check python tests  &&  cargo clippy -D warnings
 devenv shell -- devenv tasks run pyjutsu:verify  # the full local gate (lint, then test)
 ```
+
+### The `test-hooks` feature
+
+The publication tests stop `pyjutsu publish-if` at named stages with FIFO barriers and kill it
+there (`src/test_hooks.rs`). Those hooks exist only when the extension builds with the Cargo
+feature `test-hooks`. `pyjutsu:build` enables it. `pyjutsu:wheel` does not, and its smoke check
+asserts `_pyjutsu.has_test_hooks()` is `False`. The tests that need the hooks skip themselves when
+a build lacks them, so a plain `maturin develop` still passes the rest of the suite. Lint runs
+clippy with and without the feature.
 
 ### Building a wheel for local use
 

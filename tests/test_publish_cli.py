@@ -180,7 +180,7 @@ def test_unsupported_storage_exits_2_and_names_the_store(tmp_path: Path, jj: JjC
 
 def test_unknown_onto_exits_2(tmp_path: Path, jj: JjCli) -> None:
     repo = build_publish_repo(tmp_path, jj)
-    proc = run_publish(repo, onto="1" * 40)
+    proc = run_publish(repo, onto="1" * len(repo.expected))
     assert proc.returncode == 2
     facts = parse_output(proc.stdout)
     assert facts["result"] == "error"

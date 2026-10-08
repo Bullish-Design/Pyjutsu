@@ -1,9 +1,10 @@
 [package]
 name = "pyjutsu"
-version = "0.22.0"
+version = "0.23.0"
 edition = "2024"
 rust-version = "1.89"
 publish = false
+license = "MIT"
 description = "Thin PyO3 binding to jujutsu's jj-lib engine (the _pyjutsu native extension)."
 
 [lib]

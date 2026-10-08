@@ -12,8 +12,26 @@ no subprocess and no text parsing.
   [`docs/DEV_GUIDE.md`](docs/DEV_GUIDE.md) (working on it) ·
   [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md) (design spec).
 
-**Status: 0.20.0 — tracks jj-lib 0.44.0.** The reads, transactions/mutations, op-log time travel,
+**Status: 0.23.0 — tracks jj-lib 0.44.0.** The reads, transactions/mutations, op-log time travel,
 workspaces, and git interop are implemented and differential-tested against the pinned `jj` CLI.
+
+### 0.23.0 — guarded publication
+
+0.23.0 adds `Workspace.publish_if`, `Workspace.recover`, and a `pyjutsu` command. Nothing existing
+changes behaviour.
+
+`ws.publish_if(expected_wc_commit, onto, description)` publishes a new empty working-copy commit
+on `onto` only if the working-copy commit is still `expected_wc_commit` and no other writer moved
+the operation heads. A stale call raises `StalePublishError` before it moves `@` and before it
+writes a file. A landed call that failed later raises `PublishIncompleteError`, and
+`ws.recover()` finishes it. `pyjutsu publish-if` and `pyjutsu recover` expose the same calls with
+stable `key=value` output and exit codes `0` ok, `1` stale, `2` failure, `3` usage.
+
+The guarantee has limits: a direct file write during the checkout can be overwritten, and a
+writer that loaded the old head can still publish later and fork the log. Read
+[`docs/PUBLISH_IF.md`](docs/PUBLISH_IF.md) before you rely on it.
+
+The wheel adds a `LICENSE` file (MIT, as the package metadata already stated).
 
 ### 0.19.0 — the colocated git surface
 

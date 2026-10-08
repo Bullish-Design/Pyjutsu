@@ -263,6 +263,14 @@ def test_race_with_a_jj_cli_writer_ends_in_a_legal_outcome(
         shown = jj(repo.root, "--ignore-working-copy", "file", "show", "-r", competitor_commit, "comp.txt")
         assert shown == "competitor bytes\n"
     if code == 0:
+        # The guard's work holds. `@` is still the guard's commit, or a descendant of `onto`; the
+        # next jj command did not move it, and Git agrees with jj.
+        at_after_status = observe_commit(jj, repo.root, "@")
+        jj(repo.root, "status")
+        assert observe_commit(jj, repo.root, "@") == at_after_status
+        assert jj(repo.root, "--ignore-working-copy", "log", "-r", f"{repo.onto}:: & @", "--no-graph", "-T", "commit_id").strip()
+        if colocated:
+            assert git_out(repo.root, "rev-parse", "HEAD").strip() == observe_commit(jj, repo.root, "@-")
         # The guard's work is in the history: `P`'s tree is under the visible `@`.
         assert (repo.root / "a.txt").read_text() == "a edited in P\n"
         assert observe_commit(jj, repo.root, 'description(exact:"prepared\\n")') == repo.onto
@@ -345,3 +353,21 @@ def test_cli_writer_in_a_colocated_repo_is_serialized_by_the_git_lock(tmp_path: 
     result = run_publish(repo)
     assert result.returncode == 0
     assert not (repo.root / ".jj/repo/git_import_export.lock").exists()
+
+
+def test_limit_divergent_heads_are_merged_before_the_guard_compares(tmp_path: Path, jj: JjCli) -> None:
+    # Loading the repository at head merges divergent operation heads, as every jj command does.
+    # The merge is an operation that the call publishes before it compares. Then the call proceeds.
+    repo = build_publish_repo(tmp_path, jj, colocated=False)
+    loaded = op_ids(jj, repo.root)[0]
+    jj(repo.root, "--at-operation", loaded, "--ignore-working-copy", "bookmark", "create", "side-a", "-r", repo.base)
+    jj(repo.root, "--at-operation", loaded, "--ignore-working-copy", "bookmark", "create", "side-b", "-r", repo.base)
+    assert len(op_heads(repo.root)) == 2
+
+    proc = subprocess.run(cli_command("publish-if", "--repo", str(repo.root), "--expect-wc", repo.expected,
+                                      "--onto", repo.onto, "-m", "publish smoke"),
+                          capture_output=True, text=True)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(op_heads(repo.root)) == 1
+    assert op_descriptions(jj, repo.root)[:2] == ["publish smoke", "reconcile divergent operations"]

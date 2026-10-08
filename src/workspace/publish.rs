@@ -231,8 +231,12 @@ pub(super) fn publish_if<'py>(
     let colocated = is_colocated(&loader, ws.workspace_root());
     let git_lock_path = ws.repo_path().join("git_import_export.lock");
 
-    // Lock 1 (colocated only): the Git import/export lock. The jj CLI holds it for a whole
-    // command in a colocated repository, so holding it here blocks CLI writers until we finish.
+    // Lock 1 (colocated only): the Git import/export lock. A jj CLI command takes it before its
+    // working-copy lock, and again before it writes Git `HEAD`. Holding it here keeps a CLI writer
+    // from importing a half-synchronized Git `HEAD` (measured: without it, a writer that starts
+    // after the guard imports `HEAD` as a new operation). It has a cost: a CLI writer that loaded
+    // the old head and already left its snapshot phase waits here, then publishes on its old head.
+    // That fork is merged by the next jj command (see docs/PUBLISH_IF.md, limit 2).
     hook("BEFORE_LOCK");
     let _git_lock = if colocated {
         Some(

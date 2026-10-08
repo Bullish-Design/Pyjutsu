@@ -244,7 +244,7 @@ def test_unknown_onto_commit_is_a_refusal_that_changes_nothing(tmp_path: Path, j
     repo = build_publish_repo(tmp_path, jj)
     ops_before = op_ids(jj, repo.root)
     with pytest.raises(PublishError) as caught:
-        load(repo).publish_if(repo.expected, "1" * 40, "x")
+        load(repo).publish_if(repo.expected, "1" * len(repo.expected), "x")
     assert not isinstance(caught.value, (StalePublishError, PublishIncompleteError))
     assert caught.value.reason == "onto-not-found"
     assert op_ids(jj, repo.root) == ops_before
