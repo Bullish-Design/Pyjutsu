@@ -6,6 +6,7 @@
 //! re-enter this handle. A mutation transaction publishes exactly one jj operation on commit.
 
 mod operations;
+mod publish;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
@@ -32,7 +33,7 @@ use jj_lib::git::{
 };
 use jj_lib::git_backend::GitBackend;
 use jj_lib::gitignore::GitIgnoreFile;
-use jj_lib::matchers::{NothingMatcher, PrefixMatcher};
+use jj_lib::matchers::{Matcher, NothingMatcher, PrefixMatcher};
 use jj_lib::merge::{Diff, Merge};
 use jj_lib::merged_tree_builder::MergedTreeBuilder;
 use jj_lib::object_id::ObjectId;
@@ -52,7 +53,8 @@ use crate::config_loader::{bootstrap_user_settings, resolved_workspace_settings}
 use crate::convert::{CommitData, OperationData, RemoteData, WorkspaceInfoData};
 use crate::errors::{
     PartialWorkspaceError, PyjutsuError, RevsetError, StaleWorkingCopyError, map_backend_err,
-    map_edit_err, map_fileset_err, map_git_err, map_workingcopy_err, map_workspace_err, to_py_err,
+    map_edit_err, map_fileset_err, map_git_err, map_workingcopy_err, map_workspace_err, map_workspace_load_err,
+    to_py_err,
 };
 use crate::repo_view::PyRepoView;
 use crate::revset::RevsetConfig;
@@ -397,6 +399,90 @@ impl GitSubprocessCallback for NullGitCallback {
     }
 }
 
+/// The snapshot inputs jj-cli derives from configuration, read once before the working-copy lock
+/// mutably borrows the workspace. Shared by `snapshot` and the guarded `publish_if`, so both treat
+/// ignores, auto-track, and the new-file cap identically.
+pub(crate) struct SnapshotInputs {
+    base_ignores: Arc<GitIgnoreFile>,
+    auto_track_matcher: Box<dyn Matcher>,
+    max_new_file_size: u64,
+}
+
+impl SnapshotInputs {
+    pub(crate) fn read(ws: &Workspace) -> PyResult<Self> {
+        let repo_store = ws.repo_loader().store();
+        // Read the configured new-file cap now (a plain `u64`), before the working-copy lock
+        // mutably borrows `ws`. Honors `snapshot.max-new-file-size` (jj's `<N>`/`<N>KiB|MiB|…`
+        // form, via `HumanByteSize`), defaulting to 1 MiB when unset or unparseable — matching
+        // the CLI, which otherwise skips oversized new files (changing `@`'s tree).
+        let max_new_file_size = ws
+            .repo_loader()
+            .settings()
+            .get_value_with("snapshot.max-new-file-size", HumanByteSize::try_from)
+            .map_or(1 << 20, |size| size.0);
+
+        // Read & parse `snapshot.auto-track` now (also before the lock), defaulting to `all()` when
+        // unset — matching the CLI, which auto-tracks every new file unless this fileset restricts
+        // it. The matcher decides which *new* files start being tracked, so it can change `@`'s tree
+        // (and commit id). The owned `Box<dyn Matcher>` must outlive `SnapshotOptions`, whose
+        // `start_tracking_matcher` borrows it. A malformed fileset ⇒ `WorkingCopyError`, not a panic.
+        let auto_track = ws
+            .repo_loader()
+            .settings()
+            .get_string("snapshot.auto-track")
+            .unwrap_or_else(|_| "all()".to_owned());
+        let path_converter = RepoPathUiConverter::Fs {
+            cwd: ws.workspace_root().to_path_buf(),
+            base: ws.workspace_root().to_path_buf(),
+        };
+        let mut fileset_diagnostics = FilesetDiagnostics::new();
+        // jj-lib 0.44 wraps the path converter in a `FilesetParseContext` (with an aliases map).
+        let fileset_aliases = FilesetAliasesMap::new();
+        let fileset_ctx = FilesetParseContext {
+            aliases_map: &fileset_aliases,
+            path_converter: &path_converter,
+        };
+        let auto_track_matcher =
+            fileset::parse(&mut fileset_diagnostics, &auto_track, &fileset_ctx)
+                .map_err(map_fileset_err)?
+                .to_matcher();
+
+        // Build `base_ignores` from the repo-local global git-excludes file `.git/info/exclude`
+        // (the CLI composes it into its own `base_ignores`), so its patterns keep matching files
+        // out of `@`'s tree. `chain_with_file` is a no-op when the file is absent. The *global*
+        // `core.excludesFile` / `~/.config/git/ignore` layer the CLI also composes is NOT wired
+        // here — gix 0.78's excludes-file accessor is `pub(crate)`, and matching the CLI's exact
+        // interpolation + XDG-default fallback risks divergence, so it stays flagged. (Per-directory
+        // `.gitignore` is the snapshotter's own job, not `base_ignores`' — verified 0.4.0 slice 4.)
+        let mut base_ignores = GitIgnoreFile::empty();
+        if let Some(git_backend) = repo_store.backend_impl::<GitBackend>() {
+            let info_exclude = git_backend.git_repo_path().join("info").join("exclude");
+            base_ignores = base_ignores
+                .chain_with_file(RepoPath::root(), info_exclude)
+                .map_err(map_workingcopy_err)?;
+        }
+
+        Ok(Self {
+            base_ignores,
+            auto_track_matcher,
+            max_new_file_size,
+        })
+    }
+
+    pub(crate) fn options<'a>(
+        &'a self,
+        force_tracking_matcher: &'a dyn Matcher,
+    ) -> SnapshotOptions<'a> {
+        SnapshotOptions {
+            base_ignores: self.base_ignores.clone(),
+            progress: None,
+            start_tracking_matcher: self.auto_track_matcher.as_ref(),
+            force_tracking_matcher,
+            max_new_file_size: self.max_new_file_size,
+        }
+    }
+}
+
 #[pyclass(module = "pyjutsu._pyjutsu")]
 pub(crate) struct PyWorkspace {
     inner: Mutex<Workspace>,
@@ -527,7 +613,7 @@ impl PyWorkspace {
         let inner = resolved
             .loader
             .load(&settings, &store_factories, &working_copy_factories)
-            .map_err(map_workspace_err)?;
+            .map_err(map_workspace_load_err)?;
         Ok(Self {
             inner: Mutex::new(inner),
             revset_config: Arc::new(revset_config),
@@ -631,56 +717,7 @@ impl PyWorkspace {
         };
         let name = ws.workspace_name().to_owned();
 
-        // Read the configured new-file cap now (a plain `u64`), before the working-copy lock
-        // mutably borrows `ws`. Honors `snapshot.max-new-file-size` (jj's `<N>`/`<N>KiB|MiB|…`
-        // form, via `HumanByteSize`), defaulting to 1 MiB when unset or unparseable — matching
-        // the CLI, which otherwise skips oversized new files (changing `@`'s tree).
-        let max_new_file_size = ws
-            .repo_loader()
-            .settings()
-            .get_value_with("snapshot.max-new-file-size", HumanByteSize::try_from)
-            .map_or(1 << 20, |size| size.0);
-
-        // Read & parse `snapshot.auto-track` now (also before the lock), defaulting to `all()` when
-        // unset — matching the CLI, which auto-tracks every new file unless this fileset restricts
-        // it. The matcher decides which *new* files start being tracked, so it can change `@`'s tree
-        // (and commit id). The owned `Box<dyn Matcher>` must outlive `SnapshotOptions`, whose
-        // `start_tracking_matcher` borrows it. A malformed fileset ⇒ `WorkingCopyError`, not a panic.
-        let auto_track = ws
-            .repo_loader()
-            .settings()
-            .get_string("snapshot.auto-track")
-            .unwrap_or_else(|_| "all()".to_owned());
-        let path_converter = RepoPathUiConverter::Fs {
-            cwd: ws.workspace_root().to_path_buf(),
-            base: ws.workspace_root().to_path_buf(),
-        };
-        let mut fileset_diagnostics = FilesetDiagnostics::new();
-        // jj-lib 0.44 wraps the path converter in a `FilesetParseContext` (with an aliases map).
-        let fileset_aliases = FilesetAliasesMap::new();
-        let fileset_ctx = FilesetParseContext {
-            aliases_map: &fileset_aliases,
-            path_converter: &path_converter,
-        };
-        let auto_track_matcher =
-            fileset::parse(&mut fileset_diagnostics, &auto_track, &fileset_ctx)
-                .map_err(map_fileset_err)?
-                .to_matcher();
-
-        // Build `base_ignores` from the repo-local global git-excludes file `.git/info/exclude`
-        // (the CLI composes it into its own `base_ignores`), so its patterns keep matching files
-        // out of `@`'s tree. `chain_with_file` is a no-op when the file is absent. The *global*
-        // `core.excludesFile` / `~/.config/git/ignore` layer the CLI also composes is NOT wired
-        // here — gix 0.78's excludes-file accessor is `pub(crate)`, and matching the CLI's exact
-        // interpolation + XDG-default fallback risks divergence, so it stays flagged. (Per-directory
-        // `.gitignore` is the snapshotter's own job, not `base_ignores`' — verified 0.4.0 slice 4.)
-        let mut base_ignores = GitIgnoreFile::empty();
-        if let Some(git_backend) = repo.store().backend_impl::<GitBackend>() {
-            let info_exclude = git_backend.git_repo_path().join("info").join("exclude");
-            base_ignores = base_ignores
-                .chain_with_file(RepoPath::root(), info_exclude)
-                .map_err(map_workingcopy_err)?;
-        }
+        let inputs = SnapshotInputs::read(ws)?;
 
         let Some(wc_commit_id) = repo.view().get_wc_commit_id(&name).cloned() else {
             return Ok(None);
@@ -726,13 +763,7 @@ impl PyWorkspace {
         // `start_tracking_matcher` honors `snapshot.auto-track` (parsed above) and `max_new_file_size`
         // honors `snapshot.max-new-file-size` (read above).
         let nothing = NothingMatcher;
-        let options = SnapshotOptions {
-            base_ignores,
-            progress: None,
-            start_tracking_matcher: auto_track_matcher.as_ref(),
-            force_tracking_matcher: &nothing,
-            max_new_file_size,
-        };
+        let options = inputs.options(&nothing);
         let new_tree = py
             .allow_threads(|| pollster::block_on(locked_ws.locked_wc().snapshot(&options)))
             .map_err(map_workingcopy_err)?
@@ -894,6 +925,19 @@ impl PyWorkspace {
 
         let data = OperationData::build(new_repo.operation());
         Ok(Some(data.to_dict(py)?))
+    }
+
+    /// Publish a new empty working-copy commit on `onto`, only if the working-copy commit is still
+    /// `expected_wc_commit` and the operation heads did not move. Returns a plain dict with a
+    /// `status` key; the Python layer owns the result and exception types. See `publish.rs`.
+    fn publish_if<'py>(
+        &self,
+        py: Python<'py>,
+        expected_wc_commit: &str,
+        onto: &str,
+        description: String,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        publish::publish_if(self, py, expected_wc_commit, onto, description)
     }
 
     /// Whether the on-disk working copy is **stale** relative to the repo's current `@` — i.e. the

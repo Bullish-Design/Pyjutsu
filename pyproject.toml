@@ -17,6 +17,9 @@ dependencies = [
   "pydantic>=2.12",
 ]
 
+[project.scripts]
+pyjutsu = "pyjutsu.cli:main"
+
 [dependency-groups]
 dev = [
   "pytest>=8.0",

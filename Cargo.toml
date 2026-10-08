@@ -10,6 +10,11 @@ description = "Thin PyO3 binding to jujutsu's jj-lib engine (the _pyjutsu native
 name = "_pyjutsu"
 crate-type = ["cdylib"]
 
+[features]
+# Test-only barriers and a negative-control switch for the guarded publication path
+# (`src/test_hooks.rs`). The dev build enables it; the release wheel must not.
+test-hooks = []
+
 [dependencies]
 # Hard pin: this exact version is the real API contract. Cargo.lock is committed. Bumping
 # jj-lib is a deliberate Rust-side port; pyjutsu's own version (above) moves independently.

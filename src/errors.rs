@@ -108,6 +108,23 @@ pub(crate) fn map_workspace_err<E: std::fmt::Display>(err: E) -> PyErr {
     WorkspaceError::new_err(err.to_string())
 }
 
+/// Workspace load errors with their full `source()` chain. jj-lib reports an unsupported store
+/// type only in the innermost source ("Cannot read the repo" hides it), and a caller needs that
+/// text to see why a repository was refused.
+pub(crate) fn map_workspace_load_err<E: std::error::Error>(err: E) -> PyErr {
+    let mut message = err.to_string();
+    let mut source = err.source();
+    while let Some(inner) = source {
+        let text = inner.to_string();
+        if !message.ends_with(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        source = inner.source();
+    }
+    WorkspaceError::new_err(message)
+}
+
 /// Store / op-store / repo-load errors → `BackendError`.
 pub(crate) fn map_backend_err<E: std::fmt::Display>(err: E) -> PyErr {
     BackendError::new_err(err.to_string())

@@ -24,6 +24,8 @@ mod git;
 mod id_prefix;
 mod repo_view;
 mod revset;
+#[cfg(feature = "test-hooks")]
+mod test_hooks;
 mod transaction;
 mod workspace;
 
@@ -60,10 +62,18 @@ fn pyjutsu_version() -> &'static str {
     PYJUTSU_VERSION
 }
 
+/// Whether this build carries the test-only barriers (`test-hooks` feature). The release wheel
+/// must report `False`; a test and the wheel smoke check assert it.
+#[pyfunction]
+fn has_test_hooks() -> bool {
+    cfg!(feature = "test-hooks")
+}
+
 #[pymodule]
 fn _pyjutsu(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(pyjutsu_version, m)?)?;
+    m.add_function(wrap_pyfunction!(has_test_hooks, m)?)?;
     m.add_function(wrap_pyfunction!(escape_string, m)?)?;
     m.add_class::<PyWorkspace>()?;
     m.add_class::<PyRepoView>()?;

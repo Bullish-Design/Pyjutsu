@@ -512,3 +512,31 @@ class Operation(BaseModel):
                 offset = timedelta(minutes=data.pop(f"{prefix}_tz_offset_minutes"))
                 data[f"{prefix}_time"] = datetime.fromtimestamp(ms / 1000, tz=timezone(offset))
         return data
+
+
+class PublishResult(BaseModel):
+    """A successful guarded publication (:meth:`pyjutsu.Workspace.publish_if`).
+
+    One publication operation landed, and the working copy and (when colocated) Git `HEAD` and
+    index agree with the new ``@``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: Always ``"published"``. Kept so the model reads like the command output.
+    status: Literal["published"]
+    #: The publication operation id.
+    operation: str
+    #: The newest operation id. It differs from ``operation`` when Git synchronization added one.
+    head_operation: str
+    #: The new working-copy commit: an empty child of ``onto``.
+    wc_commit: CommitId
+    #: The ``onto`` commit id the caller passed.
+    onto: CommitId
+    #: The working-copy commit id the caller expected.
+    expected_wc_commit: CommitId
+    #: ``"synced"`` (Git synchronization added an operation), ``"unchanged"`` (Git was already
+    #: in step), or ``"not-colocated"``.
+    git_sync: Literal["synced", "unchanged", "not-colocated"]
+    #: The Git synchronization operation id, or ``None`` when ``git_sync`` is not ``"synced"``.
+    git_sync_operation: str | None = None

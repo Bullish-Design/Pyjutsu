@@ -44,6 +44,9 @@ def version() -> str:
 def pyjutsu_version() -> str:
     """Return the compiled pyjutsu crate version (``CARGO_PKG_VERSION``), for the stale-build guard."""
 
+def has_test_hooks() -> bool:
+    """Whether this build carries the test-only publication barriers. A release wheel is False."""
+
 def escape_string(s: str) -> str:
     """Quote a string as a jj domain-specific language literal."""
 
@@ -117,6 +120,9 @@ class PyWorkspace:
     def git_import(self) -> dict[str, object] | None: ...
     def git_export(self) -> dict[str, object] | None: ...
     def sync_colocated(self) -> dict[str, object] | None: ...
+    def publish_if(
+        self, expected_wc_commit: str, onto: str, description: str
+    ) -> dict[str, object]: ...
     def git_fetch(
         self, remote: str, bookmarks: list[str] | None = ...
     ) -> dict[str, object] | None: ...

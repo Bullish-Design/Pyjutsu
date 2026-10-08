@@ -15,10 +15,12 @@ let
 in
 {
   tasks = {
-    # Compile the _pyjutsu native ext and install it (editable) into the devenv venv.
+    # Compile the _pyjutsu native ext and install it (editable) into the devenv venv. The dev build
+    # enables `test-hooks` (barriers for the publication tests, `src/test_hooks.rs`). The release
+    # wheel task below does not, and its smoke check asserts that.
     "pyjutsu:build".exec = ''
       cd "$DEVENV_ROOT"
-      VIRTUAL_ENV="${venvRoot}" UV_PROJECT_ENVIRONMENT="${venvRoot}" maturin develop --uv
+      VIRTUAL_ENV="${venvRoot}" UV_PROJECT_ENVIRONMENT="${venvRoot}" maturin develop --uv --features test-hooks
     '';
 
     # Python suite (models, facade, differential tests) + Rust unit tests for the thin layer.
@@ -33,6 +35,7 @@ in
       cd "$DEVENV_ROOT"
       ${venvBin}/ruff check python tests scripts
       cargo clippy --all-targets -- -D warnings
+      cargo clippy --all-targets --features test-hooks -- -D warnings
     '';
 
     # Canonical local gate. The task graph owns the build, test, and lint order.
@@ -191,7 +194,7 @@ release; that needs a Rust toolchain."
   # `devenv test` builds the ext, then runs both suites.
   enterTest = ''
     cd "$DEVENV_ROOT"
-    VIRTUAL_ENV="${venvRoot}" UV_PROJECT_ENVIRONMENT="${venvRoot}" maturin develop --uv
+    VIRTUAL_ENV="${venvRoot}" UV_PROJECT_ENVIRONMENT="${venvRoot}" maturin develop --uv --features test-hooks
     ${venvBin}/pytest -q
     cargo test
   '';

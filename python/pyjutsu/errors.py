@@ -34,7 +34,19 @@ __all__ = [
     "JjCliError",
     "HookAbort",
     "PostHookError",
+    "PublishError",
+    "StalePublishError",
+    "PublishIncompleteError",
+    "STALE_REASONS",
 ]
+
+#: Reason codes of :class:`StalePublishError`. Each one means the call changed nothing visible.
+STALE_REASONS = (
+    "commit-moved",
+    "dirty-working-copy",
+    "stale-working-copy",
+    "op-heads-moved",
+)
 
 
 class JjCliError(PyjutsuError):
@@ -94,3 +106,101 @@ class PostHookError(PyjutsuError):
     def __init__(self, operation_id: str | None, message: str) -> None:
         super().__init__(message)
         self.operation_id = operation_id
+
+
+#: Reason code per :class:`PublishIncompleteError` stage.
+_INCOMPLETE_REASONS = {
+    "checkout": "published-checkout-failed",
+    "git-sync": "published-git-sync-failed",
+    "publish-uncertain": "publish-uncertain",
+}
+
+
+class PublishError(PyjutsuError):
+    """:meth:`pyjutsu.Workspace.publish_if` refused or failed.
+
+    This base class covers a refusal that changed nothing and is not a stale finding: an invalid
+    commit id, an ``onto`` commit that does not exist, or an unsupported store. Its subclasses
+    cover a stale finding (:class:`StalePublishError`) and a landed or uncertain operation
+    (:class:`PublishIncompleteError`).
+
+    Attributes:
+        reason: a stable code, for example ``"onto-not-found"`` or ``"unsupported-store"``.
+        expected_wc_commit: the working-copy commit id the caller expected.
+        onto: the ``onto`` commit id the caller passed.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str,
+        expected_wc_commit: str | None = None,
+        onto: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.expected_wc_commit = expected_wc_commit
+        self.onto = onto
+
+
+class StalePublishError(PublishError):
+    """The precondition failed. The call published nothing and moved neither ``@`` nor any file.
+
+    Attributes:
+        reason: one of :data:`STALE_REASONS`.
+        observed_wc_commit: the working-copy commit id the call read inside the lock.
+        head_operations: the operation heads the call saw. More than one means divergent heads.
+        dirty: ``True`` when the disk holds changes the working-copy commit does not. The call
+            left those bytes on disk.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str,
+        expected_wc_commit: str | None,
+        onto: str | None,
+        observed_wc_commit: str,
+        head_operations: list[str],
+        dirty: bool,
+    ) -> None:
+        super().__init__(message, reason=reason, expected_wc_commit=expected_wc_commit, onto=onto)
+        self.observed_wc_commit = observed_wc_commit
+        self.head_operations = head_operations
+        self.dirty = dirty
+
+
+class PublishIncompleteError(PublishError):
+    """The operation landed or may have landed, but a later step failed.
+
+    Never treat this as a stale refusal. Read :attr:`recovery` and run it.
+
+    Attributes:
+        stage: ``"checkout"`` (the working copy is stale), ``"git-sync"`` (the working copy is
+            current and Git ``HEAD`` or the index lags), or ``"publish-uncertain"`` (the head
+            update failed and the operation log may or may not hold ``operation``).
+        operation: the publication operation id.
+        recovery: the recovery action, as one sentence.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str,
+        operation: str,
+        recovery: str,
+        expected_wc_commit: str | None,
+        onto: str | None,
+    ) -> None:
+        super().__init__(
+            message,
+            reason=_INCOMPLETE_REASONS.get(stage, stage),
+            expected_wc_commit=expected_wc_commit,
+            onto=onto,
+        )
+        self.stage = stage
+        self.operation = operation
+        self.recovery = recovery

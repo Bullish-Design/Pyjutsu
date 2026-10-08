@@ -8,6 +8,7 @@ in M1–M3.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import warnings
@@ -17,7 +18,15 @@ from pathlib import Path
 from typing import Literal
 
 from ._pyjutsu import PyWorkspace
-from .errors import HookAbort, JjCliError, PostHookError, PyjutsuError
+from .errors import (
+    HookAbort,
+    JjCliError,
+    PostHookError,
+    PublishError,
+    PublishIncompleteError,
+    PyjutsuError,
+    StalePublishError,
+)
 from .git import GitView
 from .hooks import CONFIG_FILENAME, HookRegistry
 from .models import (
@@ -28,6 +37,7 @@ from .models import (
     DiffStat,
     JjResult,
     Operation,
+    PublishResult,
     Remote,
     SignBehavior,
     WorkspaceInfo,
@@ -37,6 +47,24 @@ from .revset import Revset, _revset_str
 from .transaction import Transaction
 
 __all__ = ["Workspace"]
+
+#: A full commit id: lowercase hex, 40 digits (SHA-1 store) or 64 digits (SHA-256 store).
+_FULL_COMMIT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+_RECOVERY = {
+    "checkout": (
+        "The operation landed and the working copy is stale. "
+        "Run `pyjutsu recover --repo {root}` (or Workspace.recover())."
+    ),
+    "git-sync": (
+        "The operation landed and the working copy is current, but Git HEAD or the index lags. "
+        "Run `pyjutsu recover --repo {root}` (or Workspace.recover())."
+    ),
+    "publish-uncertain": (
+        "The operation log may or may not hold operation {operation}. "
+        "Run `jj op log` to check, then `pyjutsu recover --repo {root}`."
+    ),
+}
 
 
 def _normalize_revisions(
@@ -267,6 +295,104 @@ class Workspace:
         op = Operation.model_validate(row) if row is not None else None
         self._fire_post("post-sync", op.id if op is not None else None, op)
         return op
+
+    def publish_if(
+        self, expected_wc_commit: str, onto: str, description: str
+    ) -> PublishResult:
+        """Publish a new empty working-copy commit on ``onto``, only if nothing moved → the
+        :class:`~pyjutsu.models.PublishResult`.
+
+        The call holds the working-copy lock (and, in a colocated repository, jj's Git
+        import/export lock) from before it reads the repository until after it records the
+        working copy. It publishes only if both hold:
+
+        - the working-copy commit is ``expected_wc_commit``, after an in-memory snapshot found
+          the disk equal to that commit; and
+        - the operation heads, compared under the operation-heads lock, are still the head the
+          call loaded inside the lock.
+
+        Otherwise it raises :class:`~pyjutsu.errors.StalePublishError` before it moves ``@`` and
+        before it writes any file. The snapshot is in memory only, so a dirty working copy keeps
+        its bytes on disk and no operation is published. Both ids must be full commit ids; a
+        revset or a prefix raises :class:`ValueError`.
+
+        Operations: one publication operation. In a colocated repository, a second operation named
+        ``sync colocated git`` is added when Git ``HEAD`` moves, so the happy path for a normal
+        update adds two operations. :attr:`~pyjutsu.models.PublishResult.head_operation` is the
+        newest.
+
+        Raises:
+            StalePublishError: the precondition failed; nothing was published. ``reason`` is one
+                of ``commit-moved``, ``dirty-working-copy``, ``stale-working-copy``,
+                ``op-heads-moved``.
+            PublishIncompleteError: the operation landed, or may have landed, and a later step
+                failed. Read ``recovery`` and run :meth:`recover`.
+            PublishError: the call changed nothing and is not stale: ``onto-not-found``,
+                ``unsupported-store``, or ``invalid-commit-id``.
+            ValueError: an id is not a full lowercase hex commit id.
+
+        Known limits: a direct write to a path that the checkout rewrites can be overwritten; a
+        process that loaded the old head before this call and publishes later forks the operation
+        log; power-loss durability is unproved; raw ``git`` can bypass jj's Git lock. See
+        ``docs/PUBLISH_IF.md``.
+        """
+        for label, value in (("expected_wc_commit", expected_wc_commit), ("onto", onto)):
+            if not _FULL_COMMIT_ID.match(value):
+                raise ValueError(f"{label} must be a full lowercase hex commit id, got {value!r}")
+        row = self._handle.publish_if(expected_wc_commit, onto, description)
+        status = row["status"]
+        expected, target = row["expected_wc_commit"], row["onto"]
+        if status == "published":
+            return PublishResult.model_validate(row)
+        if status == "stale":
+            reason = row["reason"]
+            raise StalePublishError(
+                f"publish_if refused ({reason}): expected {expected}, observed "
+                f"{row['observed_wc_commit']}; nothing was published",
+                reason=reason,
+                expected_wc_commit=expected,
+                onto=target,
+                observed_wc_commit=row["observed_wc_commit"],
+                head_operations=list(row["head_operations"]),
+                dirty=row["dirty"],
+            )
+        if status == "incomplete":
+            stage, operation = row["stage"], row["operation"]
+            recovery = _RECOVERY[stage].format(root=self.root, operation=operation)
+            raise PublishIncompleteError(
+                f"publish_if landed operation {operation} but failed at {stage}: "
+                f"{row['message']}. {recovery}",
+                stage=stage,
+                operation=operation,
+                recovery=recovery,
+                expected_wc_commit=expected,
+                onto=target,
+            )
+        raise PublishError(
+            f"publish_if refused ({row['reason']}): {row['message']}",
+            reason=row["reason"],
+            expected_wc_commit=expected,
+            onto=target,
+        )
+
+    def recover(self) -> list[Operation]:
+        """Finish a publication that stopped after its operation landed → the operations this
+        call published (usually none or one).
+
+        Idempotent. It runs :meth:`update_stale` when the working copy is stale, then
+        :meth:`sync_colocated` when the repository is colocated. Call it after
+        :class:`~pyjutsu.errors.PublishIncompleteError`, or after a process died during
+        :meth:`publish_if`. Unlike ``jj workspace update-stale`` it never snapshots first, so it
+        creates no stray commit.
+        """
+        published: list[Operation] = []
+        if self.is_stale():
+            self._handle.update_stale()
+        if (self.root / ".git").exists():
+            op = self.sync_colocated()
+            if op is not None:
+                published.append(op)
+        return published
 
     def git_fetch(
         self, remote: str, *, bookmarks: list[str] | None = None
