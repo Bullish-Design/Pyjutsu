@@ -12,8 +12,18 @@ no subprocess and no text parsing.
   [`docs/DEV_GUIDE.md`](docs/DEV_GUIDE.md) (working on it) ·
   [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md) (design spec).
 
-**Status: 0.23.0 — tracks jj-lib 0.44.0.** The reads, transactions/mutations, op-log time travel,
+**Status: 0.23.1 — tracks jj-lib 0.44.0.** The reads, transactions/mutations, op-log time travel,
 workspaces, and git interop are implemented and differential-tested against the pinned `jj` CLI.
+
+### 0.23.1 — Nix package
+
+0.23.1 adds a `flake.nix`. `packages.<system>.default` builds the `pyjutsu` command and the
+Python module with maturin from a pinned nixpkgs. The overlay `overlays.default` adds `pyjutsu`
+to the Python package set. The library and the CLI do not change.
+
+```nix
+inputs.pyjutsu.url = "github:Bullish-Design/Pyjutsu/v0.23.1";
+```
 
 ### 0.23.0 — guarded publication
 

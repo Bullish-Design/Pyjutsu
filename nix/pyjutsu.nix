@@ -47,11 +47,11 @@ in
     # Build a portable release wheel + sdist into dist/, then prove the wheel imports in a
     # clean interpreter.
     #
-    # This is a **local check and the sdist source**, not the published wheel. Vendomat builds
-    # the wheel that ships (`nix build .#pyjutsu-wheel`, uploaded by `vendomat publish
-    # pyjutsu`); building the shipping wheel here too is what gave one version two artifacts.
-    # Nothing here uploads or tags; `dist/` is git-ignored. Run it alone to install pyjutsu
-    # into another project on this machine.
+    # This task builds the one wheel that ships. Upload that file to the release with
+    # `gh release upload`. Do not upload a second build of the same version. The Nix package
+    # (`nix build .#pyjutsu`) serves Nix consumers and is not this wheel: its extension
+    # carries a RUNPATH into `/nix/store`. Nothing here uploads or tags; `dist/` is git-ignored.
+    # Run it alone to install pyjutsu into another project on this machine.
     #
     # Two nix-specific corrections are needed, and both are silent when missed:
     #
@@ -150,15 +150,13 @@ in
       SMOKE
     '';
 
-    # Cut the release and publish the sdist. **This task no longer publishes the wheel.**
+    # Cut the release and publish the sdist. **This task does not upload the wheel.**
     #
-    # Vendomat is the release engine: it performs the single hermetic build and uploads that
-    # exact store file with `vendomat publish pyjutsu`. Two builders uploading under one
-    # version is what produced two different files carrying the same version number, and every
-    # downstream symptom followed from it (gitman project 32 G3, devman 023-toolchain).
+    # Upload the wheel from `pyjutsu:wheel` by hand after this task runs. Two builders
+    # uploading under one version produced two different files carrying the same version
+    # number, and every downstream symptom followed from it. One task builds the wheel.
     #
-    # The sdist stays here because vendomat builds no sdist, and it is the only way onto a
-    # platform the manylinux wheel does not serve.
+    # The sdist is the only way onto a platform the manylinux wheel does not serve.
     #
     # The tag is derived from pyproject.toml, never passed in, so the tag and the artifact
     # names cannot disagree. Re-running against an existing tag fails rather than overwriting
@@ -218,7 +216,7 @@ The wheel is abi3 (one build serves CPython 3.13 and later) and manylinux_2_39, 
 glibc 2.39 or newer on x86-64 Linux. On any other platform, build from the sdist in this
 release; that needs a Rust toolchain."
       echo "published $tag with the sdist."
-      echo "Now attach the wheel from the store:  vendomat publish pyjutsu"
+      echo "Now attach the wheel:  gh release upload $tag dist/pyjutsu-$version-*.whl"
     '';
   };
 
