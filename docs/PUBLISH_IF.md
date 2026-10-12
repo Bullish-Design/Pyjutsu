@@ -1,6 +1,6 @@
 # Guarded publication: `publish_if` and `pyjutsu publish-if`
 
-Status: pyjutsu 0.23.0, jj-lib 0.44.0.
+Status: pyjutsu 0.23.0, jj-lib 0.46.0.
 
 A guarded call publishes a prepared change as the new working-copy commit. It publishes only if
 two things still hold:
@@ -163,6 +163,11 @@ A publication adds one operation. In a colocated repository, step 9 adds a secon
 `sync colocated git` when Git `HEAD` moves. Git `HEAD` moves in the normal case, so the usual
 colocated result is two operations. `git_sync=unchanged` (one operation) happens when `onto` is the
 current parent. A repository that is not colocated adds one operation.
+
+A workspace is colocated when the Git working directory at its root belongs to the repository.
+That holds for the default workspace and for a Git worktree made by `jj workspace add --colocate`.
+jj 0.45 and later records one Git `HEAD` per workspace (`git_heads` in the view). Step 9 resets the
+`HEAD` of the workspace that the call runs in, and no other. `recover` does the same.
 
 jj needs the second operation because the jj view records Git `HEAD`. The call does not fold Git
 sync into the publication operation. Folding it would write Git `HEAD` before the comparison, so a

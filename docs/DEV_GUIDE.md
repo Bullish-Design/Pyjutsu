@@ -329,6 +329,12 @@ no hand-editing of version constants scattered through the code.
 - **Colocated git needs HEAD/index care.** After mutations, the on-disk git `HEAD`/index can go
   stale and mislead raw-git tooling; `sync_colocated` (and `git_export`) rebuild them. gix holds a
   config snapshot, so some verbs take a fresh `RepoLoader` to avoid staleness.
+- **Git `HEAD` is per workspace (jj 0.45+).** The view stores one Git `HEAD` per workspace
+  (`git_heads`), and a colocated child workspace is a Git worktree with its own `HEAD`. Every
+  `git::import_head` and `git::reset_head` call names the workspace and its root. Decide
+  "colocated" with `is_colocated_workspace` (`GitBackend::open_git_repo_at_workdir`, the jj CLI's
+  own test), never by comparing the main repository's work directory with the workspace root.
+  `tests/test_publish_workspace_git_head.py` guards this.
 - **Keep the `.pyi` in sync.** It's the only type contract for the native surface; a new native
   method with no stub entry is a silent gap.
 

@@ -34,8 +34,7 @@ use jj_lib::matchers::NothingMatcher;
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_heads_store::OpHeadsStoreError;
 use jj_lib::op_store::OperationId;
-use jj_lib::git_backend::GitBackend;
-use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader};
+use jj_lib::repo::{ReadonlyRepo, Repo};
 use jj_lib::backend::CommitId;
 use jj_lib::ref_name::WorkspaceName;
 use jj_lib::simple_op_heads_store::SimpleOpHeadsStore;
@@ -44,7 +43,7 @@ use jj_lib::workspace::Workspace;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use super::{PyWorkspace, SnapshotInputs};
+use super::{PyWorkspace, SnapshotInputs, is_colocated_workspace};
 use crate::errors::{PyjutsuError, map_backend_err, map_workingcopy_err};
 
 /// The working-copy type this guard supports. Another type may not honor the same lock.
@@ -130,21 +129,6 @@ fn parse_commit_id(hex: &str, length: usize) -> Option<CommitId> {
         return None;
     }
     CommitId::try_from_hex(hex)
-}
-
-/// A repository is colocated when its Git working directory is the jj workspace root.
-fn is_colocated(loader: &RepoLoader, workspace_root: &Path) -> bool {
-    let Some(git_backend) = loader.store().backend_impl::<GitBackend>() else {
-        return false;
-    };
-    let git_repo = git_backend.git_repo();
-    let Some(workdir) = git_repo.workdir() else {
-        return false;
-    };
-    match (workdir.canonicalize(), workspace_root.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
 }
 
 /// Reset Git `HEAD` and the Git index of workspace `name` to the new working-copy commit. jj 0.45
@@ -237,7 +221,7 @@ pub(super) fn publish_if<'py>(
     };
 
     let inputs = SnapshotInputs::read(ws)?;
-    let colocated = is_colocated(&loader, ws.workspace_root());
+    let colocated = is_colocated_workspace(loader.store(), ws.workspace_root())?;
     let git_lock_path = ws.repo_path().join("git_import_export.lock");
 
     // Lock 1 (colocated only): the Git import/export lock. A jj CLI command takes it before its
