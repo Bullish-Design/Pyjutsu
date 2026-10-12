@@ -1,10 +1,16 @@
 { pkgs, lib, config, inputs, ... }:
 
 let
-  # jujutsu pinned to 0.42.0 from a dedicated nixpkgs input (see devenv.yaml). This is the
-  # CLI of the exact jj-lib Pyjutsu binds; differential tests run it side-by-side with the
-  # binding. A future jj bump is a deliberate Rust-side port + a Pyjutsu minor bump.
-  jjPkgs = import inputs.nixpkgs-jj { system = pkgs.stdenv.system; };
+  # The jj CLI is pinned to 0.46.0, the version of the jj-lib that Pyjutsu binds
+  # (`jj-lib = "=0.46.0"` in Cargo.toml). Differential tests run it side by side with the
+  # binding. nixpkgs ships no 0.46 yet, so `nix/jj.nix` fetches the release binary. Replace
+  # it with a nixpkgs package when one ships the matching version. A jj bump is a deliberate
+  # Rust-side port plus a Pyjutsu minor bump.
+  jj = import ./nix/jj.nix { inherit pkgs; };
+
+  # jj-lib 0.46.0 needs Rust 1.97.1 or later. The `nixpkgs-rust` input (devenv.yaml) supplies
+  # it, so the rest of the shell stays on the rolling nixpkgs.
+  rustPkgs = import inputs.nixpkgs-rust { system = pkgs.stdenv.system; };
 in
 {
   # Dev verification tasks (pyjutsu:build/test/lint) + enterTest.
@@ -18,7 +24,7 @@ in
     pkgs.git
     pkgs.uv
     pkgs.maturin
-    jjPkgs.jujutsu
+    jj
     # Fast linker for the native extension. `_pyjutsu` is one crate statically linked against the
     # whole of jj-lib, so every incremental rebuild re-links a large cdylib — `mold` cuts that link
     # step from many seconds to ~1s. Wired up as the linker in `.cargo/config.toml`.
@@ -30,10 +36,14 @@ in
   ];
 
   # https://devenv.sh/languages/
-  # Rust toolchain for the _pyjutsu native extension. jj-lib 0.42.0 requires Rust >= 1.89
-  # (edition 2024); rolling nixpkgs' stable rustc satisfies this. (A specific `channel` would
-  # pull in the rust-overlay input; the nixpkgs toolchain is enough here.)
-  languages.rust.enable = true;
+  # Rust toolchain for the _pyjutsu native extension. jj-lib 0.46.0 requires Rust 1.97.1 or
+  # later (edition 2024). The toolchain packages come from the `nixpkgs-rust` input.
+  languages.rust = {
+    enable = true;
+    toolchain = {
+      inherit (rustPkgs) rustc cargo clippy rustfmt rust-analyzer;
+    };
+  };
 
   languages.python = {
     enable = true;

@@ -52,22 +52,6 @@
         "type": "github"
       }
     },
-    "nixpkgs-jj": {
-      "locked": {
-        "lastModified": 1785983046,
-        "narHash": "sha256-rvCOd8Q20Kg1W2Pk2LLwYqatel5rqEYCzjAdPb4S5jE=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "a5c43f1df1e17386c951571ec4a7942d2e9cda2e",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "a5c43f1df1e17386c951571ec4a7942d2e9cda2e",
-        "type": "github"
-      }
-    },
     "nixpkgs-python": {
       "inputs": {
         "flake-compat": "flake-compat",
@@ -84,6 +68,22 @@
       "original": {
         "owner": "cachix",
         "repo": "nixpkgs-python",
+        "type": "github"
+      }
+    },
+    "nixpkgs-rust": {
+      "locked": {
+        "lastModified": 1791456040,
+        "narHash": "sha256-H83yz/do+hjOO0uujHyH8RgtIQP2v7Mw+cLwcZK/xKc=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "e7439b6b14ad3cc35d05608ebca9bce01a25f5f8",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "e7439b6b14ad3cc35d05608ebca9bce01a25f5f8",
         "type": "github"
       }
     },
@@ -124,8 +124,8 @@
       "inputs": {
         "devenv": "devenv",
         "nixpkgs": "nixpkgs",
-        "nixpkgs-jj": "nixpkgs-jj",
-        "nixpkgs-python": "nixpkgs-python"
+        "nixpkgs-python": "nixpkgs-python",
+        "nixpkgs-rust": "nixpkgs-rust"
       }
     }
   },
