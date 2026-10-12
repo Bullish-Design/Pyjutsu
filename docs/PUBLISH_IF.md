@@ -1,6 +1,6 @@
 # Guarded publication: `publish_if` and `pyjutsu publish-if`
 
-Status: pyjutsu 0.23.0, jj-lib 0.46.0.
+Status: pyjutsu 0.24.0, jj-lib 0.46.0.
 
 A guarded call publishes a prepared change as the new working-copy commit. It publishes only if
 two things still hold:

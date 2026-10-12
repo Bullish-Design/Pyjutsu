@@ -12,8 +12,24 @@ no subprocess and no text parsing.
   [`docs/DEV_GUIDE.md`](docs/DEV_GUIDE.md) (working on it) ·
   [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md) (design spec).
 
-**Status: 0.23.1 — tracks jj-lib 0.46.0.** The reads, transactions/mutations, op-log time travel,
+**Status: 0.24.0 — tracks jj-lib 0.46.0.** The reads, transactions/mutations, op-log time travel,
 workspaces, and git interop are implemented and differential-tested against the pinned `jj` CLI.
+
+### 0.24.0 — jj-lib 0.46
+
+0.24.0 binds jj-lib 0.46.0 (was 0.44.0). Building from source needs Rust 1.97.1 or later.
+
+jj 0.45 and later keeps one Git `HEAD` for each workspace. `publish_if` and `recover` now keep the
+Git `HEAD` of the workspace they run in correct. This includes a colocated child workspace, which is
+a Git worktree made by `jj workspace add --colocate`. Before this release, a publication in a child
+workspace skipped the Git sync, and the next jj command printed "Reset the working copy parent to
+the new Git HEAD" and moved `@`.
+
+`pyjutsu --version` prints `pyjutsu 0.24.0 (jj-lib 0.46.0)`.
+
+jj 0.46 adds `untracked_remote_tags()` to the default `immutable_heads()`. Pyjutsu follows it, so a
+commit that an untracked remote tag names is immutable. Release notes:
+`.scratch/projects/17-jj-lib-0-46-port/RELEASE_NOTES_0.24.0.md`.
 
 ### 0.23.1 — Nix package
 
