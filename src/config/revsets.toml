@@ -1,9 +1,9 @@
-# Vendored from jj v0.44.0: cli/src/config/revsets.toml.
+# Vendored from jj v0.46.0: cli/src/config/revsets.toml.
 # Re-diff this table against the matching jj release before every jj-lib upgrade.
 #
-# Re-diffed at the 0.42.0 -> 0.44.0 upgrade against the pinned CLI itself
-# (`jj config list --include-defaults revset-aliases`). jj 0.44.0 adds one alias,
-# `builtin_log()`; every other alias is byte-identical to the 0.42.0 table.
+# Re-diffed at the 0.44.0 -> 0.46.0 upgrade against the pinned CLI itself
+# (`jj config list --include-defaults revset-aliases`). jj 0.46.0 adds `untracked_remote_tags()`
+# to `builtin_immutable_heads()`; every other alias is byte-identical to the 0.44.0 table.
 # `tests/test_revset_config.py` asserts this table equals the pinned CLI's defaults exactly.
 
 [revset-aliases]
@@ -19,7 +19,9 @@ latest(
 )
 '''
 "builtin_log()" = 'present(@) | ancestors(immutable_heads().., 2) | trunk()'
-"builtin_immutable_heads()" = 'trunk() | tags() | untracked_remote_bookmarks()'
+"builtin_immutable_heads()" = '''
+trunk() | tags() | untracked_remote_bookmarks() | untracked_remote_tags()
+'''
 "immutable_heads()" = 'builtin_immutable_heads()'
 "immutable()" = '::(immutable_heads() | root())'
 "mutable()" = '~immutable()'

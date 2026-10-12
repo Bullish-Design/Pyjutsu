@@ -14,7 +14,7 @@ use jj_lib::backend::TreeValue;
 use jj_lib::commit::Commit;
 use jj_lib::diff::{ContentDiff, DiffHunkKind};
 use jj_lib::matchers::EverythingMatcher;
-use jj_lib::merge::MergedTreeValue;
+use jj_lib::backend::MergedTreeValue;
 use jj_lib::repo::Repo;
 use jj_lib::repo_path::RepoPath;
 use jj_lib::rewrite::merge_commit_trees;

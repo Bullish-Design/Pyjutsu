@@ -43,8 +43,7 @@ pub(crate) fn shortest_change_prefix(repo: &dyn Repo, change_id: &ChangeId) -> P
     let index = context
         .populate(repo)
         .map_err(|e| PyjutsuError::new_err(e.to_string()))?;
-    let len = index
-        .shortest_change_prefix_len(repo, change_id)
+    let len = pollster::block_on(index.shortest_change_prefix_len(repo, change_id))
         .map_err(|e| PyjutsuError::new_err(e.to_string()))?;
     Ok(change_id.reverse_hex()[..len].to_owned())
 }

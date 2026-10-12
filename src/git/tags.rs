@@ -428,9 +428,9 @@ pub(crate) fn read_tag<'py>(
     let row = py.allow_threads(move || -> PyResult<Option<GitTagData>> {
         let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
         let git_repo = git::get_git_repo(repo.store()).map_err(map_git_err)?;
-        let mut git_ref = match git_repo.find_reference(&full_name) {
-            Ok(git_ref) => git_ref,
-            Err(gix::reference::find::existing::Error::NotFound { .. }) => return Ok(None),
+        let mut git_ref = match git_repo.try_find_reference(&full_name) {
+            Ok(Some(git_ref)) => git_ref,
+            Ok(None) => return Ok(None),
             Err(err) => return Err(map_git_err(err.to_string())),
         };
         Ok(Some(GitTagData::build(&git_repo, &mut git_ref)?))

@@ -1,6 +1,6 @@
 """Driver for the devenv-pinned `jj` CLI — the other half of every differential test.
 
-Each operation Pyjutsu performs is checked against the exact `jj` 0.44.0 binary the devenv
+Each operation Pyjutsu performs is checked against the exact `jj` 0.46.0 binary the devenv
 pins (concept §7). This module just runs that binary against a repo with an isolated config
 so results are reproducible and independent of the developer's `~/.jjconfig`.
 """

@@ -8,6 +8,7 @@
 
 use pyo3::prelude::*;
 
+use jj_lib::backend::MergedTreeValueExt as _;
 use jj_lib::conflict_labels::ConflictLabels;
 use jj_lib::conflicts::{
     self, ConflictMarkerStyle, ConflictMaterializeOptions, MaterializedTreeValue,
@@ -43,7 +44,7 @@ pub(crate) fn style_from_str(style: &str) -> PyResult<ConflictMarkerStyle> {
 pub(crate) async fn materialize_to_string(
     store: &Store,
     path: &RepoPath,
-    value: jj_lib::merge::MergedTreeValue,
+    value: jj_lib::backend::MergedTreeValue,
     labels: &ConflictLabels,
     style: ConflictMarkerStyle,
 ) -> PyResult<String> {
@@ -159,7 +160,7 @@ pub(crate) fn sides(
 pub(crate) async fn resolved_tree(
     tree: MergedTree,
     path: &RepoPath,
-    value: jj_lib::merge::MergedTreeValue,
+    value: jj_lib::backend::MergedTreeValue,
     content: &[u8],
 ) -> PyResult<MergedTree> {
     let store = tree.store();

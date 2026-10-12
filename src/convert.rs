@@ -226,7 +226,7 @@ impl BookmarkData {
         Self {
             name: name.to_owned(),
             remote: None,
-            target_ids: target.added_ids().map(ObjectId::hex).collect(),
+            target_ids: target.present_adds().map(ObjectId::hex).collect(),
             tracked: false,
         }
     }
@@ -236,7 +236,7 @@ impl BookmarkData {
         Self {
             name: name.to_owned(),
             remote: Some(remote.to_owned()),
-            target_ids: remote_ref.target.added_ids().map(ObjectId::hex).collect(),
+            target_ids: remote_ref.target.present_adds().map(ObjectId::hex).collect(),
             tracked: remote_ref.is_tracked(),
         }
     }

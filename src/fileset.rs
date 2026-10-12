@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use jj_lib::fileset::{self, FilesetAliasesMap, FilesetDiagnostics, FilesetParseContext};
 use jj_lib::matchers::{EverythingMatcher, Matcher, NothingMatcher, UnionMatcher};
-use jj_lib::repo_path::RepoPathUiConverter;
+use jj_lib::ui_path::RepoPathUiConverter;
 use pyo3::PyResult;
 
 use crate::errors::to_py_err;

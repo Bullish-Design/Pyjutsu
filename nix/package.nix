@@ -3,7 +3,7 @@
 # The cargo dependencies come from `Cargo.lock` through `importCargoLock`. Every package
 # in the lock file comes from crates.io, so the build needs no hash.
 #
-# The build does not run the test suite. The suite shells out to the real `jj` 0.44.0 binary
+# The build does not run the test suite. The suite shells out to the real `jj` 0.46.0 binary
 # as an oracle. The repository gate (`pyjutsu:verify`) runs it. The install check runs a
 # smoke command instead:
 #   - `pyjutsu --help` exits 0;

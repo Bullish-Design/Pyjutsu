@@ -31,7 +31,7 @@ use jj_lib::git::{
     self, GitFetch, GitFetchRefExpression, GitImportOptions, GitProgress, GitPushOptions,
     GitPushRefTargets, GitSidebandLineTerminator, GitSubprocessCallback, GitSubprocessOptions,
 };
-use jj_lib::git_backend::GitBackend;
+use jj_lib::git_backend::{GitBackend, GitRepoAtWorkdirError};
 use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::matchers::{Matcher, NothingMatcher, PrefixMatcher};
 use jj_lib::merge::{Diff, Merge};
@@ -41,13 +41,13 @@ use jj_lib::op_store::OperationId;
 use jj_lib::op_walk;
 use jj_lib::ref_name::{RefName, RefNameBuf, RemoteName, WorkspaceName, WorkspaceNameBuf};
 use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader};
-use jj_lib::repo_path::{RepoPath, RepoPathBuf, RepoPathUiConverter};
+use jj_lib::repo_path::{RepoPath, RepoPathBuf};
 use jj_lib::rewrite::merge_commit_trees;
 use jj_lib::settings::{HumanByteSize, UserSettings};
 use jj_lib::str_util::{StringExpression, StringPattern};
+use jj_lib::ui_path::RepoPathUiConverter;
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
 use jj_lib::workspace::Workspace;
-use jj_lib::workspace_store::{SimpleWorkspaceStore, WorkspaceStore};
 
 use crate::config_loader::{bootstrap_user_settings, resolved_workspace_settings};
 use crate::convert::{CommitData, OperationData, RemoteData, WorkspaceInfoData};
@@ -114,6 +114,26 @@ fn parse_fetch_bookmarks(specs: &[String]) -> PyResult<StringExpression> {
     Ok(expr)
 }
 
+/// True when the Git working directory of the workspace at `workspace_root` is that root. This is
+/// the colocation test of the jj CLI (`is_colocated_git_workspace`). It also holds for a Git
+/// worktree made by `jj workspace add --colocate`, whose `.git` is a file. jj 0.45 and later keeps
+/// one Git `HEAD` per workspace, so every `HEAD` read or write must name the workspace root.
+pub(crate) fn is_colocated_workspace(
+    store: &jj_lib::store::Store,
+    workspace_root: &Path,
+) -> PyResult<bool> {
+    let Ok(git_backend) = git::get_git_backend(store) else {
+        return Ok(false);
+    };
+    match git_backend.open_git_repo_at_workdir(workspace_root) {
+        Ok(_) => Ok(true),
+        Err(GitRepoAtWorkdirError::NotFound { .. } | GitRepoAtWorkdirError::Unrelated { .. }) => {
+            Ok(false)
+        }
+        Err(err) => Err(map_git_err(err.to_string())),
+    }
+}
+
 /// Adopt an existing colocated git repo into a freshly `init_external_git`'d workspace: import its
 /// HEAD + refs (so `refs/heads/*` become jj bookmarks and `@git`/HEAD is known), then place `@` as
 /// an empty child of the imported HEAD so existing working-tree edits land on top of the initial
@@ -134,11 +154,16 @@ fn adopt_existing_git(workspace: &mut Workspace, repo: Arc<ReadonlyRepo>) -> PyR
         record_synthetic_predecessors: true,
         remote_auto_track_bookmarks: HashMap::new(),
     };
-    pollster::block_on(git::import_head(tx.repo_mut())).map_err(map_git_err)?;
+    pollster::block_on(git::import_head(
+        tx.repo_mut(),
+        &name,
+        workspace.workspace_root(),
+    ))
+    .map_err(map_git_err)?;
     pollster::block_on(git::import_refs(tx.repo_mut(), &options)).map_err(map_git_err)?;
 
     // If the imported repo has a HEAD, base a fresh empty `@` on it (else leave `@` on root).
-    let head_id = tx.repo_mut().view().git_head().as_normal().cloned();
+    let head_id = tx.repo_mut().view().git_head(&name).as_normal().cloned();
     let new_wc = if let Some(head_id) = head_id {
         let head_commit = tx
             .repo_mut()
@@ -247,6 +272,14 @@ enum HeadRefOp {
     Delete,
 }
 
+/// True when one ref name is a path prefix of the other (`refs/heads/T` and `refs/heads/T/api`).
+fn ref_names_nest(a: &gix::bstr::BStr, b: &gix::bstr::BStr) -> bool {
+    let nests = |outer: &[u8], inner: &[u8]| {
+        inner.len() > outer.len() && inner.starts_with(outer) && inner[outer.len()] == b'/'
+    };
+    nests(a, b) || nests(b, a)
+}
+
 /// D/F-safe force-write/delete of a single `refs/heads/<name>` directly in the colocated `.git`,
 /// bypassing jj's view. The engine behind `write_git_ref`/`delete_git_ref` (reconcile-only escape
 /// hatches to heal colocated-ref drift when `git_export` is itself broken by a bad/leftover ref).
@@ -266,12 +299,12 @@ enum HeadRefOp {
 /// (where names coexist freely), exactly as `git pack-refs --all` does.
 ///
 /// Mirror that: enumerate every existing head (a loose-tree + packed-buffer walk that never opens a
-/// D/F-blocked path), then in ONE file-store transaction pack every head at its current oid plus the
-/// target's change — so no loose head remains to conflict. Before committing, physically clear the
+/// D/F-blocked path), then pack every head at its current oid plus the target's change — so no loose head remains to
+/// conflict. gix 0.86 and later also locks each edit, so names that nest run in separate
+/// file-store transactions. Before committing, physically clear the
 /// loose `refs/heads/` tree (all oids are already captured in the edit set, to be rewritten into
 /// `packed-refs`); this removes both the shadowing files that break the probe and the empty
-/// directories that break loose-source removal. Because the transaction holds the global packed-refs
-/// lock, gix also skips per-ref loose locks (`prepare`: `has_global_lock` ⇒ no `refs/heads/T.lock`).
+/// directories that break loose-source removal.
 /// The reflog is disabled: its path mirrors the ref (`logs/refs/heads/<name>`), so it has the same
 /// D/F hazard, gix neither packs nor relocates reflogs, and a repair escape hatch needs no history.
 /// Only loose head files are cleared — `packed-refs` and any non-head ref are untouched.
@@ -334,25 +367,44 @@ fn apply_head_ref_packed(
     }
     std::fs::create_dir_all(&heads_dir)
         .map_err(|e| map_git_err(format!("failed to recreate refs/heads: {e}")))?;
-    let odb = Box::new(git_repo.objects.clone());
     let mut ref_store = git_repo.refs.clone();
     ref_store.write_reflog = gix::refs::store::WriteReflog::Disable;
-    ref_store
-        .transaction()
-        .packed_refs(
-            gix::refs::file::transaction::PackedRefs::DeletionsAndNonSymbolicUpdatesRemoveLooseSourceReference(
-                odb,
-            ),
-        )
-        .prepare(
-            edits,
-            gix::lock::acquire::Fail::Immediately,
-            gix::lock::acquire::Fail::Immediately,
-        )
-        .map_err(map_git_err)?
-        // No committer needed: the reflog is disabled above, so `commit` writes no reflog entry.
-        .commit(None)
-        .map_err(map_git_err)?;
+    // gix 0.86 and later takes one loose lock per edit, even under the global packed-refs lock,
+    // and then removes the loose source file of each edit. A lock on `refs/heads/T/api` makes
+    // `refs/heads/T` a directory, so the removal of the loose source `refs/heads/T` would fail
+    // when both names sit in one transaction. Run names that nest in one another in separate
+    // transactions. Every edit still lands in `packed-refs`.
+    let mut groups: Vec<Vec<gix::refs::transaction::RefEdit>> = Vec::new();
+    for edit in edits {
+        let slot = groups.iter().position(|group| {
+            group
+                .iter()
+                .all(|other| !ref_names_nest(other.name.as_bstr(), edit.name.as_bstr()))
+        });
+        match slot {
+            Some(index) => groups[index].push(edit),
+            None => groups.push(vec![edit]),
+        }
+    }
+    for group in groups {
+        let odb = Box::new(git_repo.objects.clone());
+        ref_store
+            .transaction()
+            .packed_refs(
+                gix::refs::file::transaction::PackedRefs::DeletionsAndNonSymbolicUpdatesRemoveLooseSourceReference(
+                    odb,
+                ),
+            )
+            .prepare(
+                group,
+                gix::lock::acquire::Fail::Immediately,
+                gix::lock::acquire::Fail::Immediately,
+            )
+            .map_err(map_git_err)?
+            // No committer needed: the reflog is disabled above, so `commit` writes no reflog entry.
+            .commit(None)
+            .map_err(map_git_err)?;
+    }
     Ok(())
 }
 
@@ -670,7 +722,10 @@ impl PyWorkspace {
         let repo = py
             .allow_threads(|| pollster::block_on(loader.load_at_head()))
             .map_err(map_backend_err)?;
-        py.allow_threads(move || repo.store().gc(repo.index(), keep_newer))
+        let Some(git_backend) = repo.store().backend_impl::<GitBackend>() else {
+            return Err(PyjutsuError::new_err("garbage collection needs the Git backend"));
+        };
+        py.allow_threads(|| git_backend.gc(repo.index(), keep_newer))
             .map_err(map_backend_err)
     }
 
@@ -1339,7 +1394,7 @@ impl PyWorkspace {
                 return Err(PyjutsuError::new_err(format!("no such workspace '{name}'")));
             }
             let mut tx = repo.start_transaction();
-            pollster::block_on(tx.repo_mut().remove_wc_commit(&name_buf)).map_err(map_edit_err)?;
+            pollster::block_on(tx.repo_mut().remove_workspace(&name_buf)).map_err(map_edit_err)?;
             pollster::block_on(tx.repo_mut().rebase_descendants()).map_err(map_backend_err)?;
             pollster::block_on(tx.commit(format!("forget workspace '{name}'")))
                 .map_err(map_backend_err)?;
@@ -1357,7 +1412,7 @@ impl PyWorkspace {
         let loader = guard.repo_loader();
         let rows = py.allow_threads(|| -> PyResult<Vec<WorkspaceInfoData>> {
             let repo = pollster::block_on(loader.load_at_head()).map_err(map_backend_err)?;
-            let store = SimpleWorkspaceStore::load(&repo_path).map_err(map_workspace_err)?;
+            let store = loader.workspace_store();
             repo.view()
                 .wc_commit_ids()
                 .iter()
@@ -1391,11 +1446,13 @@ impl PyWorkspace {
         let mut guard = self.locked()?;
         let ws: &mut Workspace = &mut guard;
         let name = ws.workspace_name().to_owned();
+        let root = ws.workspace_root().to_owned();
         let repo = {
             let loader = ws.repo_loader();
             py.allow_threads(|| pollster::block_on(loader.load_at_head()))
                 .map_err(map_backend_err)?
         };
+        let colocated = is_colocated_workspace(repo.store(), &root)?;
 
         let new_repo = py.allow_threads(|| -> PyResult<Option<Arc<ReadonlyRepo>>> {
             // Plain `jj git import` options: abandon unreachable git commits, record synthetic
@@ -1410,7 +1467,12 @@ impl PyWorkspace {
                 remote_auto_track_bookmarks: HashMap::new(),
             };
             let mut tx = repo.start_transaction();
-            pollster::block_on(git::import_head(tx.repo_mut())).map_err(map_git_err)?;
+            // Git `HEAD` is per workspace since jj 0.45. Import it only when this workspace owns a
+            // Git working directory, as the jj CLI does.
+            if colocated {
+                pollster::block_on(git::import_head(tx.repo_mut(), &name, &root))
+                    .map_err(map_git_err)?;
+            }
             pollster::block_on(git::import_refs(tx.repo_mut(), &options)).map_err(map_git_err)?;
             pollster::block_on(tx.repo_mut().rebase_descendants()).map_err(map_backend_err)?;
             if !tx.repo_mut().has_changes() {
@@ -1441,11 +1503,17 @@ impl PyWorkspace {
         let mut guard = self.locked()?;
         let ws: &mut Workspace = &mut guard;
         let name = ws.workspace_name().to_owned();
+        let root = ws.workspace_root().to_owned();
         let repo = {
             let loader = ws.repo_loader();
             py.allow_threads(|| pollster::block_on(loader.load_at_head()))
                 .map_err(map_backend_err)?
         };
+        if !is_colocated_workspace(repo.store(), &root)? {
+            return Err(map_git_err(
+                "this workspace is not colocated with Git; there is no Git HEAD to synchronize",
+            ));
+        }
 
         let new_repo = py.allow_threads(|| -> PyResult<Option<Arc<ReadonlyRepo>>> {
             let mut tx = repo.start_transaction();
@@ -1461,7 +1529,8 @@ impl PyWorkspace {
             // `reset_head` rewrites the git index (on disk) unconditionally and moves the view's
             // git-HEAD target only when HEAD actually changed — so `has_changes()` gates only the
             // published operation, not the index repair.
-            pollster::block_on(git::reset_head(tx.repo_mut(), &wc_commit)).map_err(map_git_err)?;
+            pollster::block_on(git::reset_head(tx.repo_mut(), &name, &root, &wc_commit))
+                .map_err(map_git_err)?;
             if !tx.repo_mut().has_changes() {
                 return Ok(None);
             }
@@ -1484,11 +1553,13 @@ impl PyWorkspace {
         let mut guard = self.locked()?;
         let ws: &mut Workspace = &mut guard;
         let name = ws.workspace_name().to_owned();
+        let root = ws.workspace_root().to_owned();
         let repo = {
             let loader = ws.repo_loader();
             py.allow_threads(|| pollster::block_on(loader.load_at_head()))
                 .map_err(map_backend_err)?
         };
+        let colocated = is_colocated_workspace(repo.store(), &root)?;
 
         let new_repo = py.allow_threads(|| -> PyResult<Option<Arc<ReadonlyRepo>>> {
             let mut tx = repo.start_transaction();
@@ -1509,13 +1580,16 @@ impl PyWorkspace {
             // leaves `HEAD` parked at `refs/jj/root`, so bare `git log`/`git status` break. Run it
             // unconditionally (before `has_changes`) so a refs-only no-op still repairs a stale HEAD;
             // `reset_head` itself is a no-op when HEAD already matches.
-            if let Some(wc_id) = tx.repo_mut().view().get_wc_commit_id(&name).cloned() {
+            // `HEAD` is per workspace: name this workspace and its root.
+            if colocated
+                && let Some(wc_id) = tx.repo_mut().view().get_wc_commit_id(&name).cloned()
+            {
                 let wc_commit = tx
                     .repo_mut()
                     .store()
                     .get_commit(&wc_id)
                     .map_err(map_backend_err)?;
-                pollster::block_on(git::reset_head(tx.repo_mut(), &wc_commit))
+                pollster::block_on(git::reset_head(tx.repo_mut(), &name, &root, &wc_commit))
                     .map_err(map_git_err)?;
             }
             if !tx.repo_mut().has_changes() {

@@ -19,7 +19,7 @@ use jj_lib::commit::Commit;
 use jj_lib::fileset::FilesetAliasesMap;
 use jj_lib::ref_name::WorkspaceName;
 use jj_lib::repo::Repo;
-use jj_lib::repo_path::RepoPathUiConverter;
+use jj_lib::ui_path::RepoPathUiConverter;
 use jj_lib::revset::{
     self, Revset, RevsetAliasesMap, RevsetDiagnostics, RevsetExtensions, RevsetParseContext,
     RevsetStreamExt as _, RevsetWorkspaceContext, SymbolResolver, SymbolResolverExtension,
@@ -141,7 +141,7 @@ fn evaluate_revset<'a>(
     let resolved = expr
         .resolve_user_expression(repo, &resolver)
         .map_err(map_revset_err)?;
-    resolved.evaluate(repo).map_err(map_revset_err)
+    resolved.evaluate().map_err(map_revset_err)
 }
 
 /// Evaluate `revset_str` against `repo` and return the matching commits in revset order.
@@ -210,6 +210,11 @@ pub(crate) fn resolve_expression(
     let expr = parse_user_expression(revset_config, revset_str, workspace_name, workspace_root)?;
     let no_extensions: &[Box<dyn SymbolResolverExtension>] = &[];
     let resolver = SymbolResolver::new(repo, no_extensions);
-    expr.resolve_user_expression(repo, &resolver)
-        .map_err(map_revset_err)
+    // `into_inner` drops the extra repos that `at_operation()` brings in. The callers drive
+    // the expression against `repo` only, as before.
+    let (expression, _other_repos) = expr
+        .resolve_user_expression(repo, &resolver)
+        .map_err(map_revset_err)?
+        .into_inner();
+    Ok(expression)
 }

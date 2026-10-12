@@ -149,7 +149,7 @@ def test_committed_foreign_writer_from_the_bundled_jj_lib_rejects_before_at_move
     repo = build_publish_repo(tmp_path, jj)
     writer = load(repo)
     (repo.root / "foreign.txt").write_text("foreign bytes\n")
-    with writer.transaction("foreign work") as tx:  # the bundled jj-lib 0.44 moves `@`
+    with writer.transaction("foreign work") as tx:  # the bundled jj-lib 0.46 moves `@`
         tx.new()
     ops_before = op_ids(jj, repo.root)
     at_before = observe_commit(jj, repo.root, "@")

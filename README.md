@@ -5,14 +5,14 @@ PyO3/maturin — native graph, op-log, working-copy, and conflict access **in-pr
 no subprocess and no text parsing.
 
 - **Import:** `import pyjutsu`
-- **Binds:** jujutsu / `jj-lib` **0.44.0** (pinned in `Cargo.toml` + `devenv.nix`). Pyjutsu is
+- **Binds:** jujutsu / `jj-lib` **0.46.0** (pinned in `Cargo.toml` + `devenv.nix`). Pyjutsu is
   versioned on its own cadence, independent of the jj version it binds; `pyjutsu.JJ_VERSION`
   reports the linked jj-lib at runtime.
 - **Docs:** [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) (using the library) ·
   [`docs/DEV_GUIDE.md`](docs/DEV_GUIDE.md) (working on it) ·
   [`docs/PYJUTSU_CONCEPT.md`](docs/PYJUTSU_CONCEPT.md) (design spec).
 
-**Status: 0.23.1 — tracks jj-lib 0.44.0.** The reads, transactions/mutations, op-log time travel,
+**Status: 0.23.1 — tracks jj-lib 0.46.0.** The reads, transactions/mutations, op-log time travel,
 workspaces, and git interop are implemented and differential-tested against the pinned `jj` CLI.
 
 ### 0.23.1 — Nix package
@@ -293,7 +293,7 @@ costly for little gain over `to_thread`.
 ## Development
 
 Everything runs inside the [devenv](https://devenv.sh) shell, which pins the Rust toolchain,
-`maturin`, and the matching `jj` 0.44.0 CLI used for differential tests:
+`maturin`, and the matching `jj` 0.46.0 CLI used for differential tests:
 
 ```sh
 devenv shell -- devenv tasks run pyjutsu:build   # maturin develop

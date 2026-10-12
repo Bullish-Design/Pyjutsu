@@ -29,14 +29,15 @@ use std::sync::atomic::Ordering;
 use jj_lib::backend::BackendError;
 use jj_lib::commit::Commit;
 use jj_lib::git;
-use jj_lib::git_backend::GitBackend;
 use jj_lib::lock::FileLock;
 use jj_lib::matchers::NothingMatcher;
 use jj_lib::object_id::ObjectId;
 use jj_lib::op_heads_store::OpHeadsStoreError;
 use jj_lib::op_store::OperationId;
+use jj_lib::git_backend::GitBackend;
 use jj_lib::repo::{ReadonlyRepo, Repo, RepoLoader};
 use jj_lib::backend::CommitId;
+use jj_lib::ref_name::WorkspaceName;
 use jj_lib::simple_op_heads_store::SimpleOpHeadsStore;
 use jj_lib::working_copy::WorkingCopyFreshness;
 use jj_lib::workspace::Workspace;
@@ -136,7 +137,8 @@ fn is_colocated(loader: &RepoLoader, workspace_root: &Path) -> bool {
     let Some(git_backend) = loader.store().backend_impl::<GitBackend>() else {
         return false;
     };
-    let Some(workdir) = git_backend.git_workdir() else {
+    let git_repo = git_backend.git_repo();
+    let Some(workdir) = git_repo.workdir() else {
         return false;
     };
     match (workdir.canonicalize(), workspace_root.canonicalize()) {
@@ -145,14 +147,20 @@ fn is_colocated(loader: &RepoLoader, workspace_root: &Path) -> bool {
     }
 }
 
-/// Reset Git `HEAD` and the Git index to the new working-copy commit. Publishes one extra
-/// operation only when the view's Git `HEAD` changed. Returns that operation, if any.
+/// Reset Git `HEAD` and the Git index of workspace `name` to the new working-copy commit. jj 0.45
+/// and later keeps one Git `HEAD` per workspace, and a colocated child workspace is a Git
+/// worktree with its own `HEAD`. The reset opens the Git repository at `workspace_root`, so it
+/// writes that worktree's `HEAD` and that workspace's `git_heads` entry. Publishes one extra
+/// operation only when the workspace's Git `HEAD` changed. Returns that operation, if any.
 fn sync_git(
     repo: &std::sync::Arc<ReadonlyRepo>,
+    name: &WorkspaceName,
+    workspace_root: &Path,
     new_wc: &Commit,
 ) -> Result<Option<std::sync::Arc<ReadonlyRepo>>, String> {
     let mut tx = repo.start_transaction();
-    pollster::block_on(git::reset_head(tx.repo_mut(), new_wc)).map_err(|e| e.to_string())?;
+    pollster::block_on(git::reset_head(tx.repo_mut(), name, workspace_root, new_wc))
+        .map_err(|e| e.to_string())?;
     if !tx.repo_mut().has_changes() {
         return Ok(None);
     }
@@ -180,12 +188,13 @@ pub(super) fn publish_if<'py>(
     let mut guard = workspace.locked()?;
     let ws: &mut Workspace = &mut guard;
     let name = ws.workspace_name().to_owned();
+    let workspace_root = ws.workspace_root().to_owned();
     let loader = ws.repo_loader().clone();
 
     // Refuse a store this guard does not understand. The comparison needs the operation-heads
     // lock to mean what the simple store says it means, and the working-copy lock to be jj's.
     let heads_store_name = loader.op_heads_store().name().to_owned();
-    if heads_store_name != SimpleOpHeadsStore::name() {
+    if heads_store_name != SimpleOpHeadsStore::NAME {
         return refused(
             py,
             &facts,
@@ -193,7 +202,7 @@ pub(super) fn publish_if<'py>(
             &format!(
                 "operation heads store `{heads_store_name}` is not supported; \
                  guarded publication needs `{}`",
-                SimpleOpHeadsStore::name()
+                SimpleOpHeadsStore::NAME
             ),
         );
     }
@@ -390,7 +399,7 @@ pub(super) fn publish_if<'py>(
     let mut finish_op = new_op_id.clone();
     let mut head_op = op_hex.clone();
     if colocated {
-        match py.allow_threads(|| sync_git(&published_repo, &new_wc)) {
+        match py.allow_threads(|| sync_git(&published_repo, &name, &workspace_root, &new_wc)) {
             Ok(Some(synced)) => {
                 git_sync = "synced";
                 finish_op = synced.operation().id().clone();
@@ -448,7 +457,7 @@ mod tests {
         layer.set_value("user.name", "Test").unwrap();
         layer.set_value("user.email", "test@example.invalid").unwrap();
         config.add_layer(layer);
-        UserSettings::from_config(config).unwrap()
+        UserSettings::from_config_and_home_dir(config, None).unwrap()
     }
 
     fn scratch_dir(tag: &str) -> PathBuf {
@@ -470,7 +479,7 @@ mod tests {
 
     #[test]
     fn the_supported_stores_are_the_ones_jj_lib_names() {
-        assert_eq!(SimpleOpHeadsStore::name(), "simple_op_heads_store");
+        assert_eq!(SimpleOpHeadsStore::NAME, "simple_op_heads_store");
         assert_eq!(SUPPORTED_WORKING_COPY, "local");
     }
 

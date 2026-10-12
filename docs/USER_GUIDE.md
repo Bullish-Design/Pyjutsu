@@ -5,7 +5,7 @@ Python code. For the design rationale see [`PYJUTSU_CONCEPT.md`](PYJUTSU_CONCEPT
 Pyjutsu itself see [`DEV_GUIDE.md`](DEV_GUIDE.md).
 
 - **Import:** `import pyjutsu`
-- **Binds:** jujutsu / `jj-lib` **0.44.0** (pinned), in-process via PyO3 — no subprocess, no text
+- **Binds:** jujutsu / `jj-lib` **0.46.0** (pinned), in-process via PyO3 — no subprocess, no text
   parsing.
 - **Status:** shipping at `pyjutsu 0.20.0`.
 

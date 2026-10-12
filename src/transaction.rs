@@ -29,7 +29,8 @@ use jj_lib::commit::Commit;
 use jj_lib::dag_walk;
 use jj_lib::diff::{ContentDiff, DiffHunkKind};
 use jj_lib::matchers::{EverythingMatcher, FilesMatcher};
-use jj_lib::merge::{Merge, MergedTreeValue};
+use jj_lib::backend::MergedTreeValue;
+use jj_lib::merge::Merge;
 use jj_lib::merged_tree::MergedTree;
 use jj_lib::merged_tree_builder::MergedTreeBuilder;
 use jj_lib::object_id::ObjectId;
@@ -207,7 +208,7 @@ impl PyTransaction {
             .map_err(crate::errors::map_revset_err)?;
         let immutable_ids: HashSet<CommitId> = pollster::block_on(
             resolved
-                .evaluate(repo)
+                .evaluate()
                 .map_err(crate::errors::map_revset_err)?
                 .stream()
                 .try_collect(),
@@ -1112,7 +1113,7 @@ impl PyTransaction {
         }
         repo.set_local_bookmark_target(ref_name, RefTarget::normal(target.id().clone()));
         let new_target = repo.get_local_bookmark(ref_name);
-        BookmarkData::local(name, &new_target).to_dict(py)
+        BookmarkData::local(name, new_target).to_dict(py)
     }
 
     /// Point local bookmark `name` at the single revision named by `commit`, creating it if absent
@@ -1134,7 +1135,7 @@ impl PyTransaction {
         let ref_name = RefName::new(name);
         repo.set_local_bookmark_target(ref_name, RefTarget::normal(target.id().clone()));
         let new_target = repo.get_local_bookmark(ref_name);
-        BookmarkData::local(name, &new_target).to_dict(py)
+        BookmarkData::local(name, new_target).to_dict(py)
     }
 
     /// Delete local bookmark `name` by setting its target absent (matches `jj bookmark delete`).
@@ -1178,7 +1179,7 @@ impl PyTransaction {
         }
         pollster::block_on(repo.track_remote_bookmark(symbol)).map_err(map_backend_err)?;
         let remote_ref = repo.get_remote_bookmark(symbol);
-        BookmarkData::remote(name, remote, &remote_ref).to_dict(py)
+        BookmarkData::remote(name, remote, remote_ref).to_dict(py)
     }
 
     /// Stop tracking the remote-tracking bookmark `name@remote` (matches `jj bookmark untrack`),
@@ -1205,7 +1206,7 @@ impl PyTransaction {
         }
         repo.untrack_remote_bookmark(symbol);
         let remote_ref = repo.get_remote_bookmark(symbol);
-        BookmarkData::remote(name, remote, &remote_ref).to_dict(py)
+        BookmarkData::remote(name, remote, remote_ref).to_dict(py)
     }
 
     /// Commit the transaction with `description`, publishing exactly one operation, and return

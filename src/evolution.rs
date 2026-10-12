@@ -74,8 +74,7 @@ pub(crate) fn evolution<'py>(
                 "change id '{change_id_str}' is a prefix, not a complete z-k change id"
             )));
         }
-        let Some(targets) = repo
-            .resolve_change_id(&change_id)
+        let Some(targets) = pollster::block_on(repo.resolve_change_id(&change_id))
             .map_err(|e| PyjutsuError::new_err(e.to_string()))?
         else {
             return Ok(vec![]);

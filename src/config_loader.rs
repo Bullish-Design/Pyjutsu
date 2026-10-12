@@ -1,4 +1,4 @@
-//! Jujutsu 0.44 configuration policy for workspace authoring.
+//! Jujutsu 0.46 configuration policy for workspace authoring.
 //!
 //! jj-lib provides configuration layers, secure configuration, and conditional resolution.
 //! jj-cli provides environment and user-path policy. Pyjutsu reproduces the small relevant policy
@@ -226,7 +226,7 @@ fn resolve_settings(
         environment: &config_env.environment,
     };
     let resolved = jj_lib::config::resolve(&config, &context).map_err(map_workspace_err)?;
-    UserSettings::from_config(resolved).map_err(map_workspace_err)
+    UserSettings::from_config_and_home_dir(resolved, config_env.home_dir.clone()).map_err(map_workspace_err)
 }
 
 /// Load settings before repository initialization, when no repository configuration exists.
