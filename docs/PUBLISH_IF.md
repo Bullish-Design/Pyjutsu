@@ -58,6 +58,9 @@ pyjutsu publish-if --repo PATH --expect-wc FULL_COMMIT_ID --onto FULL_COMMIT_ID 
 pyjutsu recover    --repo PATH
 ```
 
+`pyjutsu --version` prints `pyjutsu <version> (jj-lib <version>)` and exits 0. A caller reads the
+linked jj-lib from that line.
+
 `python -m pyjutsu` runs the same commands. Use the `pyjutsu` executable when you can: wheel
 installs add it to `bin/`.
 

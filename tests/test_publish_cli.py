@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import pyjutsu
 import pytest
 
 from tests.diff.jj_cli import JjCli
@@ -27,6 +28,16 @@ from tests.publish_support import (
     parse_output,
     run_publish,
 )
+
+
+def test_version_names_pyjutsu_and_the_linked_jj_lib() -> None:
+    expected = f"pyjutsu {pyjutsu.__version__} (jj-lib {pyjutsu.JJ_VERSION})\n"
+
+    for command in (cli_command("--version"), [str(console_script()), "--version"]):
+        proc = subprocess.run(command, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == expected
+    assert pyjutsu.JJ_VERSION == "0.46.0"
 
 
 def test_console_script_exists_and_publishes(tmp_path: Path, jj: JjCli) -> None:

@@ -2,9 +2,13 @@
 
     pyjutsu publish-if --repo PATH --expect-wc FULL_COMMIT_ID --onto FULL_COMMIT_ID -m DESCRIPTION
     pyjutsu recover --repo PATH
+    pyjutsu --version
 
 Output is plain text on stdout: one ``key=value`` line per fact, first line ``result=<kind>``.
 Values hold no newline. Human diagnostics go to stderr and are not a stable interface.
+
+``pyjutsu --version`` prints one line, ``pyjutsu <version> (jj-lib <version>)``, and exits ``0``. The
+jj-lib version is the one the extension links, so a caller can read the bound jj-lib from it.
 
 Exit codes:
 
@@ -24,10 +28,12 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import (
+    JJ_VERSION,
     PublishError,
     PublishIncompleteError,
     StalePublishError,
     Workspace,
+    __version__,
 )
 from .errors import PyjutsuError, WorkspaceError
 from .workspace import _FULL_COMMIT_ID
@@ -65,6 +71,11 @@ def _emit(result: str, **facts: object) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="pyjutsu", description="Guarded jj publication.")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"pyjutsu {__version__} (jj-lib {JJ_VERSION})",
+    )
     sub = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
 
     publish = sub.add_parser(
