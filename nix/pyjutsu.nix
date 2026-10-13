@@ -185,9 +185,8 @@ in
         exit 1
       }
 
-      # The tag may already exist: `gitman release` writes and pushes it, and this task then
-      # only attaches the artifacts. Create it only when it is missing, so re-publishing a
-      # release whose tag is already public never moves it.
+      # The tag may exist before this task creates the GitHub release. Create it only
+      # when missing, so this task never moves an existing tag.
       if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
         tagged="$(git rev-list -n1 "$tag")"
         if [ "$tagged" != "$(git rev-parse HEAD)" ]; then

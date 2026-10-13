@@ -43,7 +43,7 @@ In a colocated repository the usual result is two operations: the publication an
 
 ## Step 4 inputs (Vendomat and nix-meta)
 
-- Tag: `v0.23.0`, to be created by `gitman release` after the lane lands. Not created yet.
+- Tag: `v0.23.0`, to be created after the lane lands. Not created yet.
 - Wheel: `pyjutsu-0.23.0-cp313-abi3-manylinux_2_39_x86_64.whl`, sha256
   `7bac5f7dee9d7cef16b52014eb96b7e6a9d117d459a77a6bff6771404ee3b085` (local build from this lane;
   Vendomat builds the shipping wheel with `nix build .#pyjutsu-wheel`, so its hash will differ).
